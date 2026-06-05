@@ -8,7 +8,18 @@
 import Foundation
 import UniformTypeIdentifiers
 
-struct FileItem: Identifiable, Hashable, Sendable {
+nonisolated struct FileItem: Identifiable, Hashable, Sendable {
+    static var resourceKeys: Set<URLResourceKey> {
+        [
+            .isDirectoryKey,
+            .fileSizeKey,
+            .totalFileAllocatedSizeKey,
+            .contentModificationDateKey,
+            .typeIdentifierKey,
+            .isHiddenKey
+        ]
+    }
+
     let id: URL
     let url: URL
     let name: String
@@ -19,15 +30,7 @@ struct FileItem: Identifiable, Hashable, Sendable {
     let isHidden: Bool
 
     init(url: URL) throws {
-        let resourceKeys: Set<URLResourceKey> = [
-            .isDirectoryKey,
-            .fileSizeKey,
-            .totalFileAllocatedSizeKey,
-            .contentModificationDateKey,
-            .typeIdentifierKey,
-            .isHiddenKey
-        ]
-        let resourceValues = try url.resourceValues(forKeys: resourceKeys)
+        let resourceValues = try url.resourceValues(forKeys: Self.resourceKeys)
         let isDirectory = resourceValues.isDirectory ?? false
 
         self.id = url
