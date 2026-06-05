@@ -9,6 +9,8 @@ import SwiftUI
 
 struct FilePaneView: View {
     @ObservedObject var viewModel: FilePaneViewModel
+    var isActive: Bool = false
+    var onActivate: () -> Void = {}
 
     private var selectedItemIDs: Binding<Set<FileItem.ID>> {
         Binding {
@@ -46,6 +48,21 @@ struct FilePaneView: View {
         }
         .task {
             await viewModel.loadCurrentDirectory()
+        }
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                onActivate()
+            }
+        )
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(isActive ? Color.accentColor : Color.clear)
+                .frame(height: 3)
+        }
+        .overlay {
+            Rectangle()
+                .stroke(isActive ? Color.accentColor.opacity(0.7) : Color.gray.opacity(0.25), lineWidth: isActive ? 2 : 1)
         }
     }
 

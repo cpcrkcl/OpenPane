@@ -8,10 +8,10 @@
 import SwiftUI
 
 struct MainWindowView: View {
-    @StateObject private var filePaneViewModel = FilePaneViewModel()
+    @StateObject private var dualPaneViewModel = DualPaneViewModel()
 
     var body: some View {
-        FilePaneView(viewModel: filePaneViewModel)
-        .frame(minWidth: 900, minHeight: 560)
+        DualPaneView(viewModel: dualPaneViewModel)
+            .frame(minWidth: 1100, minHeight: 620)
     }
 }
