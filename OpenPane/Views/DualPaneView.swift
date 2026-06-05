@@ -65,6 +65,14 @@ struct DualPaneView: View {
 
             Button {
                 Task {
+                    await viewModel.moveSelectionToOtherPane()
+                }
+            } label: {
+                Label("Move to Other Pane", systemImage: "folder.badge.arrow.right")
+            }
+
+            Button {
+                Task {
                     await viewModel.refreshBoth()
                 }
             } label: {

@@ -68,10 +68,7 @@ final class DualPaneViewModel: ObservableObject {
     }
 
     func copySelectionToOtherPane() async {
-        let selectedItems = Array(activePane.selectedItems)
-
-        guard !selectedItems.isEmpty else {
-            errorMessage = "Select one or more items to copy."
+        guard let selectedItems = selectedItemsForOperation(verb: "copy") else {
             return
         }
 
@@ -83,6 +80,33 @@ final class DualPaneViewModel: ObservableObject {
         } catch {
             errorMessage = Self.userReadableError(for: error)
         }
+    }
+
+    func moveSelectionToOtherPane() async {
+        guard let selectedItems = selectedItemsForOperation(verb: "move") else {
+            return
+        }
+
+        errorMessage = nil
+
+        do {
+            try await fileOperationService.move(items: selectedItems, to: inactivePane.currentURL)
+            activePane.selectedItems = []
+            await refreshBoth()
+        } catch {
+            errorMessage = Self.userReadableError(for: error)
+        }
+    }
+
+    private func selectedItemsForOperation(verb: String) -> [FileItem]? {
+        let selectedItems = Array(activePane.selectedItems)
+
+        guard !selectedItems.isEmpty else {
+            errorMessage = "Select one or more items to \(verb)."
+            return nil
+        }
+
+        return selectedItems
     }
 
     private static func userReadableError(for error: Error) -> String {

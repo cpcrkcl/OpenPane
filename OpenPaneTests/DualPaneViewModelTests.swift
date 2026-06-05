@@ -73,6 +73,36 @@ struct DualPaneViewModelTests {
         #expect(leftPane.selectedItems == [sourceItem])
         #expect(viewModel.errorMessage == nil)
     }
+
+    @Test func moveSelectionToOtherPaneShowsErrorWhenNothingIsSelected() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await viewModel.moveSelectionToOtherPane()
+
+        #expect(viewModel.errorMessage == "Select one or more items to move.")
+    }
+
+    @Test func moveSelectionToOtherPaneMovesFileRefreshesBothAndClearsSelection() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "move.txt", contents: "goodbye")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: FileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: FileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        leftPane.selectedItems = [sourceItem]
+
+        await viewModel.moveSelectionToOtherPane()
+
+        let movedURL = temporaryDirectory.destinationURL.appendingPathComponent("move.txt")
+        let movedContents = try String(contentsOf: movedURL, encoding: .utf8)
+        #expect(movedContents == "goodbye")
+        #expect(!FileManager.default.fileExists(atPath: sourceItem.url.path))
+        #expect(leftPane.items.isEmpty)
+        #expect(rightPane.items.map(\.name) == ["move.txt"])
+        #expect(leftPane.selectedItems.isEmpty)
+        #expect(viewModel.errorMessage == nil)
+    }
 }
 
 nonisolated private struct EmptyFileBrowserService: FileBrowserServicing {
