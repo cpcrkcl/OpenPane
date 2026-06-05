@@ -18,6 +18,9 @@ final class DualPaneViewModel: ObservableObject {
     @Published var leftPane: FilePaneViewModel
     @Published var rightPane: FilePaneViewModel
     @Published var activePaneSide: PaneSide
+    @Published var errorMessage: String?
+
+    private let fileOperationService: any FileOperationServicing
 
     var activePane: FilePaneViewModel {
         activePaneSide == .left ? leftPane : rightPane
@@ -37,11 +40,14 @@ final class DualPaneViewModel: ObservableObject {
     init(
         leftPane: FilePaneViewModel,
         rightPane: FilePaneViewModel,
-        activePaneSide: PaneSide = .left
+        activePaneSide: PaneSide = .left,
+        fileOperationService: any FileOperationServicing = FileOperationService()
     ) {
         self.leftPane = leftPane
         self.rightPane = rightPane
         self.activePaneSide = activePaneSide
+        self.errorMessage = nil
+        self.fileOperationService = fileOperationService
     }
 
     func setActivePane(_ side: PaneSide) {
@@ -59,6 +65,33 @@ final class DualPaneViewModel: ObservableObject {
 
         await leftPane.setDirectory(rightURL)
         await rightPane.setDirectory(leftURL)
+    }
+
+    func copySelectionToOtherPane() async {
+        let selectedItems = Array(activePane.selectedItems)
+
+        guard !selectedItems.isEmpty else {
+            errorMessage = "Select one or more items to copy."
+            return
+        }
+
+        errorMessage = nil
+
+        do {
+            try await fileOperationService.copy(items: selectedItems, to: inactivePane.currentURL)
+            await inactivePane.refresh()
+        } catch {
+            errorMessage = Self.userReadableError(for: error)
+        }
+    }
+
+    private static func userReadableError(for error: Error) -> String {
+        if let localizedError = error as? LocalizedError,
+           let description = localizedError.errorDescription {
+            return description
+        }
+
+        return error.localizedDescription
     }
 
     private static var defaultRightPaneURL: URL {

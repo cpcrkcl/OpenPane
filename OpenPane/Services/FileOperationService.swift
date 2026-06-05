@@ -24,7 +24,14 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
     }
 }
 
-nonisolated struct FileOperationService: Sendable {
+nonisolated protocol FileOperationServicing: Sendable {
+    nonisolated func copy(items: [FileItem], to destinationDirectory: URL) async throws
+    nonisolated func move(items: [FileItem], to destinationDirectory: URL) async throws
+    nonisolated func rename(item: FileItem, to newName: String) async throws -> URL
+    nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL
+}
+
+nonisolated struct FileOperationService: FileOperationServicing {
     nonisolated func copy(items: [FileItem], to destinationDirectory: URL) async throws {
         try await Task.detached(priority: .userInitiated) {
             try Self.validateDirectory(destinationDirectory)

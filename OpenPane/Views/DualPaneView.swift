@@ -35,10 +35,34 @@ struct DualPaneView: View {
                 .frame(minWidth: 320)
             }
         }
+        .alert(
+            "File Operation Error",
+            isPresented: Binding {
+                viewModel.errorMessage != nil
+            } set: { isPresented in
+                if !isPresented {
+                    viewModel.errorMessage = nil
+                }
+            }
+        ) {
+            Button("OK") {
+                viewModel.errorMessage = nil
+            }
+        } message: {
+            Text(viewModel.errorMessage ?? "")
+        }
     }
 
     private var toolbar: some View {
         HStack(spacing: 8) {
+            Button {
+                Task {
+                    await viewModel.copySelectionToOtherPane()
+                }
+            } label: {
+                Label("Copy to Other Pane", systemImage: "doc.on.doc")
+            }
+
             Button {
                 Task {
                     await viewModel.refreshBoth()
