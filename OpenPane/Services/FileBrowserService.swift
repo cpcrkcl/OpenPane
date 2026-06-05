@@ -7,7 +7,11 @@
 
 import Foundation
 
-nonisolated struct FileBrowserService: Sendable {
+nonisolated protocol FileBrowserServicing: Sendable {
+    nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem]
+}
+
+nonisolated struct FileBrowserService: FileBrowserServicing {
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
         try await Task.detached(priority: .userInitiated) {
             let fileURLs = try FileManager.default.contentsOfDirectory(
