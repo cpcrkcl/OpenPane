@@ -18,3 +18,14 @@ The initial goal is a native Swift and SwiftUI app for browsing and managing loc
 - Swift
 - SwiftUI
 - XCTest / Swift Testing
+
+## Keyboard Shortcuts
+
+- `Command-R`: Refresh active pane
+- `Command-Shift-R`: Refresh both panes
+- `Command-Up`: Go up in the active pane
+- `Command-Option-C`: Copy selection to the other pane
+- `Command-Option-M`: Move selection to the other pane
+- `Command-Shift-N`: New folder
+- `Return`: Rename selected item
+- `Command-Delete`: Move selection to Trash

@@ -99,17 +99,36 @@ struct DualPaneView: View {
     private var toolbar: some View {
         HStack(spacing: 8) {
             Button {
-                newFolderName = "Untitled Folder"
-                activeSheet = .newFolder
+                prepareNewFolderSheet()
             } label: {
                 Label("New Folder", systemImage: "folder.badge.plus")
             }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Button {
                 prepareRenameSheet()
             } label: {
                 Label("Rename", systemImage: "pencil")
             }
+            .keyboardShortcut(.return, modifiers: [])
+
+            Button {
+                Task {
+                    await viewModel.activePane.goUp()
+                }
+            } label: {
+                Label("Up", systemImage: "arrow.up")
+            }
+            .keyboardShortcut(.upArrow, modifiers: .command)
+
+            Button {
+                Task {
+                    await viewModel.activePane.refresh()
+                }
+            } label: {
+                Label("Refresh Active", systemImage: "arrow.clockwise")
+            }
+            .keyboardShortcut("r", modifiers: .command)
 
             Button {
                 Task {
@@ -118,6 +137,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Copy to Other Pane", systemImage: "doc.on.doc")
             }
+            .keyboardShortcut("c", modifiers: [.command, .option])
 
             Button {
                 Task {
@@ -126,6 +146,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Move to Other Pane", systemImage: "folder.badge.arrow.right")
             }
+            .keyboardShortcut("m", modifiers: [.command, .option])
 
             Button {
                 prepareTrashConfirmation()
@@ -141,6 +162,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Refresh Both", systemImage: "arrow.clockwise")
             }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
 
             Button {
                 Task {
@@ -160,6 +182,11 @@ struct DualPaneView: View {
     private var trashConfirmationMessage: String {
         let itemText = trashConfirmationItemCount == 1 ? "item" : "items"
         return "Move \(trashConfirmationItemCount) selected \(itemText) to Trash?"
+    }
+
+    private func prepareNewFolderSheet() {
+        newFolderName = "Untitled Folder"
+        activeSheet = .newFolder
     }
 
     private var newFolderSheet: some View {
