@@ -20,6 +20,7 @@ final class FilePaneViewModel: ObservableObject {
 
     private let fileBrowserService: any FileBrowserServicing
     private let workspaceService: any WorkspaceServicing
+    private let quickLookPreviewService: any QuickLookPreviewServicing
 
     var filteredItems: [FileItem] {
         let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -36,7 +37,8 @@ final class FilePaneViewModel: ObservableObject {
     init(
         currentURL: URL = FileManager.default.homeDirectoryForCurrentUser,
         fileBrowserService: any FileBrowserServicing = FileBrowserService(),
-        workspaceService: any WorkspaceServicing = WorkspaceService()
+        workspaceService: any WorkspaceServicing = WorkspaceService(),
+        quickLookPreviewService: (any QuickLookPreviewServicing)? = nil
     ) {
         self.currentURL = currentURL
         self.items = []
@@ -47,6 +49,7 @@ final class FilePaneViewModel: ObservableObject {
         self.searchText = ""
         self.fileBrowserService = fileBrowserService
         self.workspaceService = workspaceService
+        self.quickLookPreviewService = quickLookPreviewService ?? QuickLookPreviewService.shared
     }
 
     func loadCurrentDirectory() async {
@@ -105,6 +108,25 @@ final class FilePaneViewModel: ObservableObject {
 
         errorMessage = nil
         workspaceService.revealInFinder(urls: selectedItems.map(\.url))
+    }
+
+    func previewSelectedItem() {
+        let selectedItems = Array(self.selectedItems)
+
+        guard selectedItems.count == 1, let selectedItem = selectedItems.first else {
+            errorMessage = selectedItems.isEmpty
+                ? "Select one file to preview."
+                : "Select only one file to preview."
+            return
+        }
+
+        guard !selectedItem.isDirectory else {
+            errorMessage = "Select a file to preview."
+            return
+        }
+
+        errorMessage = nil
+        quickLookPreviewService.preview(url: selectedItem.url)
     }
 
     func goUp() async {

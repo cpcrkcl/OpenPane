@@ -104,6 +104,14 @@ struct FilePaneView: View {
             .disabled(viewModel.selectedItems.count != 1)
 
             Button {
+                viewModel.previewSelectedItem()
+            } label: {
+                Label("Preview", systemImage: "eye")
+            }
+            .keyboardShortcut(.space, modifiers: [])
+            .disabled(viewModel.selectedItems.count != 1)
+
+            Button {
                 viewModel.revealSelectedItemsInFinder()
             } label: {
                 Label("Reveal in Finder", systemImage: "finder")
@@ -144,6 +152,11 @@ struct FilePaneView: View {
                         Button("Reveal in Finder") {
                             viewModel.selectedItems = [item]
                             viewModel.revealSelectedItemsInFinder()
+                        }
+
+                        Button("Preview") {
+                            viewModel.selectedItems = [item]
+                            viewModel.previewSelectedItem()
                         }
                     }
             }

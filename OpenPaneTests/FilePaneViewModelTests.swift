@@ -233,6 +233,73 @@ struct FilePaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
     }
 
+    @Test func previewSelectedItemShowsErrorWhenNothingIsSelected() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let quickLookPreviewService = MockQuickLookPreviewService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            quickLookPreviewService: quickLookPreviewService
+        )
+
+        viewModel.previewSelectedItem()
+
+        #expect(viewModel.errorMessage == "Select one file to preview.")
+        #expect(quickLookPreviewService.previewedURLs.isEmpty)
+    }
+
+    @Test func previewSelectedItemShowsErrorWhenMultipleItemsAreSelected() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "first.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "second.txt")
+        let quickLookPreviewService = MockQuickLookPreviewService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            quickLookPreviewService: quickLookPreviewService
+        )
+        viewModel.selectedItems = [firstItem, secondItem]
+
+        viewModel.previewSelectedItem()
+
+        #expect(viewModel.errorMessage == "Select only one file to preview.")
+        #expect(quickLookPreviewService.previewedURLs.isEmpty)
+    }
+
+    @Test func previewSelectedItemShowsErrorForDirectory() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let directoryItem = try temporaryDirectory.createDirectoryItem(named: "Documents")
+        let quickLookPreviewService = MockQuickLookPreviewService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            quickLookPreviewService: quickLookPreviewService
+        )
+        viewModel.selectedItems = [directoryItem]
+
+        viewModel.previewSelectedItem()
+
+        #expect(viewModel.errorMessage == "Select a file to preview.")
+        #expect(quickLookPreviewService.previewedURLs.isEmpty)
+    }
+
+    @Test func previewSelectedItemPreviewsSelectedFile() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fileItem = try temporaryDirectory.createFileItem(named: "notes.txt")
+        let quickLookPreviewService = MockQuickLookPreviewService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            quickLookPreviewService: quickLookPreviewService
+        )
+        viewModel.selectedItems = [fileItem]
+
+        viewModel.previewSelectedItem()
+
+        #expect(quickLookPreviewService.previewedURLs == [fileItem.url])
+        #expect(viewModel.errorMessage == nil)
+    }
+
     @Test func goUpNavigatesToParentDirectory() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
@@ -261,6 +328,15 @@ struct FilePaneViewModelTests {
         #expect(viewModel.items.isEmpty)
         #expect(viewModel.isLoading == false)
         #expect(viewModel.errorMessage?.contains("Could not load") == true)
+    }
+}
+
+@MainActor
+private final class MockQuickLookPreviewService: QuickLookPreviewServicing {
+    private(set) var previewedURLs: [URL] = []
+
+    func preview(url: URL) {
+        previewedURLs.append(url)
     }
 }
 
