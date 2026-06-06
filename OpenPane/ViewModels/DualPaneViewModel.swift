@@ -109,6 +109,27 @@ final class DualPaneViewModel: ObservableObject {
         }
     }
 
+    func renameSelectedItem(to newName: String) async {
+        let selectedItems = Array(activePane.selectedItems)
+
+        guard selectedItems.count == 1, let selectedItem = selectedItems.first else {
+            errorMessage = selectedItems.isEmpty
+                ? "Select one item to rename."
+                : "Select only one item to rename."
+            return
+        }
+
+        errorMessage = nil
+
+        do {
+            _ = try await fileOperationService.rename(item: selectedItem, to: newName)
+            activePane.selectedItems = []
+            await activePane.refresh()
+        } catch {
+            errorMessage = Self.userReadableError(for: error)
+        }
+    }
+
     private func selectedItemsForOperation(verb: String) -> [FileItem]? {
         let selectedItems = Array(activePane.selectedItems)
 

@@ -129,6 +129,49 @@ struct DualPaneViewModelTests {
 
         #expect(viewModel.errorMessage == "Name cannot be empty.")
     }
+
+    @Test func renameSelectedItemShowsErrorWhenNothingIsSelected() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await viewModel.renameSelectedItem(to: "Renamed.txt")
+
+        #expect(viewModel.errorMessage == "Select one item to rename.")
+    }
+
+    @Test func renameSelectedItemShowsErrorWhenMultipleItemsAreSelected() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createSourceFile(named: "First.txt", contents: "one")
+        let secondItem = try temporaryDirectory.createSourceFile(named: "Second.txt", contents: "two")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        leftPane.selectedItems = [firstItem, secondItem]
+
+        await viewModel.renameSelectedItem(to: "Renamed.txt")
+
+        #expect(viewModel.errorMessage == "Select only one item to rename.")
+    }
+
+    @Test func renameSelectedItemRenamesFileRefreshesActivePaneAndClearsSelection() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "Original.txt", contents: "hello")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: FileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        leftPane.selectedItems = [sourceItem]
+
+        await viewModel.renameSelectedItem(to: "Renamed.txt")
+
+        let renamedURL = temporaryDirectory.sourceURL.appendingPathComponent("Renamed.txt")
+        let renamedContents = try String(contentsOf: renamedURL, encoding: .utf8)
+        #expect(renamedContents == "hello")
+        #expect(!FileManager.default.fileExists(atPath: sourceItem.url.path))
+        #expect(leftPane.items.map(\.name) == ["Renamed.txt"])
+        #expect(leftPane.selectedItems.isEmpty)
+        #expect(viewModel.errorMessage == nil)
+    }
 }
 
 nonisolated private struct EmptyFileBrowserService: FileBrowserServicing {

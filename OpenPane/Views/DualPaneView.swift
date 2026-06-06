@@ -10,8 +10,23 @@ import SwiftUI
 struct DualPaneView: View {
     @ObservedObject var viewModel: DualPaneViewModel
 
-    @State private var isShowingNewFolderSheet = false
     @State private var newFolderName = "Untitled Folder"
+    @State private var renameItemName = ""
+    @State private var activeSheet: ActiveSheet?
+
+    private enum ActiveSheet: Identifiable {
+        case newFolder
+        case rename
+
+        var id: String {
+            switch self {
+            case .newFolder:
+                "newFolder"
+            case .rename:
+                "rename"
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,8 +69,13 @@ struct DualPaneView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
-        .sheet(isPresented: $isShowingNewFolderSheet) {
-            newFolderSheet
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .newFolder:
+                newFolderSheet
+            case .rename:
+                renameSheet
+            }
         }
     }
 
@@ -63,9 +83,15 @@ struct DualPaneView: View {
         HStack(spacing: 8) {
             Button {
                 newFolderName = "Untitled Folder"
-                isShowingNewFolderSheet = true
+                activeSheet = .newFolder
             } label: {
                 Label("New Folder", systemImage: "folder.badge.plus")
+            }
+
+            Button {
+                prepareRenameSheet()
+            } label: {
+                Label("Rename", systemImage: "pencil")
             }
 
             Button {
@@ -120,7 +146,7 @@ struct DualPaneView: View {
                 Spacer()
 
                 Button("Cancel") {
-                    isShowingNewFolderSheet = false
+                    activeSheet = nil
                 }
 
                 Button("Create") {
@@ -136,10 +162,60 @@ struct DualPaneView: View {
 
     private func createFolderFromSheet() {
         let folderName = newFolderName
-        isShowingNewFolderSheet = false
+        activeSheet = nil
 
         Task {
             await viewModel.createFolderInActivePane(named: folderName)
+        }
+    }
+
+    private var renameSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Rename")
+                .font(.headline)
+
+            TextField("Name", text: $renameItemName)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(renameFromSheet)
+
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    activeSheet = nil
+                }
+
+                Button("Rename") {
+                    renameFromSheet()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(renameItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+    }
+
+    private func prepareRenameSheet() {
+        let selectedItems = Array(viewModel.activePane.selectedItems)
+
+        guard selectedItems.count == 1, let selectedItem = selectedItems.first else {
+            Task {
+                await viewModel.renameSelectedItem(to: "")
+            }
+            return
+        }
+
+        renameItemName = selectedItem.name
+        activeSheet = .rename
+    }
+
+    private func renameFromSheet() {
+        let newName = renameItemName
+        activeSheet = nil
+
+        Task {
+            await viewModel.renameSelectedItem(to: newName)
         }
     }
 }
