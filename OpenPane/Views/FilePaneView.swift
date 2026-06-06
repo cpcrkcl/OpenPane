@@ -12,6 +12,8 @@ struct FilePaneView: View {
     var isActive: Bool = false
     var onActivate: () -> Void = {}
 
+    private let fileIconService = FileIconService.shared
+
     private var selectedItemIDs: Binding<Set<FileItem.ID>> {
         Binding {
             Set(viewModel.selectedItems.map(\.id))
@@ -115,7 +117,14 @@ struct FilePaneView: View {
     private var fileTable: some View {
         Table(viewModel.items, selection: selectedItemIDs) {
             TableColumn("Name") { item in
-                Label(item.displayName, systemImage: item.isDirectory ? "folder" : "doc")
+                HStack(spacing: 6) {
+                    Image(nsImage: fileIconService.icon(for: item))
+                        .resizable()
+                        .frame(width: 16, height: 16)
+
+                    Text(item.displayName)
+                        .lineLimit(1)
+                }
                     .onTapGesture(count: 2) {
                         Task {
                             await viewModel.open(item)
