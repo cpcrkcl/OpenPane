@@ -8,10 +8,21 @@
 import SwiftUI
 
 struct MainWindowView: View {
+    @StateObject private var sidebarViewModel = SidebarViewModel()
     @StateObject private var dualPaneViewModel = DualPaneViewModel()
 
     var body: some View {
-        DualPaneView(viewModel: dualPaneViewModel)
+        HStack(spacing: 0) {
+            SidebarView(viewModel: sidebarViewModel) { location in
+                Task {
+                    await dualPaneViewModel.activePane.setDirectory(location.url)
+                }
+            }
+
+            Divider()
+
+            DualPaneView(viewModel: dualPaneViewModel)
+        }
             .frame(minWidth: 1100, minHeight: 620)
     }
 }
