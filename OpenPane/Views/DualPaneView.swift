@@ -13,6 +13,8 @@ struct DualPaneView: View {
     @State private var newFolderName = "Untitled Folder"
     @State private var renameItemName = ""
     @State private var activeSheet: ActiveSheet?
+    @State private var isShowingTrashConfirmation = false
+    @State private var trashConfirmationItemCount = 0
 
     private enum ActiveSheet: Identifiable {
         case newFolder
@@ -77,6 +79,21 @@ struct DualPaneView: View {
                 renameSheet
             }
         }
+        .confirmationDialog(
+            "Move to Trash?",
+            isPresented: $isShowingTrashConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Move to Trash", role: .destructive) {
+                Task {
+                    await viewModel.trashSelectionInActivePane()
+                }
+            }
+
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(trashConfirmationMessage)
+        }
     }
 
     private var toolbar: some View {
@@ -111,6 +128,13 @@ struct DualPaneView: View {
             }
 
             Button {
+                prepareTrashConfirmation()
+            } label: {
+                Label("Move to Trash", systemImage: "trash")
+            }
+            .keyboardShortcut(.delete, modifiers: .command)
+
+            Button {
                 Task {
                     await viewModel.refreshBoth()
                 }
@@ -131,6 +155,11 @@ struct DualPaneView: View {
             Text(viewModel.activePaneSide == .left ? "Left pane active" : "Right pane active")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var trashConfirmationMessage: String {
+        let itemText = trashConfirmationItemCount == 1 ? "item" : "items"
+        return "Move \(trashConfirmationItemCount) selected \(itemText) to Trash?"
     }
 
     private var newFolderSheet: some View {
@@ -217,5 +246,19 @@ struct DualPaneView: View {
         Task {
             await viewModel.renameSelectedItem(to: newName)
         }
+    }
+
+    private func prepareTrashConfirmation() {
+        let selectedItemCount = viewModel.activePane.selectedItems.count
+
+        guard selectedItemCount > 0 else {
+            Task {
+                await viewModel.trashSelectionInActivePane()
+            }
+            return
+        }
+
+        trashConfirmationItemCount = selectedItemCount
+        isShowingTrashConfirmation = true
     }
 }

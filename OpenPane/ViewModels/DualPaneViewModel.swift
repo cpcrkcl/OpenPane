@@ -98,6 +98,22 @@ final class DualPaneViewModel: ObservableObject {
         }
     }
 
+    func trashSelectionInActivePane() async {
+        guard let selectedItems = selectedItemsForOperation(verb: "move to Trash") else {
+            return
+        }
+
+        errorMessage = nil
+
+        do {
+            try await fileOperationService.trash(items: selectedItems)
+            activePane.selectedItems = []
+            await activePane.refresh()
+        } catch {
+            errorMessage = Self.userReadableError(for: error)
+        }
+    }
+
     func createFolderInActivePane(named name: String) async {
         errorMessage = nil
 

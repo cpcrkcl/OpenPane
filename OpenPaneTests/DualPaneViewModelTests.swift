@@ -104,6 +104,66 @@ struct DualPaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
     }
 
+    @Test func trashSelectionInActivePaneShowsErrorWhenNothingIsSelected() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = MockFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+
+        await viewModel.trashSelectionInActivePane()
+
+        #expect(viewModel.errorMessage == "Select one or more items to move to Trash.")
+        #expect(fileOperationService.trashedItems.isEmpty)
+    }
+
+    @Test func trashSelectionInActivePaneTrashesItemsRefreshesActivePaneAndClearsSelection() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "trash.txt", contents: "trash me")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = MockFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+        leftPane.items = [sourceItem]
+        leftPane.selectedItems = [sourceItem]
+
+        await viewModel.trashSelectionInActivePane()
+
+        #expect(fileOperationService.trashedItems == [sourceItem])
+        #expect(leftPane.items.isEmpty)
+        #expect(leftPane.selectedItems.isEmpty)
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func trashSelectionInActivePaneSurfacesErrors() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "trash.txt", contents: "trash me")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = MockFileOperationService(error: FileOperationError.trashFailed(sourceItem.url, "Trash is unavailable"))
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+        leftPane.items = [sourceItem]
+        leftPane.selectedItems = [sourceItem]
+
+        await viewModel.trashSelectionInActivePane()
+
+        #expect(fileOperationService.trashedItems == [sourceItem])
+        #expect(leftPane.items == [sourceItem])
+        #expect(leftPane.selectedItems == [sourceItem])
+        #expect(viewModel.errorMessage == "Could not move trash.txt to Trash: Trash is unavailable")
+    }
+
     @Test func createFolderInActivePaneCreatesFolderAndRefreshesActivePane() async throws {
         let temporaryDirectory = try DualPaneTestTemporaryDirectory()
         let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: FileBrowserService())
@@ -177,6 +237,44 @@ struct DualPaneViewModelTests {
 nonisolated private struct EmptyFileBrowserService: FileBrowserServicing {
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
         []
+    }
+}
+
+private final class MockFileOperationService: FileOperationServicing, @unchecked Sendable {
+    private let error: Error?
+    private let queue = DispatchQueue(label: "OpenPaneTests.MockFileOperationService")
+    private var protectedTrashedItems: [FileItem] = []
+
+    init(error: Error? = nil) {
+        self.error = error
+    }
+
+    var trashedItems: [FileItem] {
+        queue.sync {
+            protectedTrashedItems
+        }
+    }
+
+    func copy(items: [FileItem], to destinationDirectory: URL) async throws {}
+
+    func move(items: [FileItem], to destinationDirectory: URL) async throws {}
+
+    func trash(items: [FileItem]) async throws {
+        queue.sync {
+            protectedTrashedItems.append(contentsOf: items)
+        }
+
+        if let error {
+            throw error
+        }
+    }
+
+    func rename(item: FileItem, to newName: String) async throws -> URL {
+        item.url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: item.isDirectory)
+    }
+
+    func createFolder(named name: String, in directory: URL) async throws -> URL {
+        directory.appendingPathComponent(name, isDirectory: true)
     }
 }
 
