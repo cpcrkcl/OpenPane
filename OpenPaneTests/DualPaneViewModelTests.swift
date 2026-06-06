@@ -103,6 +103,32 @@ struct DualPaneViewModelTests {
         #expect(leftPane.selectedItems.isEmpty)
         #expect(viewModel.errorMessage == nil)
     }
+
+    @Test func createFolderInActivePaneCreatesFolderAndRefreshesActivePane() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: FileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await viewModel.createFolderInActivePane(named: "Projects")
+
+        let folderURL = temporaryDirectory.sourceURL.appendingPathComponent("Projects", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: folderURL.path, isDirectory: &isDirectory))
+        #expect(isDirectory.boolValue)
+        #expect(leftPane.items.map(\.name) == ["Projects"])
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func createFolderInActivePaneShowsErrorForEmptyName() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await viewModel.createFolderInActivePane(named: "")
+
+        #expect(viewModel.errorMessage == "Name cannot be empty.")
+    }
 }
 
 nonisolated private struct EmptyFileBrowserService: FileBrowserServicing {

@@ -10,6 +10,9 @@ import SwiftUI
 struct DualPaneView: View {
     @ObservedObject var viewModel: DualPaneViewModel
 
+    @State private var isShowingNewFolderSheet = false
+    @State private var newFolderName = "Untitled Folder"
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -51,10 +54,20 @@ struct DualPaneView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
+        .sheet(isPresented: $isShowingNewFolderSheet) {
+            newFolderSheet
+        }
     }
 
     private var toolbar: some View {
         HStack(spacing: 8) {
+            Button {
+                newFolderName = "Untitled Folder"
+                isShowingNewFolderSheet = true
+            } label: {
+                Label("New Folder", systemImage: "folder.badge.plus")
+            }
+
             Button {
                 Task {
                     await viewModel.copySelectionToOtherPane()
@@ -91,6 +104,42 @@ struct DualPaneView: View {
 
             Text(viewModel.activePaneSide == .left ? "Left pane active" : "Right pane active")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var newFolderSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("New Folder")
+                .font(.headline)
+
+            TextField("Folder name", text: $newFolderName)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(createFolderFromSheet)
+
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    isShowingNewFolderSheet = false
+                }
+
+                Button("Create") {
+                    createFolderFromSheet()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+    }
+
+    private func createFolderFromSheet() {
+        let folderName = newFolderName
+        isShowingNewFolderSheet = false
+
+        Task {
+            await viewModel.createFolderInActivePane(named: folderName)
         }
     }
 }

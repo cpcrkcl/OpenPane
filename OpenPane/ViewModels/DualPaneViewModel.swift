@@ -98,6 +98,17 @@ final class DualPaneViewModel: ObservableObject {
         }
     }
 
+    func createFolderInActivePane(named name: String) async {
+        errorMessage = nil
+
+        do {
+            _ = try await fileOperationService.createFolder(named: name, in: activePane.currentURL)
+            await activePane.refresh()
+        } catch {
+            errorMessage = Self.userReadableError(for: error)
+        }
+    }
+
     private func selectedItemsForOperation(verb: String) -> [FileItem]? {
         let selectedItems = Array(activePane.selectedItems)
 
