@@ -20,10 +20,6 @@ struct FilePaneView: View {
         }
     }
 
-    private var primarySelectedItem: FileItem? {
-        viewModel.selectedItems.first
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -97,17 +93,20 @@ struct FilePaneView: View {
             }
 
             Button {
-                guard let primarySelectedItem else {
-                    return
-                }
-
                 Task {
-                    await viewModel.open(primarySelectedItem)
+                    await viewModel.openSelectedItem()
                 }
             } label: {
                 Label("Open", systemImage: "arrow.forward")
             }
             .disabled(viewModel.selectedItems.count != 1)
+
+            Button {
+                viewModel.revealSelectedItemsInFinder()
+            } label: {
+                Label("Reveal in Finder", systemImage: "finder")
+            }
+            .disabled(viewModel.selectedItems.isEmpty)
 
             PathBarView(path: viewModel.currentURL.path)
         }
@@ -120,6 +119,18 @@ struct FilePaneView: View {
                     .onTapGesture(count: 2) {
                         Task {
                             await viewModel.open(item)
+                        }
+                    }
+                    .contextMenu {
+                        Button("Open") {
+                            Task {
+                                await viewModel.open(item)
+                            }
+                        }
+
+                        Button("Reveal in Finder") {
+                            viewModel.selectedItems = [item]
+                            viewModel.revealSelectedItemsInFinder()
                         }
                     }
             }

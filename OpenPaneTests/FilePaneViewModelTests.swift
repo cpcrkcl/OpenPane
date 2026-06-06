@@ -76,6 +76,111 @@ struct FilePaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
     }
 
+    @Test func openSelectedItemShowsErrorWhenNothingIsSelected() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+
+        await viewModel.openSelectedItem()
+
+        #expect(viewModel.errorMessage == "Select one item to open.")
+        #expect(workspaceService.openedURLs.isEmpty)
+    }
+
+    @Test func openSelectedItemShowsErrorWhenMultipleItemsAreSelected() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "first.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "second.txt")
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+        viewModel.selectedItems = [firstItem, secondItem]
+
+        await viewModel.openSelectedItem()
+
+        #expect(viewModel.errorMessage == "Select only one item to open.")
+        #expect(workspaceService.openedURLs.isEmpty)
+    }
+
+    @Test func openSelectedItemNavigatesIntoSelectedDirectory() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let directoryItem = try temporaryDirectory.createDirectoryItem(named: "Documents")
+        let childItem = try temporaryDirectory.createFileItem(named: "Documents/notes.txt")
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                directoryItem.url: [childItem]
+            ]),
+            workspaceService: workspaceService
+        )
+        viewModel.selectedItems = [directoryItem]
+
+        await viewModel.openSelectedItem()
+
+        #expect(viewModel.currentURL == directoryItem.url)
+        #expect(viewModel.items == [childItem])
+        #expect(viewModel.selectedItems.isEmpty)
+        #expect(workspaceService.openedURLs.isEmpty)
+    }
+
+    @Test func openSelectedItemOpensSelectedFileWithWorkspaceService() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fileItem = try temporaryDirectory.createFileItem(named: "notes.txt")
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+        viewModel.selectedItems = [fileItem]
+
+        await viewModel.openSelectedItem()
+
+        #expect(workspaceService.openedURLs == [fileItem.url])
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func revealSelectedItemsInFinderShowsErrorWhenNothingIsSelected() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+
+        viewModel.revealSelectedItemsInFinder()
+
+        #expect(viewModel.errorMessage == "Select one or more items to reveal in Finder.")
+        #expect(workspaceService.revealedURLs.isEmpty)
+    }
+
+    @Test func revealSelectedItemsInFinderRevealsOneOrMoreItems() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "first.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "second.txt")
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+        viewModel.selectedItems = [firstItem, secondItem]
+
+        viewModel.revealSelectedItemsInFinder()
+
+        #expect(Set(workspaceService.revealedURLs) == Set([firstItem.url, secondItem.url]))
+        #expect(viewModel.errorMessage == nil)
+    }
+
     @Test func goUpNavigatesToParentDirectory() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
@@ -104,6 +209,20 @@ struct FilePaneViewModelTests {
         #expect(viewModel.items.isEmpty)
         #expect(viewModel.isLoading == false)
         #expect(viewModel.errorMessage?.contains("Could not load") == true)
+    }
+}
+
+@MainActor
+private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendable {
+    private(set) var openedURLs: [URL] = []
+    private(set) var revealedURLs: [URL] = []
+
+    func open(url: URL) {
+        openedURLs.append(url)
+    }
+
+    func revealInFinder(urls: [URL]) {
+        revealedURLs.append(contentsOf: urls)
     }
 }
 

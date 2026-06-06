@@ -5,7 +5,6 @@
 //  Created by Christopher Rego on 6/4/26.
 //
 
-import AppKit
 import Combine
 import Foundation
 
@@ -19,10 +18,12 @@ final class FilePaneViewModel: ObservableObject {
     @Published var includeHiddenFiles: Bool
 
     private let fileBrowserService: any FileBrowserServicing
+    private let workspaceService: any WorkspaceServicing
 
     init(
         currentURL: URL = FileManager.default.homeDirectoryForCurrentUser,
-        fileBrowserService: any FileBrowserServicing = FileBrowserService()
+        fileBrowserService: any FileBrowserServicing = FileBrowserService(),
+        workspaceService: any WorkspaceServicing = WorkspaceService()
     ) {
         self.currentURL = currentURL
         self.items = []
@@ -31,6 +32,7 @@ final class FilePaneViewModel: ObservableObject {
         self.errorMessage = nil
         self.includeHiddenFiles = false
         self.fileBrowserService = fileBrowserService
+        self.workspaceService = workspaceService
     }
 
     func loadCurrentDirectory() async {
@@ -63,9 +65,32 @@ final class FilePaneViewModel: ObservableObject {
 
         errorMessage = nil
 
-        if !NSWorkspace.shared.open(item.url) {
-            errorMessage = "Could not open \(item.displayName)."
+        workspaceService.open(url: item.url)
+    }
+
+    func openSelectedItem() async {
+        let selectedItems = Array(self.selectedItems)
+
+        guard selectedItems.count == 1, let selectedItem = selectedItems.first else {
+            errorMessage = selectedItems.isEmpty
+                ? "Select one item to open."
+                : "Select only one item to open."
+            return
         }
+
+        await open(selectedItem)
+    }
+
+    func revealSelectedItemsInFinder() {
+        let selectedItems = Array(self.selectedItems)
+
+        guard !selectedItems.isEmpty else {
+            errorMessage = "Select one or more items to reveal in Finder."
+            return
+        }
+
+        errorMessage = nil
+        workspaceService.revealInFinder(urls: selectedItems.map(\.url))
     }
 
     func goUp() async {
