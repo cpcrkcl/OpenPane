@@ -18,7 +18,7 @@ struct FilePaneView: View {
         Binding {
             Set(viewModel.selectedItems.map(\.id))
         } set: { newSelection in
-            viewModel.selectedItems = Set(viewModel.items.filter { newSelection.contains($0.id) })
+            viewModel.selectedItems = Set(viewModel.filteredItems.filter { newSelection.contains($0.id) })
         }
     }
 
@@ -110,12 +110,16 @@ struct FilePaneView: View {
             }
             .disabled(viewModel.selectedItems.isEmpty)
 
+            TextField("Filter", text: $viewModel.searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 180)
+
             PathBarView(path: viewModel.currentURL.path)
         }
     }
 
     private var fileTable: some View {
-        Table(viewModel.items, selection: selectedItemIDs) {
+        Table(viewModel.filteredItems, selection: selectedItemIDs) {
             TableColumn("Name") { item in
                 HStack(spacing: 6) {
                     Image(nsImage: fileIconService.icon(for: item))

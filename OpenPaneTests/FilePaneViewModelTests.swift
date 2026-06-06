@@ -20,6 +20,8 @@ struct FilePaneViewModelTests {
         #expect(viewModel.isLoading == false)
         #expect(viewModel.errorMessage == nil)
         #expect(viewModel.includeHiddenFiles == false)
+        #expect(viewModel.searchText == "")
+        #expect(viewModel.filteredItems.isEmpty)
     }
 
     @Test func loadCurrentDirectoryLoadsItems() async throws {
@@ -37,6 +39,56 @@ struct FilePaneViewModelTests {
         #expect(viewModel.items == [fileItem])
         #expect(viewModel.isLoading == false)
         #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func filteredItemsReturnsAllItemsWhenSearchTextIsEmpty() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let notesItem = try temporaryDirectory.createFileItem(named: "Notes.txt")
+        let imageItem = try temporaryDirectory.createFileItem(named: "Image.png")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [notesItem, imageItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+
+        #expect(viewModel.filteredItems == [notesItem, imageItem])
+    }
+
+    @Test func filteredItemsMatchesNamesCaseInsensitively() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let notesItem = try temporaryDirectory.createFileItem(named: "Meeting Notes.txt")
+        let imageItem = try temporaryDirectory.createFileItem(named: "Image.png")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [notesItem, imageItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+
+        #expect(viewModel.filteredItems == [notesItem])
+    }
+
+    @Test func filteredItemsTreatsWhitespaceOnlySearchAsEmpty() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let notesItem = try temporaryDirectory.createFileItem(named: "Notes.txt")
+        let imageItem = try temporaryDirectory.createFileItem(named: "Image.png")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [notesItem, imageItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "   "
+
+        #expect(viewModel.filteredItems == [notesItem, imageItem])
     }
 
     @Test func setDirectoryClearsSelectionAndLoadsNewItems() async throws {

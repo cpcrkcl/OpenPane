@@ -16,9 +16,22 @@ final class FilePaneViewModel: ObservableObject {
     @Published var isLoading: Bool
     @Published var errorMessage: String?
     @Published var includeHiddenFiles: Bool
+    @Published var searchText: String
 
     private let fileBrowserService: any FileBrowserServicing
     private let workspaceService: any WorkspaceServicing
+
+    var filteredItems: [FileItem] {
+        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedSearchText.isEmpty else {
+            return items
+        }
+
+        return items.filter { item in
+            item.name.localizedCaseInsensitiveContains(trimmedSearchText)
+        }
+    }
 
     init(
         currentURL: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -31,6 +44,7 @@ final class FilePaneViewModel: ObservableObject {
         self.isLoading = false
         self.errorMessage = nil
         self.includeHiddenFiles = false
+        self.searchText = ""
         self.fileBrowserService = fileBrowserService
         self.workspaceService = workspaceService
     }
