@@ -34,6 +34,31 @@ struct FileOperationServiceTests {
         #expect(movedContents == "move me")
     }
 
+    @Test func trashesItemsUsingTrashService() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "first")
+        let secondFile = try temporaryDirectory.createFile(named: "second.txt", contents: "second")
+        let trashService = MockTrashService()
+
+        try await FileOperationService(trashService: trashService).trash(items: [firstFile, secondFile])
+
+        #expect(trashService.trashedURLs == [firstFile.url, secondFile.url])
+    }
+
+    @Test func trashThrowsUserReadableErrorWhenTrashServiceFails() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "trash.txt", contents: "trash me")
+        let trashService = MockTrashService(error: NSError(
+            domain: "OpenPaneTests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Trash is unavailable"]
+        ))
+
+        await #expect(throws: FileOperationError.trashFailed(sourceFile.url, "Trash is unavailable")) {
+            try await FileOperationService(trashService: trashService).trash(items: [sourceFile])
+        }
+    }
+
     @Test func renamesFile() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let sourceFile = try temporaryDirectory.createFile(named: "old.txt", contents: "rename me")
@@ -80,6 +105,33 @@ struct FileOperationServiceTests {
 
         await #expect(throws: FileOperationError.emptyName) {
             try await FileOperationService().createFolder(named: "", in: temporaryDirectory.sourceURL)
+        }
+    }
+}
+
+private final class MockTrashService: TrashServicing, @unchecked Sendable {
+    private let error: Error?
+    private let lock = NSLock()
+    private var protectedTrashedURLs: [URL] = []
+
+    init(error: Error? = nil) {
+        self.error = error
+    }
+
+    var trashedURLs: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return protectedTrashedURLs
+    }
+
+    func trashItem(at url: URL) throws {
+        lock.lock()
+        protectedTrashedURLs.append(url)
+        lock.unlock()
+
+        if let error {
+            throw error
         }
     }
 }

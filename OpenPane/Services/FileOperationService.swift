@@ -11,6 +11,7 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
     case emptyName
     case destinationIsNotDirectory(URL)
     case destinationExists(URL)
+    case trashFailed(URL, String)
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +21,8 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
             return "\(url.path) is not a folder."
         case .destinationExists(let url):
             return "An item named \(url.lastPathComponent) already exists."
+        case .trashFailed(let url, let reason):
+            return "Could not move \(url.lastPathComponent) to Trash: \(reason)"
         }
     }
 }
@@ -27,11 +30,29 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
 nonisolated protocol FileOperationServicing: Sendable {
     nonisolated func copy(items: [FileItem], to destinationDirectory: URL) async throws
     nonisolated func move(items: [FileItem], to destinationDirectory: URL) async throws
+    nonisolated func trash(items: [FileItem]) async throws
     nonisolated func rename(item: FileItem, to newName: String) async throws -> URL
     nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL
 }
 
+nonisolated protocol TrashServicing: Sendable {
+    nonisolated func trashItem(at url: URL) throws
+}
+
+nonisolated struct FileManagerTrashService: TrashServicing {
+    nonisolated func trashItem(at url: URL) throws {
+        var resultingURL: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
+    }
+}
+
 nonisolated struct FileOperationService: FileOperationServicing {
+    private let trashService: any TrashServicing
+
+    nonisolated init(trashService: any TrashServicing = FileManagerTrashService()) {
+        self.trashService = trashService
+    }
+
     nonisolated func copy(items: [FileItem], to destinationDirectory: URL) async throws {
         try await Task.detached(priority: .userInitiated) {
             try Self.validateDirectory(destinationDirectory)
@@ -52,6 +73,20 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
                 try Self.validateDestinationDoesNotExist(destinationURL)
                 try FileManager.default.moveItem(at: item.url, to: destinationURL)
+            }
+        }.value
+    }
+
+    nonisolated func trash(items: [FileItem]) async throws {
+        let trashService = trashService
+
+        try await Task.detached(priority: .userInitiated) {
+            for item in items {
+                do {
+                    try trashService.trashItem(at: item.url)
+                } catch {
+                    throw FileOperationError.trashFailed(item.url, error.localizedDescription)
+                }
             }
         }.value
     }
