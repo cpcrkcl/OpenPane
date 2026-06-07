@@ -9,21 +9,35 @@ import Foundation
 
 enum FileOperationError: LocalizedError, Equatable, Sendable {
     case emptyName
+    case invalidName(String)
+    case sourceDoesNotExist(URL)
     case destinationIsNotDirectory(URL)
     case destinationExists(URL)
+    case operationFailed(String, URL, String)
     case trashFailed(URL, String)
 
     var errorDescription: String? {
         switch self {
         case .emptyName:
             return "Name cannot be empty."
+        case .invalidName(let name):
+            return "\(name) is not a valid name."
+        case .sourceDoesNotExist(let url):
+            return "\(Self.displayName(for: url)) could not be found."
         case .destinationIsNotDirectory(let url):
-            return "\(url.path) is not a folder."
+            return "\(Self.displayName(for: url)) is not a folder."
         case .destinationExists(let url):
-            return "An item named \(url.lastPathComponent) already exists."
+            return "An item named \(Self.displayName(for: url)) already exists."
+        case .operationFailed(let action, let url, let reason):
+            return "Could not \(action) \(Self.displayName(for: url)): \(reason)"
         case .trashFailed(let url, let reason):
-            return "Could not move \(url.lastPathComponent) to Trash: \(reason)"
+            return "Could not move \(Self.displayName(for: url)) to Trash: \(reason)"
         }
+    }
+
+    private static func displayName(for url: URL) -> String {
+        let name = url.lastPathComponent
+        return name.isEmpty ? url.path : name
     }
 }
 
@@ -58,9 +72,15 @@ nonisolated struct FileOperationService: FileOperationServicing {
             try Self.validateDirectory(destinationDirectory)
 
             for item in items {
+                try Self.validateSourceExists(item.url)
                 let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
                 try Self.validateDestinationDoesNotExist(destinationURL)
-                try FileManager.default.copyItem(at: item.url, to: destinationURL)
+
+                do {
+                    try FileManager.default.copyItem(at: item.url, to: destinationURL)
+                } catch {
+                    throw FileOperationError.operationFailed("copy", item.url, Self.userReadableReason(for: error))
+                }
             }
         }.value
     }
@@ -70,9 +90,15 @@ nonisolated struct FileOperationService: FileOperationServicing {
             try Self.validateDirectory(destinationDirectory)
 
             for item in items {
+                try Self.validateSourceExists(item.url)
                 let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
                 try Self.validateDestinationDoesNotExist(destinationURL)
-                try FileManager.default.moveItem(at: item.url, to: destinationURL)
+
+                do {
+                    try FileManager.default.moveItem(at: item.url, to: destinationURL)
+                } catch {
+                    throw FileOperationError.operationFailed("move", item.url, Self.userReadableReason(for: error))
+                }
             }
         }.value
     }
@@ -85,7 +111,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 do {
                     try trashService.trashItem(at: item.url)
                 } catch {
-                    throw FileOperationError.trashFailed(item.url, error.localizedDescription)
+                    throw FileOperationError.trashFailed(item.url, Self.userReadableReason(for: error))
                 }
             }
         }.value
@@ -94,12 +120,19 @@ nonisolated struct FileOperationService: FileOperationServicing {
     nonisolated func rename(item: FileItem, to newName: String) async throws -> URL {
         try await Task.detached(priority: .userInitiated) {
             let trimmedName = try Self.validateName(newName)
+            try Self.validateSourceExists(item.url)
+
             let destinationURL = item.url
                 .deletingLastPathComponent()
                 .appendingPathComponent(trimmedName, isDirectory: item.isDirectory)
 
             try Self.validateDestinationDoesNotExist(destinationURL)
-            try FileManager.default.moveItem(at: item.url, to: destinationURL)
+
+            do {
+                try FileManager.default.moveItem(at: item.url, to: destinationURL)
+            } catch {
+                throw FileOperationError.operationFailed("rename", item.url, Self.userReadableReason(for: error))
+            }
 
             return destinationURL
         }.value
@@ -112,7 +145,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
             let folderURL = directory.appendingPathComponent(trimmedName, isDirectory: true)
             try Self.validateDestinationDoesNotExist(folderURL)
-            try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: false)
+
+            do {
+                try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: false)
+            } catch {
+                throw FileOperationError.operationFailed("create folder", folderURL, Self.userReadableReason(for: error))
+            }
 
             return folderURL
         }.value
@@ -125,7 +163,17 @@ nonisolated struct FileOperationService: FileOperationServicing {
             throw FileOperationError.emptyName
         }
 
+        guard trimmedName.rangeOfCharacter(from: CharacterSet(charactersIn: "/:")) == nil else {
+            throw FileOperationError.invalidName(trimmedName)
+        }
+
         return trimmedName
+    }
+
+    private nonisolated static func validateSourceExists(_ url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw FileOperationError.sourceDoesNotExist(url)
+        }
     }
 
     private nonisolated static func validateDirectory(_ url: URL) throws {
@@ -141,5 +189,23 @@ nonisolated struct FileOperationService: FileOperationServicing {
         guard !FileManager.default.fileExists(atPath: url.path) else {
             throw FileOperationError.destinationExists(url)
         }
+    }
+
+    private nonisolated static func userReadableReason(for error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileWriteNoPermissionError {
+            return "Permission denied."
+        }
+
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError {
+            return "The item could not be found."
+        }
+
+        if let localizedError = error as? LocalizedError,
+           let description = localizedError.errorDescription {
+            return description
+        }
+
+        return "The operation could not be completed."
     }
 }

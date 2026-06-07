@@ -66,6 +66,26 @@ struct FileBrowserServiceTests {
 
         #expect(Set(items.map(\.name)) == Set([".hidden", "visible.txt"]))
     }
+
+    @Test func missingDirectoryThrowsReadableError() async throws {
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenPaneMissingDirectoryTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+        await #expect(throws: FileBrowserError.directoryNotFound(missingURL)) {
+            try await FileBrowserService().contentsOfDirectory(at: missingURL, includeHiddenFiles: false)
+        }
+    }
+
+    @Test func fileURLThrowsNotDirectoryError() async throws {
+        let temporaryDirectory = try ServiceTestTemporaryDirectory()
+        try temporaryDirectory.createFile(named: "notes.txt")
+        let fileURL = temporaryDirectory.url.appendingPathComponent("notes.txt")
+
+        await #expect(throws: FileBrowserError.notDirectory(fileURL)) {
+            try await FileBrowserService().contentsOfDirectory(at: fileURL, includeHiddenFiles: false)
+        }
+    }
 }
 
 private struct ServiceTestTemporaryDirectory {

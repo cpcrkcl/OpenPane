@@ -327,7 +327,39 @@ struct FilePaneViewModelTests {
 
         #expect(viewModel.items.isEmpty)
         #expect(viewModel.isLoading == false)
-        #expect(viewModel.errorMessage?.contains("Could not load") == true)
+        #expect(viewModel.errorMessage?.contains("could not be found") == true)
+    }
+
+    @Test func loadCurrentDirectoryShowsMissingDirectoryMessageAndResetsLoading() async throws {
+        let missingURL = URL(filePath: "/missing-folder", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: missingURL,
+            fileBrowserService: MockFileBrowserService(errorByURL: [
+                missingURL: FileBrowserError.directoryNotFound(missingURL)
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+
+        #expect(viewModel.items.isEmpty)
+        #expect(viewModel.isLoading == false)
+        #expect(viewModel.errorMessage == "missing-folder could not be found.")
+    }
+
+    @Test func loadCurrentDirectoryShowsPermissionDeniedMessageAndResetsLoading() async throws {
+        let protectedURL = URL(filePath: "/protected", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: protectedURL,
+            fileBrowserService: MockFileBrowserService(errorByURL: [
+                protectedURL: CocoaError(.fileReadNoPermission)
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+
+        #expect(viewModel.items.isEmpty)
+        #expect(viewModel.isLoading == false)
+        #expect(viewModel.errorMessage == "You do not have permission to open protected.")
     }
 }
 
@@ -357,8 +389,13 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
 nonisolated private struct MockFileBrowserService: FileBrowserServicing {
     var itemsByURL: [URL: [FileItem]] = [:]
     var errorURLs: Set<URL> = []
+    var errorByURL: [URL: any Error & Sendable] = [:]
 
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
+        if let error = errorByURL[url] {
+            throw error
+        }
+
         if errorURLs.contains(url) {
             throw CocoaError(.fileReadNoSuchFile)
         }

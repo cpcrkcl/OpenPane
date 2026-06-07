@@ -91,6 +91,16 @@ struct FileOperationServiceTests {
         }
     }
 
+    @Test func copyThrowsWhenSourceIsMissing() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let missingItem = try temporaryDirectory.createFile(named: "missing.txt", contents: "gone")
+        try FileManager.default.removeItem(at: missingItem.url)
+
+        await #expect(throws: FileOperationError.sourceDoesNotExist(missingItem.url)) {
+            try await FileOperationService().copy(items: [missingItem], to: temporaryDirectory.destinationURL)
+        }
+    }
+
     @Test func emptyRenameTargetThrows() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let sourceFile = try temporaryDirectory.createFile(named: "source.txt", contents: "source")
@@ -105,6 +115,14 @@ struct FileOperationServiceTests {
 
         await #expect(throws: FileOperationError.emptyName) {
             try await FileOperationService().createFolder(named: "", in: temporaryDirectory.sourceURL)
+        }
+    }
+
+    @Test func invalidFolderNameThrowsReadableError() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+
+        await #expect(throws: FileOperationError.invalidName("Bad/Name")) {
+            try await FileOperationService().createFolder(named: "Bad/Name", in: temporaryDirectory.sourceURL)
         }
     }
 }

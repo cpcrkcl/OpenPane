@@ -142,6 +142,26 @@ final class FilePaneViewModel: ObservableObject {
 
     private static func userReadableError(for error: Error, at url: URL) -> String {
         let directoryName = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
-        return "Could not load \(directoryName): \(error.localizedDescription)"
+
+        if let browserError = error as? FileBrowserError,
+           let description = browserError.errorDescription {
+            return description
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoPermissionError {
+            return "You do not have permission to open \(directoryName)."
+        }
+
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError {
+            return "\(directoryName) could not be found."
+        }
+
+        if let localizedError = error as? LocalizedError,
+           let description = localizedError.errorDescription {
+            return description
+        }
+
+        return "Could not load \(directoryName)."
     }
 }

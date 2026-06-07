@@ -158,12 +158,26 @@ final class DualPaneViewModel: ObservableObject {
     }
 
     private static func userReadableError(for error: Error) -> String {
+        if let operationError = error as? FileOperationError,
+           let description = operationError.errorDescription {
+            return description
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileWriteNoPermissionError {
+            return "Permission denied."
+        }
+
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError {
+            return "The item could not be found."
+        }
+
         if let localizedError = error as? LocalizedError,
            let description = localizedError.errorDescription {
             return description
         }
 
-        return error.localizedDescription
+        return "The operation could not be completed."
     }
 
     private static var defaultRightPaneURL: URL {
