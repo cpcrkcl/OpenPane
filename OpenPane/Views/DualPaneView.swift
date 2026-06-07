@@ -46,7 +46,7 @@ struct DualPaneView: View {
             toolbar
                 .padding(12)
 
-            Divider()
+            horizontalDivider
 
             HSplitView {
                 FilePaneView(
@@ -74,7 +74,7 @@ struct DualPaneView: View {
             .padding(10)
             .background(CatppuccinMochaTheme.appBackground)
 
-            Divider()
+            horizontalDivider
 
             statusBar
         }
@@ -150,6 +150,12 @@ struct DualPaneView: View {
         } message: {
             Text("One or more selected items already exist in the other pane.")
         }
+    }
+
+    private var horizontalDivider: some View {
+        Rectangle()
+            .fill(CatppuccinMochaTheme.surface0)
+            .frame(height: CatppuccinMochaTheme.hairlineBorderWidth)
     }
 
     private var toolbar: some View {
