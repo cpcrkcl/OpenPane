@@ -1,8 +1,55 @@
 # OpenPane
 
-OpenPane is a free, open-source, local-first macOS dual-pane file manager MVP.
+OpenPane is a local-first, open-source native macOS dual-pane file manager.
 
-The initial goal is a native Swift and SwiftUI app for browsing and managing local files on macOS. The MVP intentionally focuses on local files only, without SFTP, cloud storage, folder sync, or tabs.
+The MVP is focused on fast, practical local file browsing and basic file operations. It is inspired by classic dual-pane file managers, but intentionally keeps the first version simple: local files only, no cloud storage, no folder sync, no tabs, and no remote connections yet.
+
+## Current MVP Features
+
+- Dual-pane browsing
+- Local file browsing
+- Copy and move between panes
+- Rename
+- New folder
+- Move to Trash
+- Favorites sidebar
+- File icons
+- Filename filtering/search within the current folder
+- Quick Look preview
+
+## Safety
+
+OpenPane uses macOS Move to Trash for deletion-style actions. It does not permanently delete files.
+
+## Requirements
+
+- macOS 14+
+- Xcode
+- Swift
+- SwiftUI
+- XCTest / Swift Testing
+
+## Build And Run
+
+Open the project in Xcode:
+
+```sh
+open OpenPane.xcodeproj
+```
+
+Then select the OpenPane scheme and use Xcode's Build or Run button.
+
+You can also build from Terminal:
+
+```sh
+xcodebuild build -project OpenPane.xcodeproj -scheme OpenPane -destination 'platform=macOS'
+```
+
+Run tests from Terminal:
+
+```sh
+xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platform=macOS'
+```
 
 ## Project Structure
 
@@ -11,13 +58,6 @@ The initial goal is a native Swift and SwiftUI app for browsing and managing loc
 - `OpenPane/ViewModels`
 - `OpenPane/Views`
 - `OpenPane/Utilities`
-
-## Requirements
-
-- macOS 14+
-- Swift
-- SwiftUI
-- XCTest / Swift Testing
 
 ## Keyboard Shortcuts
 
@@ -29,3 +69,15 @@ The initial goal is a native Swift and SwiftUI app for browsing and managing loc
 - `Command-Shift-N`: New folder
 - `Return`: Rename selected item
 - `Command-Delete`: Move selection to Trash
+
+## Roadmap
+
+- Tabs
+- Better conflict handling
+- Recursive search
+- Batch rename
+- SFTP support later
+
+## License
+
+OpenPane is intended to be released as open source. A license file has not been added yet.
