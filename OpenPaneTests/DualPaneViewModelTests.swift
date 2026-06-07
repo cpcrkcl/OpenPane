@@ -309,9 +309,17 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
         }
     }
 
-    func copy(items: [FileItem], to destinationDirectory: URL) async throws {}
+    func copy(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) async throws {}
 
-    func move(items: [FileItem], to destinationDirectory: URL) async throws {}
+    func move(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) async throws {}
 
     func trash(items: [FileItem]) async throws {
         queue.sync {
@@ -354,9 +362,17 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
         return protectedMoveDestinationURL
     }
 
-    func copy(items: [FileItem], to destinationDirectory: URL) async throws {}
+    func copy(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) async throws {}
 
-    func move(items: [FileItem], to destinationDirectory: URL) async throws {
+    func move(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) async throws {
         await withCheckedContinuation { continuation in
             lock.lock()
             protectedMovedItems = items

@@ -71,7 +71,7 @@ final class DualPaneViewModel: ObservableObject {
         await rightPane.setDirectory(leftURL)
     }
 
-    func copySelectionToOtherPane() async {
+    func copySelectionToOtherPane(conflictResolution: FileConflictResolution = .cancel) async {
         let sourcePane = activePane
         let destinationPane = inactivePane
         let destinationURL = destinationPane.currentURL
@@ -85,12 +85,16 @@ final class DualPaneViewModel: ObservableObject {
             successMessage: "Copied \(Self.itemCountDescription(selectedItems)) to \(destinationURL.openPaneDisplayName).",
             failureMessage: "Copy failed."
         ) {
-            try await fileOperationService.copy(items: selectedItems, to: destinationURL)
+            try await fileOperationService.copy(
+                items: selectedItems,
+                to: destinationURL,
+                conflictResolution: conflictResolution
+            )
             await destinationPane.refresh()
         }
     }
 
-    func moveSelectionToOtherPane() async {
+    func moveSelectionToOtherPane(conflictResolution: FileConflictResolution = .cancel) async {
         let sourcePane = activePane
         let destinationPane = inactivePane
         let destinationURL = destinationPane.currentURL
@@ -104,7 +108,11 @@ final class DualPaneViewModel: ObservableObject {
             successMessage: "Moved \(Self.itemCountDescription(selectedItems)) to \(destinationURL.openPaneDisplayName).",
             failureMessage: "Move failed."
         ) {
-            try await fileOperationService.move(items: selectedItems, to: destinationURL)
+            try await fileOperationService.move(
+                items: selectedItems,
+                to: destinationURL,
+                conflictResolution: conflictResolution
+            )
             sourcePane.selectedItems = []
             await sourcePane.refresh()
             await destinationPane.refresh()

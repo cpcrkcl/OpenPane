@@ -15,6 +15,7 @@ struct DualPaneView: View {
     @State private var activeSheet: ActiveSheet?
     @State private var isShowingTrashConfirmation = false
     @State private var trashConfirmationItemCount = 0
+    @State private var pendingConflictOperation: PendingConflictOperation?
 
     private enum ActiveSheet: Identifiable {
         case newFolder
@@ -28,6 +29,11 @@ struct DualPaneView: View {
                 "rename"
             }
         }
+    }
+
+    private enum PendingConflictOperation {
+        case copy
+        case move
     }
 
     var body: some View {
@@ -99,6 +105,35 @@ struct DualPaneView: View {
         } message: {
             Text(trashConfirmationMessage)
         }
+        .confirmationDialog(
+            "File Already Exists",
+            isPresented: Binding {
+                pendingConflictOperation != nil
+            } set: { isPresented in
+                if !isPresented {
+                    pendingConflictOperation = nil
+                }
+            },
+            titleVisibility: .visible
+        ) {
+            Button("Keep Both") {
+                runPendingConflictOperation(with: .keepBoth)
+            }
+
+            Button("Replace", role: .destructive) {
+                runPendingConflictOperation(with: .replace)
+            }
+
+            Button("Skip") {
+                runPendingConflictOperation(with: .skip)
+            }
+
+            Button("Cancel", role: .cancel) {
+                pendingConflictOperation = nil
+            }
+        } message: {
+            Text("One or more selected items already exist in the other pane.")
+        }
     }
 
     private var toolbar: some View {
@@ -138,9 +173,7 @@ struct DualPaneView: View {
             .keyboardShortcut("r", modifiers: .command)
 
             Button {
-                Task {
-                    await viewModel.copySelectionToOtherPane()
-                }
+                prepareCopyToOtherPane()
             } label: {
                 Label("Copy to Other Pane", systemImage: "doc.on.doc")
             }
@@ -148,9 +181,7 @@ struct DualPaneView: View {
             .disabled(viewModel.isPerformingOperation)
 
             Button {
-                Task {
-                    await viewModel.moveSelectionToOtherPane()
-                }
+                prepareMoveToOtherPane()
             } label: {
                 Label("Move to Other Pane", systemImage: "folder.badge.arrow.right")
             }
@@ -334,5 +365,63 @@ struct DualPaneView: View {
 
         trashConfirmationItemCount = selectedItemCount
         isShowingTrashConfirmation = true
+    }
+
+    private func prepareCopyToOtherPane() {
+        guard !viewModel.isPerformingOperation else {
+            return
+        }
+
+        guard hasPotentialConflictInInactivePane else {
+            Task {
+                await viewModel.copySelectionToOtherPane()
+            }
+            return
+        }
+
+        pendingConflictOperation = .copy
+    }
+
+    private func prepareMoveToOtherPane() {
+        guard !viewModel.isPerformingOperation else {
+            return
+        }
+
+        guard hasPotentialConflictInInactivePane else {
+            Task {
+                await viewModel.moveSelectionToOtherPane()
+            }
+            return
+        }
+
+        pendingConflictOperation = .move
+    }
+
+    private func runPendingConflictOperation(with resolution: FileConflictResolution) {
+        guard let pendingConflictOperation else {
+            return
+        }
+
+        self.pendingConflictOperation = nil
+
+        Task {
+            switch pendingConflictOperation {
+            case .copy:
+                await viewModel.copySelectionToOtherPane(conflictResolution: resolution)
+            case .move:
+                await viewModel.moveSelectionToOtherPane(conflictResolution: resolution)
+            }
+        }
+    }
+
+    private var hasPotentialConflictInInactivePane: Bool {
+        let selectedItems = viewModel.activePane.selectedItems
+
+        guard !selectedItems.isEmpty else {
+            return false
+        }
+
+        let inactivePaneNames = Set(viewModel.inactivePane.items.map(\.name))
+        return selectedItems.contains { inactivePaneNames.contains($0.name) }
     }
 }

@@ -81,14 +81,100 @@ struct FileOperationServiceTests {
         #expect(isDirectory.boolValue)
     }
 
-    @Test func copyThrowsWhenDestinationExists() async throws {
+    @Test func copyCancelsWhenDestinationExistsByDefault() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let sourceFile = try temporaryDirectory.createFile(named: "duplicate.txt", contents: "source")
         _ = try temporaryDirectory.createDestinationFile(named: "duplicate.txt", contents: "existing")
 
-        await #expect(throws: FileOperationError.destinationExists(temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"))) {
+        await #expect(throws: FileOperationError.operationCancelled(temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"))) {
             try await FileOperationService().copy(items: [sourceFile], to: temporaryDirectory.destinationURL)
         }
+    }
+
+    @Test func copyKeepBothPreservesExtensionAndCreatesCopyName() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "file.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "file.txt", contents: "existing")
+
+        try await FileOperationService().copy(
+            items: [sourceFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .keepBoth
+        )
+
+        let existingContents = try String(
+            contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("file.txt"),
+            encoding: .utf8
+        )
+        let copiedContents = try String(
+            contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("file copy.txt"),
+            encoding: .utf8
+        )
+        #expect(existingContents == "existing")
+        #expect(copiedContents == "source")
+    }
+
+    @Test func copyKeepBothIncrementsCopyNameWhenCopyAlreadyExists() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "file.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "file.txt", contents: "existing")
+        _ = try temporaryDirectory.createDestinationFile(named: "file copy.txt", contents: "copy")
+
+        try await FileOperationService().copy(
+            items: [sourceFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .keepBoth
+        )
+
+        let copiedContents = try String(
+            contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("file copy 2.txt"),
+            encoding: .utf8
+        )
+        #expect(copiedContents == "source")
+    }
+
+    @Test func copySkipLeavesExistingDestinationAndContinues() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let duplicateFile = try temporaryDirectory.createFile(named: "duplicate.txt", contents: "source")
+        let otherFile = try temporaryDirectory.createFile(named: "other.txt", contents: "other")
+        _ = try temporaryDirectory.createDestinationFile(named: "duplicate.txt", contents: "existing")
+
+        try await FileOperationService().copy(
+            items: [duplicateFile, otherFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .skip
+        )
+
+        let duplicateContents = try String(
+            contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"),
+            encoding: .utf8
+        )
+        let otherContents = try String(
+            contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("other.txt"),
+            encoding: .utf8
+        )
+        #expect(duplicateContents == "existing")
+        #expect(otherContents == "other")
+    }
+
+    @Test func copyReplaceTrashesExistingDestinationAndCopiesSource() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "replace.txt", contents: "source")
+        let existingFile = try temporaryDirectory.createDestinationFile(named: "replace.txt", contents: "existing")
+        let trashService = RemovingTrashService()
+
+        try await FileOperationService(trashService: trashService).copy(
+            items: [sourceFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .replace
+        )
+
+        let replacedContents = try String(
+            contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("replace.txt"),
+            encoding: .utf8
+        )
+        #expect(replacedContents == "source")
+        #expect(trashService.trashedURLs == [existingFile.url])
     }
 
     @Test func copyPreflightsAllDestinationsBeforeCopying() async throws {
@@ -97,7 +183,7 @@ struct FileOperationServiceTests {
         let duplicateFile = try temporaryDirectory.createFile(named: "duplicate.txt", contents: "source")
         _ = try temporaryDirectory.createDestinationFile(named: "duplicate.txt", contents: "existing")
 
-        await #expect(throws: FileOperationError.destinationExists(temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"))) {
+        await #expect(throws: FileOperationError.operationCancelled(temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"))) {
             try await FileOperationService().copy(items: [firstFile, duplicateFile], to: temporaryDirectory.destinationURL)
         }
 
@@ -110,7 +196,7 @@ struct FileOperationServiceTests {
         let duplicateFile = try temporaryDirectory.createFile(named: "duplicate.txt", contents: "source")
         _ = try temporaryDirectory.createDestinationFile(named: "duplicate.txt", contents: "existing")
 
-        await #expect(throws: FileOperationError.destinationExists(temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"))) {
+        await #expect(throws: FileOperationError.operationCancelled(temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"))) {
             try await FileOperationService().move(items: [firstFile, duplicateFile], to: temporaryDirectory.destinationURL)
         }
 
@@ -186,6 +272,26 @@ private final class MockTrashService: TrashServicing, @unchecked Sendable {
         if let error {
             throw error
         }
+    }
+}
+
+private final class RemovingTrashService: TrashServicing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var protectedTrashedURLs: [URL] = []
+
+    var trashedURLs: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return protectedTrashedURLs
+    }
+
+    func trashItem(at url: URL) throws {
+        try FileManager.default.removeItem(at: url)
+
+        lock.lock()
+        protectedTrashedURLs.append(url)
+        lock.unlock()
     }
 }
 

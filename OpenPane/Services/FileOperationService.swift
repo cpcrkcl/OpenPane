@@ -7,12 +7,21 @@
 
 import Foundation
 
+enum FileConflictResolution: Equatable, Sendable {
+    case cancel
+    case skip
+    case replace
+    case keepBoth
+}
+
 enum FileOperationError: LocalizedError, Equatable, Sendable {
     case emptyName
     case invalidName(String)
     case sourceDoesNotExist(URL)
     case destinationIsNotDirectory(URL)
     case destinationExists(URL)
+    case operationCancelled(URL)
+    case cannotReplaceItemWithItself(URL)
     case operationFailed(String, URL, String)
     case trashFailed(URL, String)
 
@@ -28,6 +37,10 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
             return "\(Self.displayName(for: url)) is not a folder."
         case .destinationExists(let url):
             return "An item named \(Self.displayName(for: url)) already exists."
+        case .operationCancelled(let url):
+            return "Operation cancelled because an item named \(Self.displayName(for: url)) already exists."
+        case .cannotReplaceItemWithItself(let url):
+            return "Cannot replace \(Self.displayName(for: url)) with itself."
         case .operationFailed(let action, let url, let reason):
             return "Could not \(action) \(Self.displayName(for: url)): \(reason)"
         case .trashFailed(let url, let reason):
@@ -41,11 +54,31 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
 }
 
 nonisolated protocol FileOperationServicing: Sendable {
-    nonisolated func copy(items: [FileItem], to destinationDirectory: URL) async throws
-    nonisolated func move(items: [FileItem], to destinationDirectory: URL) async throws
+    nonisolated func copy(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) async throws
+
+    nonisolated func move(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) async throws
+
     nonisolated func trash(items: [FileItem]) async throws
     nonisolated func rename(item: FileItem, to newName: String) async throws -> URL
     nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL
+}
+
+extension FileOperationServicing {
+    nonisolated func copy(items: [FileItem], to destinationDirectory: URL) async throws {
+        try await copy(items: items, to: destinationDirectory, conflictResolution: .cancel)
+    }
+
+    nonisolated func move(items: [FileItem], to destinationDirectory: URL) async throws {
+        try await move(items: items, to: destinationDirectory, conflictResolution: .cancel)
+    }
 }
 
 nonisolated protocol TrashServicing: Sendable {
@@ -62,33 +95,75 @@ nonisolated struct FileManagerTrashService: TrashServicing {
 nonisolated struct FileOperationService: FileOperationServicing {
     private let trashService: any TrashServicing
 
+    private struct TransferPlan: Sendable {
+        let item: FileItem
+        let destinationURL: URL
+        let shouldReplaceExistingItem: Bool
+    }
+
     nonisolated init(trashService: any TrashServicing = FileManagerTrashService()) {
         self.trashService = trashService
     }
 
-    nonisolated func copy(items: [FileItem], to destinationDirectory: URL) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            let destinations = try Self.validateTransfer(items: items, to: destinationDirectory)
+    nonisolated func copy(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) async throws {
+        let trashService = trashService
 
-            for (item, destinationURL) in zip(items, destinations) {
+        try await Task.detached(priority: .userInitiated) {
+            let plans = try Self.transferPlans(
+                for: items,
+                to: destinationDirectory,
+                conflictResolution: conflictResolution
+            )
+
+            for plan in plans {
+                if plan.shouldReplaceExistingItem {
+                    do {
+                        try trashService.trashItem(at: plan.destinationURL)
+                    } catch {
+                        throw FileOperationError.trashFailed(plan.destinationURL, Self.userReadableReason(for: error))
+                    }
+                }
+
                 do {
-                    try FileManager.default.copyItem(at: item.url, to: destinationURL)
+                    try FileManager.default.copyItem(at: plan.item.url, to: plan.destinationURL)
                 } catch {
-                    throw FileOperationError.operationFailed("copy", item.url, Self.userReadableReason(for: error))
+                    throw FileOperationError.operationFailed("copy", plan.item.url, Self.userReadableReason(for: error))
                 }
             }
         }.value
     }
 
-    nonisolated func move(items: [FileItem], to destinationDirectory: URL) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            let destinations = try Self.validateTransfer(items: items, to: destinationDirectory)
+    nonisolated func move(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) async throws {
+        let trashService = trashService
 
-            for (item, destinationURL) in zip(items, destinations) {
+        try await Task.detached(priority: .userInitiated) {
+            let plans = try Self.transferPlans(
+                for: items,
+                to: destinationDirectory,
+                conflictResolution: conflictResolution
+            )
+
+            for plan in plans {
+                if plan.shouldReplaceExistingItem {
+                    do {
+                        try trashService.trashItem(at: plan.destinationURL)
+                    } catch {
+                        throw FileOperationError.trashFailed(plan.destinationURL, Self.userReadableReason(for: error))
+                    }
+                }
+
                 do {
-                    try FileManager.default.moveItem(at: item.url, to: destinationURL)
+                    try FileManager.default.moveItem(at: plan.item.url, to: plan.destinationURL)
                 } catch {
-                    throw FileOperationError.operationFailed("move", item.url, Self.userReadableReason(for: error))
+                    throw FileOperationError.operationFailed("move", plan.item.url, Self.userReadableReason(for: error))
                 }
             }
         }.value
@@ -165,18 +240,71 @@ nonisolated struct FileOperationService: FileOperationServicing {
         return trimmedName
     }
 
-    private nonisolated static func validateTransfer(items: [FileItem], to destinationDirectory: URL) throws -> [URL] {
+    private nonisolated static func transferPlans(
+        for items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution
+    ) throws -> [TransferPlan] {
         try validateDirectory(destinationDirectory)
         var destinationURLs: Set<URL> = []
 
-        return try items.map { item in
+        return try items.compactMap { item in
             try validateSourceExists(item.url)
             let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
-            guard destinationURLs.insert(destinationURL).inserted else {
-                throw FileOperationError.destinationExists(destinationURL)
+            let destinationIsReserved = destinationURLs.contains(destinationURL)
+            let destinationExists = FileManager.default.fileExists(atPath: destinationURL.path)
+
+            guard destinationExists || destinationIsReserved else {
+                destinationURLs.insert(destinationURL)
+                return TransferPlan(item: item, destinationURL: destinationURL, shouldReplaceExistingItem: false)
             }
-            try validateDestinationDoesNotExist(destinationURL)
-            return destinationURL
+
+            switch conflictResolution {
+            case .cancel:
+                throw FileOperationError.operationCancelled(destinationURL)
+            case .skip:
+                return nil
+            case .replace:
+                guard !destinationIsReserved else {
+                    throw FileOperationError.destinationExists(destinationURL)
+                }
+
+                guard item.url.standardizedFileURL != destinationURL.standardizedFileURL else {
+                    throw FileOperationError.cannotReplaceItemWithItself(destinationURL)
+                }
+
+                destinationURLs.insert(destinationURL)
+                return TransferPlan(item: item, destinationURL: destinationURL, shouldReplaceExistingItem: true)
+            case .keepBoth:
+                let uniqueDestinationURL = uniqueCopyURL(for: destinationURL, reservedURLs: destinationURLs)
+                destinationURLs.insert(uniqueDestinationURL)
+                return TransferPlan(item: item, destinationURL: uniqueDestinationURL, shouldReplaceExistingItem: false)
+            }
+        }
+    }
+
+    private nonisolated static func uniqueCopyURL(for url: URL, reservedURLs: Set<URL>) -> URL {
+        let directoryURL = url.deletingLastPathComponent()
+        let pathExtension = url.pathExtension
+        let baseName = pathExtension.isEmpty
+            ? url.lastPathComponent
+            : url.deletingPathExtension().lastPathComponent
+
+        var copyNumber = 1
+
+        while true {
+            let copySuffix = copyNumber == 1 ? " copy" : " copy \(copyNumber)"
+            let candidateName = "\(baseName)\(copySuffix)"
+            let candidateURL = pathExtension.isEmpty
+                ? directoryURL.appendingPathComponent(candidateName)
+                : directoryURL.appendingPathComponent(candidateName).appendingPathExtension(pathExtension)
+
+            if !reservedURLs.contains(candidateURL),
+               !FileManager.default.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
+
+            copyNumber += 1
         }
     }
 
