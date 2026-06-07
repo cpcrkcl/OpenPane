@@ -174,6 +174,32 @@ final class DualPaneViewModel: ObservableObject {
         }
     }
 
+    func batchRenameSelectedItems(baseName: String, startingNumber: Int) async {
+        let sourcePane = activePane
+        let selectedItems = Array(sourcePane.selectedItems)
+
+        guard selectedItems.count > 1 else {
+            errorMessage = "Select multiple items to batch rename."
+            operationStatusMessage = errorMessage
+            return
+        }
+
+        await performOperation(
+            statusMessage: "Renaming \(Self.itemCountDescription(selectedItems))...",
+            successMessage: "Renamed \(Self.itemCountDescription(selectedItems)).",
+            failureMessage: "Batch rename failed."
+        ) {
+            _ = try await fileOperationService.batchRename(
+                items: selectedItems,
+                baseName: baseName,
+                startingNumber: startingNumber,
+                preserveExtensions: true
+            )
+            sourcePane.selectedItems = []
+            await sourcePane.refresh()
+        }
+    }
+
     private func performOperation(
         statusMessage: String,
         successMessage: String,

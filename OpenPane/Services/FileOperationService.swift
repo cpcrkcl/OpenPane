@@ -22,6 +22,7 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
     case destinationExists(URL)
     case operationCancelled(URL)
     case cannotReplaceItemWithItself(URL)
+    case duplicateDestinationNames
     case operationFailed(String, URL, String)
     case trashFailed(URL, String)
 
@@ -41,6 +42,8 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
             return "Operation cancelled because an item named \(Self.displayName(for: url)) already exists."
         case .cannotReplaceItemWithItself(let url):
             return "Cannot replace \(Self.displayName(for: url)) with itself."
+        case .duplicateDestinationNames:
+            return "The rename pattern creates duplicate names."
         case .operationFailed(let action, let url, let reason):
             return "Could not \(action) \(Self.displayName(for: url)): \(reason)"
         case .trashFailed(let url, let reason):
@@ -68,6 +71,12 @@ nonisolated protocol FileOperationServicing: Sendable {
 
     nonisolated func trash(items: [FileItem]) async throws
     nonisolated func rename(item: FileItem, to newName: String) async throws -> URL
+    nonisolated func batchRename(
+        items: [FileItem],
+        baseName: String,
+        startingNumber: Int,
+        preserveExtensions: Bool
+    ) async throws -> [URL]
     nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL
 }
 
@@ -99,6 +108,11 @@ nonisolated struct FileOperationService: FileOperationServicing {
         let item: FileItem
         let destinationURL: URL
         let shouldReplaceExistingItem: Bool
+    }
+
+    private struct RenamePlan: Sendable {
+        let item: FileItem
+        let destinationURL: URL
     }
 
     nonisolated init(trashService: any TrashServicing = FileManagerTrashService()) {
@@ -204,6 +218,50 @@ nonisolated struct FileOperationService: FileOperationServicing {
         }.value
     }
 
+    nonisolated func batchRename(
+        items: [FileItem],
+        baseName: String,
+        startingNumber: Int,
+        preserveExtensions: Bool = true
+    ) async throws -> [URL] {
+        try await Task.detached(priority: .userInitiated) {
+            let plans = try Self.batchRenamePlans(
+                for: items,
+                baseName: baseName,
+                startingNumber: startingNumber,
+                preserveExtensions: preserveExtensions
+            )
+
+            for plan in plans {
+                do {
+                    try FileManager.default.moveItem(at: plan.item.url, to: plan.destinationURL)
+                } catch {
+                    throw FileOperationError.operationFailed("rename", plan.item.url, Self.userReadableReason(for: error))
+                }
+            }
+
+            return plans.map(\.destinationURL)
+        }.value
+    }
+
+    nonisolated static func batchRenamePreviewNames(
+        for items: [FileItem],
+        baseName: String,
+        startingNumber: Int,
+        preserveExtensions: Bool = true
+    ) throws -> [String] {
+        let trimmedBaseName = try validateName(baseName)
+
+        return sortedForBatchRename(items).enumerated().map { index, item in
+            batchRenameName(
+                for: item,
+                baseName: trimmedBaseName,
+                number: startingNumber + index,
+                preserveExtension: preserveExtensions
+            )
+        }
+    }
+
     nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL {
         try await Task.detached(priority: .userInitiated) {
             let trimmedName = try Self.validateName(name)
@@ -281,6 +339,73 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 return TransferPlan(item: item, destinationURL: uniqueDestinationURL, shouldReplaceExistingItem: false)
             }
         }
+    }
+
+    private nonisolated static func batchRenamePlans(
+        for items: [FileItem],
+        baseName: String,
+        startingNumber: Int,
+        preserveExtensions: Bool
+    ) throws -> [RenamePlan] {
+        let previewNames = try batchRenamePreviewNames(
+            for: items,
+            baseName: baseName,
+            startingNumber: startingNumber,
+            preserveExtensions: preserveExtensions
+        )
+        var destinationURLs: Set<URL> = []
+        var sourceURLs = Set(items.map { $0.url.standardizedFileURL })
+        let sortedItems = sortedForBatchRename(items)
+
+        guard Set(previewNames).count == previewNames.count else {
+            throw FileOperationError.duplicateDestinationNames
+        }
+
+        return try zip(sortedItems, previewNames).map { item, newName in
+            _ = try validateName(newName)
+            try validateSourceExists(item.url)
+
+            let destinationURL = item.url
+                .deletingLastPathComponent()
+                .appendingPathComponent(newName, isDirectory: item.isDirectory)
+            let standardizedDestinationURL = destinationURL.standardizedFileURL
+
+            guard destinationURLs.insert(standardizedDestinationURL).inserted else {
+                throw FileOperationError.duplicateDestinationNames
+            }
+
+            if standardizedDestinationURL != item.url.standardizedFileURL,
+               FileManager.default.fileExists(atPath: destinationURL.path),
+               !sourceURLs.contains(standardizedDestinationURL) {
+                throw FileOperationError.destinationExists(destinationURL)
+            }
+
+            sourceURLs.remove(item.url.standardizedFileURL)
+            return RenamePlan(item: item, destinationURL: destinationURL)
+        }
+    }
+
+    private nonisolated static func sortedForBatchRename(_ items: [FileItem]) -> [FileItem] {
+        items.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private nonisolated static func batchRenameName(
+        for item: FileItem,
+        baseName: String,
+        number: Int,
+        preserveExtension: Bool
+    ) -> String {
+        let numberedBaseName = "\(baseName) \(number)"
+
+        guard preserveExtension,
+              !item.isDirectory,
+              !item.url.pathExtension.isEmpty else {
+            return numberedBaseName
+        }
+
+        return "\(numberedBaseName).\(item.url.pathExtension)"
     }
 
     private nonisolated static func uniqueCopyURL(for url: URL, reservedURLs: Set<URL>) -> URL {

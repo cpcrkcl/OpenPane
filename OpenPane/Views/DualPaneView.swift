@@ -12,6 +12,8 @@ struct DualPaneView: View {
 
     @State private var newFolderName = "Untitled Folder"
     @State private var renameItemName = ""
+    @State private var batchRenameBaseName = "Item"
+    @State private var batchRenameStartingNumber = 1
     @State private var activeSheet: ActiveSheet?
     @State private var isShowingTrashConfirmation = false
     @State private var trashConfirmationItemCount = 0
@@ -20,6 +22,7 @@ struct DualPaneView: View {
     private enum ActiveSheet: Identifiable {
         case newFolder
         case rename
+        case batchRename
 
         var id: String {
             switch self {
@@ -27,6 +30,8 @@ struct DualPaneView: View {
                 "newFolder"
             case .rename:
                 "rename"
+            case .batchRename:
+                "batchRename"
             }
         }
     }
@@ -87,6 +92,8 @@ struct DualPaneView: View {
                 newFolderSheet
             case .rename:
                 renameSheet
+            case .batchRename:
+                batchRenameSheet
             }
         }
         .confirmationDialog(
@@ -329,7 +336,14 @@ struct DualPaneView: View {
 
         let selectedItems = Array(viewModel.activePane.selectedItems)
 
-        guard selectedItems.count == 1, let selectedItem = selectedItems.first else {
+        if selectedItems.count > 1 {
+            batchRenameBaseName = "Item"
+            batchRenameStartingNumber = 1
+            activeSheet = .batchRename
+            return
+        }
+
+        guard let selectedItem = selectedItems.first else {
             Task {
                 await viewModel.renameSelectedItem(to: "")
             }
@@ -346,6 +360,76 @@ struct DualPaneView: View {
 
         Task {
             await viewModel.renameSelectedItem(to: newName)
+        }
+    }
+
+    private var batchRenameSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Batch Rename")
+                .font(.headline)
+
+            TextField("Base name", text: $batchRenameBaseName)
+                .textFieldStyle(.roundedBorder)
+
+            Stepper(value: $batchRenameStartingNumber, in: 0...999_999) {
+                Text("Start at \(batchRenameStartingNumber)")
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Preview")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                ForEach(batchRenamePreviewNames.prefix(5), id: \.self) { name in
+                    Text(name)
+                        .lineLimit(1)
+                        .font(.caption)
+                }
+
+                if batchRenamePreviewNames.count > 5 {
+                    Text("+ \(batchRenamePreviewNames.count - 5) more")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    activeSheet = nil
+                }
+
+                Button("Rename") {
+                    batchRenameFromSheet()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(
+                    viewModel.isPerformingOperation ||
+                        batchRenameBaseName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
+
+    private var batchRenamePreviewNames: [String] {
+        (try? FileOperationService.batchRenamePreviewNames(
+            for: Array(viewModel.activePane.selectedItems),
+            baseName: batchRenameBaseName,
+            startingNumber: batchRenameStartingNumber,
+            preserveExtensions: true
+        )) ?? []
+    }
+
+    private func batchRenameFromSheet() {
+        let baseName = batchRenameBaseName
+        let startingNumber = batchRenameStartingNumber
+        activeSheet = nil
+
+        Task {
+            await viewModel.batchRenameSelectedItems(baseName: baseName, startingNumber: startingNumber)
         }
     }
 

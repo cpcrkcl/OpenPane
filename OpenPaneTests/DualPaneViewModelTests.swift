@@ -286,6 +286,35 @@ struct DualPaneViewModelTests {
         #expect(viewModel.isPerformingOperation == false)
         #expect(viewModel.operationStatusMessage == "Renamed Original.txt.")
     }
+
+    @Test func batchRenameSelectedItemsShowsErrorWhenLessThanTwoItemsAreSelected() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await viewModel.batchRenameSelectedItems(baseName: "Photo", startingNumber: 1)
+
+        #expect(viewModel.errorMessage == "Select multiple items to batch rename.")
+        #expect(viewModel.operationStatusMessage == "Select multiple items to batch rename.")
+    }
+
+    @Test func batchRenameSelectedItemsRenamesFilesRefreshesActivePaneAndClearsSelection() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createSourceFile(named: "IMG_1.jpg", contents: "one")
+        let secondItem = try temporaryDirectory.createSourceFile(named: "IMG_2.jpg", contents: "two")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: FileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        leftPane.selectedItems = [firstItem, secondItem]
+
+        await viewModel.batchRenameSelectedItems(baseName: "Photo", startingNumber: 1)
+
+        #expect(FileManager.default.fileExists(atPath: temporaryDirectory.sourceURL.appendingPathComponent("Photo 1.jpg").path))
+        #expect(FileManager.default.fileExists(atPath: temporaryDirectory.sourceURL.appendingPathComponent("Photo 2.jpg").path))
+        #expect(leftPane.selectedItems.isEmpty)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.operationStatusMessage == "Renamed 2 items.")
+    }
 }
 
 nonisolated private struct EmptyFileBrowserService: FileBrowserServicing {
@@ -333,6 +362,15 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
 
     func rename(item: FileItem, to newName: String) async throws -> URL {
         item.url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: item.isDirectory)
+    }
+
+    func batchRename(
+        items: [FileItem],
+        baseName: String,
+        startingNumber: Int,
+        preserveExtensions: Bool
+    ) async throws -> [URL] {
+        []
     }
 
     func createFolder(named name: String, in directory: URL) async throws -> URL {
@@ -391,6 +429,15 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
 
     func rename(item: FileItem, to newName: String) async throws -> URL {
         item.url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: item.isDirectory)
+    }
+
+    func batchRename(
+        items: [FileItem],
+        baseName: String,
+        startingNumber: Int,
+        preserveExtensions: Bool
+    ) async throws -> [URL] {
+        []
     }
 
     func createFolder(named name: String, in directory: URL) async throws -> URL {
