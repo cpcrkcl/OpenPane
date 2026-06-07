@@ -24,6 +24,10 @@ struct FilePaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            tabBar
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+
             toolbar
                 .padding(12)
 
@@ -61,6 +65,51 @@ struct FilePaneView: View {
         .overlay {
             Rectangle()
                 .stroke(isActive ? Color.accentColor.opacity(0.7) : Color.gray.opacity(0.25), lineWidth: isActive ? 2 : 1)
+        }
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(viewModel.tabs) { tab in
+                HStack(spacing: 4) {
+                    Button {
+                        Task {
+                            await viewModel.switchToTab(tab.id)
+                        }
+                    } label: {
+                        Text(tab.title)
+                            .lineLimit(1)
+                            .frame(maxWidth: 140)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(tab.id == viewModel.activeTabID ? .accentColor : nil)
+
+                    Button {
+                        Task {
+                            await viewModel.closeTab(tab.id)
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .controlSize(.small)
+                    .disabled(viewModel.tabs.count == 1)
+                }
+                .padding(.trailing, 2)
+            }
+
+            Button {
+                Task {
+                    await viewModel.newTab()
+                }
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Spacer()
         }
     }
 

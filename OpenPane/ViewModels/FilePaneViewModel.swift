@@ -10,9 +10,32 @@ import Foundation
 
 @MainActor
 final class FilePaneViewModel: ObservableObject {
-    @Published var currentURL: URL
-    @Published var items: [FileItem]
-    @Published var selectedItems: Set<FileItem>
+    @Published var currentURL: URL {
+        didSet {
+            updateActiveTab { tab in
+                tab.currentURL = currentURL
+            }
+        }
+    }
+
+    @Published var items: [FileItem] {
+        didSet {
+            updateActiveTab { tab in
+                tab.items = items
+            }
+        }
+    }
+
+    @Published var selectedItems: Set<FileItem> {
+        didSet {
+            updateActiveTab { tab in
+                tab.selectedItems = selectedItems
+            }
+        }
+    }
+
+    @Published var tabs: [FilePaneTab]
+    @Published var activeTabID: FilePaneTab.ID
     @Published var isLoading: Bool
     @Published var errorMessage: String?
     @Published var includeHiddenFiles: Bool
@@ -51,6 +74,9 @@ final class FilePaneViewModel: ObservableObject {
         self.currentURL = currentURL
         self.items = []
         self.selectedItems = []
+        let initialTab = FilePaneTab(currentURL: currentURL)
+        self.tabs = [initialTab]
+        self.activeTabID = initialTab.id
         self.isLoading = false
         self.errorMessage = nil
         self.includeHiddenFiles = false
@@ -84,6 +110,49 @@ final class FilePaneViewModel: ObservableObject {
 
     func refresh() async {
         await loadCurrentDirectory()
+    }
+
+    func newTab() async {
+        saveActiveTabState()
+        let tab = FilePaneTab(currentURL: currentURL)
+        tabs.append(tab)
+        applyTab(tab)
+        await loadCurrentDirectory()
+    }
+
+    func closeTab(_ id: FilePaneTab.ID) async {
+        guard tabs.count > 1,
+              let closingIndex = tabs.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let isClosingActiveTab = id == activeTabID
+        tabs.remove(at: closingIndex)
+
+        guard isClosingActiveTab else {
+            return
+        }
+
+        let nextIndex = min(closingIndex, tabs.count - 1)
+        applyTab(tabs[nextIndex])
+
+        if items.isEmpty {
+            await loadCurrentDirectory()
+        }
+    }
+
+    func switchToTab(_ id: FilePaneTab.ID) async {
+        guard id != activeTabID,
+              let tab = tabs.first(where: { $0.id == id }) else {
+            return
+        }
+
+        saveActiveTabState()
+        applyTab(tab)
+
+        if items.isEmpty {
+            await loadCurrentDirectory()
+        }
     }
 
     func performRecursiveSearch(limit: Int = FileSearchService.defaultLimit) async {
@@ -187,6 +256,32 @@ final class FilePaneViewModel: ObservableObject {
         selectedItems = []
         clearRecursiveSearch()
         await loadCurrentDirectory()
+    }
+
+    private func applyTab(_ tab: FilePaneTab) {
+        activeTabID = tab.id
+        recursiveSearchResults = []
+        isShowingRecursiveSearchResults = false
+        errorMessage = nil
+        currentURL = tab.currentURL
+        items = tab.items
+        selectedItems = tab.selectedItems
+    }
+
+    private func saveActiveTabState() {
+        updateActiveTab { tab in
+            tab.currentURL = currentURL
+            tab.items = items
+            tab.selectedItems = selectedItems
+        }
+    }
+
+    private func updateActiveTab(_ update: (inout FilePaneTab) -> Void) {
+        guard let index = tabs.firstIndex(where: { $0.id == activeTabID }) else {
+            return
+        }
+
+        update(&tabs[index])
     }
 
     private static func userReadableError(for error: Error, at url: URL) -> String {

@@ -21,9 +21,100 @@ struct FilePaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
         #expect(viewModel.includeHiddenFiles == false)
         #expect(viewModel.searchText == "")
+        #expect(viewModel.tabs.count == 1)
+        #expect(viewModel.tabs.first?.currentURL == viewModel.currentURL)
+        #expect(viewModel.activeTabID == viewModel.tabs.first?.id)
         #expect(viewModel.recursiveSearchResults.isEmpty)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
         #expect(viewModel.filteredItems.isEmpty)
+    }
+
+    @Test func newTabCreatesTabAtCurrentDirectory() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fileItem = try temporaryDirectory.createFileItem(named: "notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [fileItem]
+            ])
+        )
+
+        await viewModel.newTab()
+
+        #expect(viewModel.tabs.count == 2)
+        #expect(viewModel.currentURL == temporaryDirectory.url)
+        #expect(viewModel.items == [fileItem])
+        #expect(viewModel.selectedItems.isEmpty)
+        #expect(viewModel.tabs.last?.id == viewModel.activeTabID)
+    }
+
+    @Test func switchToTabPreservesCurrentURLItemsAndSelectionPerTab() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let rootItem = try temporaryDirectory.createFileItem(named: "root.txt")
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let childItem = try temporaryDirectory.createFileItem(named: "Child/child.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [rootItem, childDirectory],
+                childDirectory.url: [childItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.selectedItems = [rootItem]
+        let firstTabID = viewModel.activeTabID
+
+        await viewModel.newTab()
+        let secondTabID = viewModel.activeTabID
+        await viewModel.setDirectory(childDirectory.url)
+        viewModel.selectedItems = [childItem]
+
+        await viewModel.switchToTab(firstTabID)
+
+        #expect(viewModel.currentURL == temporaryDirectory.url)
+        #expect(viewModel.items == [rootItem, childDirectory])
+        #expect(viewModel.selectedItems == [rootItem])
+
+        await viewModel.switchToTab(secondTabID)
+
+        #expect(viewModel.currentURL == childDirectory.url)
+        #expect(viewModel.items == [childItem])
+        #expect(viewModel.selectedItems == [childItem])
+    }
+
+    @Test func closeActiveTabSwitchesToRemainingTab() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fileItem = try temporaryDirectory.createFileItem(named: "notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [fileItem]
+            ])
+        )
+        let firstTabID = viewModel.activeTabID
+        await viewModel.newTab()
+        let secondTabID = viewModel.activeTabID
+
+        await viewModel.closeTab(secondTabID)
+
+        #expect(viewModel.tabs.count == 1)
+        #expect(viewModel.activeTabID == firstTabID)
+        #expect(viewModel.currentURL == temporaryDirectory.url)
+    }
+
+    @Test func closeOnlyTabDoesNothing() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService()
+        )
+        let tabID = viewModel.activeTabID
+
+        await viewModel.closeTab(tabID)
+
+        #expect(viewModel.tabs.count == 1)
+        #expect(viewModel.activeTabID == tabID)
     }
 
     @Test func loadCurrentDirectoryLoadsItems() async throws {
