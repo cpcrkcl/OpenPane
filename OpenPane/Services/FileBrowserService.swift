@@ -27,8 +27,7 @@ enum FileBrowserError: LocalizedError, Equatable, Sendable {
     }
 
     private static func displayName(for url: URL) -> String {
-        let name = url.lastPathComponent
-        return name.isEmpty ? url.path : name
+        url.openPaneDisplayName
     }
 }
 

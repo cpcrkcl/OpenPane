@@ -112,6 +112,36 @@ struct DualPaneViewModelTests {
         #expect(viewModel.operationStatusMessage == "Moved 1 item to Destination.")
     }
 
+    @Test func moveSelectionUpdatesOriginalActivePaneWhenFocusChangesDuringOperation() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "move.txt", contents: "move me")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = SuspendingMoveFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+        leftPane.items = [sourceItem]
+        leftPane.selectedItems = [sourceItem]
+
+        let operationTask = Task {
+            await viewModel.moveSelectionToOtherPane()
+        }
+
+        await fileOperationService.waitForMoveToStart()
+        viewModel.setActivePane(.right)
+        fileOperationService.resumeMove()
+        await operationTask.value
+
+        #expect(viewModel.activePaneSide == .right)
+        #expect(leftPane.selectedItems.isEmpty)
+        #expect(rightPane.selectedItems.isEmpty)
+        #expect(fileOperationService.movedItems == [sourceItem])
+        #expect(fileOperationService.moveDestinationURL == temporaryDirectory.destinationURL)
+    }
+
     @Test func trashSelectionInActivePaneShowsErrorWhenNothingIsSelected() async {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
@@ -299,6 +329,78 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
 
     func createFolder(named name: String, in directory: URL) async throws -> URL {
         directory.appendingPathComponent(name, isDirectory: true)
+    }
+}
+
+private final class SuspendingMoveFileOperationService: FileOperationServicing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var didStartMove = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resumeMoveContinuation: CheckedContinuation<Void, Never>?
+    private var protectedMovedItems: [FileItem] = []
+    private var protectedMoveDestinationURL: URL?
+
+    var movedItems: [FileItem] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return protectedMovedItems
+    }
+
+    var moveDestinationURL: URL? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return protectedMoveDestinationURL
+    }
+
+    func copy(items: [FileItem], to destinationDirectory: URL) async throws {}
+
+    func move(items: [FileItem], to destinationDirectory: URL) async throws {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            protectedMovedItems = items
+            protectedMoveDestinationURL = destinationDirectory
+            resumeMoveContinuation = continuation
+            didStartMove = true
+            let waiters = startWaiters
+            startWaiters = []
+            lock.unlock()
+
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func trash(items: [FileItem]) async throws {}
+
+    func rename(item: FileItem, to newName: String) async throws -> URL {
+        item.url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: item.isDirectory)
+    }
+
+    func createFolder(named name: String, in directory: URL) async throws -> URL {
+        directory.appendingPathComponent(name, isDirectory: true)
+    }
+
+    func waitForMoveToStart() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if didStartMove {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                startWaiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func resumeMove() {
+        lock.lock()
+        let continuation = resumeMoveContinuation
+        resumeMoveContinuation = nil
+        lock.unlock()
+
+        continuation?.resume()
     }
 }
 

@@ -141,7 +141,7 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private static func userReadableError(for error: Error, at url: URL) -> String {
-        let directoryName = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+        let directoryName = url.openPaneDisplayName
 
         if let browserError = error as? FileBrowserError,
            let description = browserError.errorDescription {

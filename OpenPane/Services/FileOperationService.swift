@@ -36,8 +36,7 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
     }
 
     private static func displayName(for url: URL) -> String {
-        let name = url.lastPathComponent
-        return name.isEmpty ? url.path : name
+        url.openPaneDisplayName
     }
 }
 
@@ -69,13 +68,9 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
     nonisolated func copy(items: [FileItem], to destinationDirectory: URL) async throws {
         try await Task.detached(priority: .userInitiated) {
-            try Self.validateDirectory(destinationDirectory)
+            let destinations = try Self.validateTransfer(items: items, to: destinationDirectory)
 
-            for item in items {
-                try Self.validateSourceExists(item.url)
-                let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
-                try Self.validateDestinationDoesNotExist(destinationURL)
-
+            for (item, destinationURL) in zip(items, destinations) {
                 do {
                     try FileManager.default.copyItem(at: item.url, to: destinationURL)
                 } catch {
@@ -87,13 +82,9 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
     nonisolated func move(items: [FileItem], to destinationDirectory: URL) async throws {
         try await Task.detached(priority: .userInitiated) {
-            try Self.validateDirectory(destinationDirectory)
+            let destinations = try Self.validateTransfer(items: items, to: destinationDirectory)
 
-            for item in items {
-                try Self.validateSourceExists(item.url)
-                let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
-                try Self.validateDestinationDoesNotExist(destinationURL)
-
+            for (item, destinationURL) in zip(items, destinations) {
                 do {
                     try FileManager.default.moveItem(at: item.url, to: destinationURL)
                 } catch {
@@ -167,7 +158,26 @@ nonisolated struct FileOperationService: FileOperationServicing {
             throw FileOperationError.invalidName(trimmedName)
         }
 
+        guard trimmedName != "." && trimmedName != ".." else {
+            throw FileOperationError.invalidName(trimmedName)
+        }
+
         return trimmedName
+    }
+
+    private nonisolated static func validateTransfer(items: [FileItem], to destinationDirectory: URL) throws -> [URL] {
+        try validateDirectory(destinationDirectory)
+        var destinationURLs: Set<URL> = []
+
+        return try items.map { item in
+            try validateSourceExists(item.url)
+            let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
+            guard destinationURLs.insert(destinationURL).inserted else {
+                throw FileOperationError.destinationExists(destinationURL)
+            }
+            try validateDestinationDoesNotExist(destinationURL)
+            return destinationURL
+        }
     }
 
     private nonisolated static func validateSourceExists(_ url: URL) throws {

@@ -91,6 +91,33 @@ struct FileOperationServiceTests {
         }
     }
 
+    @Test func copyPreflightsAllDestinationsBeforeCopying() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "first")
+        let duplicateFile = try temporaryDirectory.createFile(named: "duplicate.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "duplicate.txt", contents: "existing")
+
+        await #expect(throws: FileOperationError.destinationExists(temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"))) {
+            try await FileOperationService().copy(items: [firstFile, duplicateFile], to: temporaryDirectory.destinationURL)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: temporaryDirectory.destinationURL.appendingPathComponent("first.txt").path))
+    }
+
+    @Test func movePreflightsAllDestinationsBeforeMoving() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "first")
+        let duplicateFile = try temporaryDirectory.createFile(named: "duplicate.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "duplicate.txt", contents: "existing")
+
+        await #expect(throws: FileOperationError.destinationExists(temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt"))) {
+            try await FileOperationService().move(items: [firstFile, duplicateFile], to: temporaryDirectory.destinationURL)
+        }
+
+        #expect(FileManager.default.fileExists(atPath: firstFile.url.path))
+        #expect(!FileManager.default.fileExists(atPath: temporaryDirectory.destinationURL.appendingPathComponent("first.txt").path))
+    }
+
     @Test func copyThrowsWhenSourceIsMissing() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let missingItem = try temporaryDirectory.createFile(named: "missing.txt", contents: "gone")
@@ -123,6 +150,14 @@ struct FileOperationServiceTests {
 
         await #expect(throws: FileOperationError.invalidName("Bad/Name")) {
             try await FileOperationService().createFolder(named: "Bad/Name", in: temporaryDirectory.sourceURL)
+        }
+    }
+
+    @Test func dotFolderNamesThrowReadableError() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+
+        await #expect(throws: FileOperationError.invalidName("..")) {
+            try await FileOperationService().createFolder(named: "..", in: temporaryDirectory.sourceURL)
         }
     }
 }

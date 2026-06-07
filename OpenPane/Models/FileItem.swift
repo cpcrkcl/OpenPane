@@ -35,7 +35,7 @@ nonisolated struct FileItem: Identifiable, Hashable, Sendable {
 
         self.id = url
         self.url = url
-        self.name = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+        self.name = url.openPaneDisplayName
         self.isDirectory = isDirectory
         self.size = isDirectory ? nil : Self.fileSize(from: resourceValues)
         self.modifiedDate = resourceValues.contentModificationDate
