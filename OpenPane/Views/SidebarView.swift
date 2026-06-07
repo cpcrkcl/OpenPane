@@ -15,7 +15,7 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Favorites")
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(CatppuccinMochaTheme.secondaryText)
                 .padding(.horizontal, 12)
                 .padding(.top, 12)
 
@@ -26,6 +26,7 @@ struct SidebarView: View {
                     Label(location.name, systemImage: location.systemImage)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .foregroundStyle(CatppuccinMochaTheme.primaryText)
                 .buttonStyle(.plain)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -35,6 +36,6 @@ struct SidebarView: View {
             Spacer()
         }
         .frame(minWidth: 160, idealWidth: 180, maxWidth: 220)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CatppuccinMochaTheme.sidebarBackground)
     }
 }

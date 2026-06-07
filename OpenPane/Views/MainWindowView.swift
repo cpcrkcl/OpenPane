@@ -23,6 +23,8 @@ struct MainWindowView: View {
 
             DualPaneView(viewModel: dualPaneViewModel)
         }
-            .frame(minWidth: 1100, minHeight: 620)
+        .background(CatppuccinMochaTheme.windowBackground)
+        .preferredColorScheme(.dark)
+        .frame(minWidth: 1100, minHeight: 620)
     }
 }

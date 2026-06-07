@@ -14,6 +14,8 @@ struct FilePaneView: View {
     var onActivate: () -> Void = {}
     var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide) -> Void = { _, _, _ in }
 
+    @State private var isTabDropTargeted = false
+
     private let fileIconService = FileIconService.shared
 
     private var selectedItemIDs: Binding<Set<FileItem.ID>> {
@@ -35,7 +37,7 @@ struct FilePaneView: View {
 
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(CatppuccinMochaTheme.destructive)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
@@ -50,6 +52,8 @@ struct FilePaneView: View {
                 }
             }
         }
+        .background(CatppuccinMochaTheme.paneBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge))
         .task {
             await viewModel.loadCurrentDirectory()
         }
@@ -61,12 +65,15 @@ struct FilePaneView: View {
         )
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(isActive ? Color.accentColor : Color.clear)
+                .fill(isActive ? CatppuccinMochaTheme.accent : Color.clear)
                 .frame(height: 3)
         }
         .overlay {
-            Rectangle()
-                .stroke(isActive ? Color.accentColor.opacity(0.7) : Color.gray.opacity(0.25), lineWidth: isActive ? 2 : 1)
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+                .stroke(
+                    isActive ? CatppuccinMochaTheme.activePaneBorder : CatppuccinMochaTheme.inactivePaneBorder.opacity(0.7),
+                    lineWidth: isActive ? CatppuccinMochaTheme.paneBorderWidth : CatppuccinMochaTheme.hairlineBorderWidth
+                )
         }
     }
 
@@ -88,16 +95,39 @@ struct FilePaneView: View {
 
             Spacer()
         }
-        .dropDestination(for: FilePaneTabDragItem.self) { items, _ in
-            guard let paneSide,
-                  let item = items.first,
-                  item.sourcePaneSide != paneSide else {
-                return false
+        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+        .contentShape(Rectangle())
+        .background(isTabDropTargeted ? CatppuccinMochaTheme.accent.opacity(0.14) : Color.clear)
+        .onDrop(
+            of: [FilePaneTabDragItem.typeIdentifier],
+            isTargeted: $isTabDropTargeted,
+            perform: handleTabDrop(_:)
+        )
+    }
+
+    private func handleTabDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let destinationSide = paneSide,
+              let provider = providers.first(where: {
+                  $0.hasItemConformingToTypeIdentifier(FilePaneTabDragItem.typeIdentifier)
+              }) else {
+            return false
+        }
+
+        let moveTab = onMoveTab
+
+        provider.loadDataRepresentation(forTypeIdentifier: FilePaneTabDragItem.typeIdentifier) { data, _ in
+            guard let data,
+                  let item = FilePaneTabDragItem.decoded(from: data),
+                  item.sourcePaneSide != destinationSide else {
+                return
             }
 
-            onMoveTab(item.tabID, item.sourcePaneSide, paneSide)
-            return true
+            Task { @MainActor in
+                moveTab(item.tabID, item.sourcePaneSide, destinationSide)
+            }
         }
+
+        return true
     }
 
     @ViewBuilder
@@ -114,7 +144,7 @@ struct FilePaneView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .tint(tab.id == viewModel.activeTabID ? .accentColor : nil)
+            .tint(tab.id == viewModel.activeTabID ? CatppuccinMochaTheme.accent : nil)
 
             Button {
                 Task {
@@ -130,10 +160,29 @@ struct FilePaneView: View {
         .padding(.trailing, 2)
 
         if let paneSide {
-            header.draggable(FilePaneTabDragItem(tabID: tab.id, sourcePaneSide: paneSide))
+            header.onDrag {
+                tabDragProvider(for: tab, paneSide: paneSide)
+            }
         } else {
             header
         }
+    }
+
+    private func tabDragProvider(for tab: FilePaneTab, paneSide: PaneSide) -> NSItemProvider {
+        let provider = NSItemProvider()
+        let item = FilePaneTabDragItem(tabID: tab.id, sourcePaneSide: paneSide)
+
+        if let data = item.encodedData {
+            provider.registerDataRepresentation(
+                forTypeIdentifier: FilePaneTabDragItem.typeIdentifier,
+                visibility: .all
+            ) { completion in
+                completion(data, nil)
+                return nil
+            }
+        }
+
+        return provider
     }
 
     private var toolbar: some View {
@@ -256,18 +305,20 @@ struct FilePaneView: View {
 
             TableColumn("Size", value: \.sortSize) { item in
                 Text(item.formattedSize)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
             }
 
             TableColumn("Modified", value: \.sortModifiedDate) { item in
                 Text(item.formattedModifiedDate)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
             }
 
             TableColumn("Kind", value: \.kindDescription) { item in
                 Text(item.kindDescription)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
             }
         }
+        .foregroundStyle(CatppuccinMochaTheme.primaryText)
+        .background(CatppuccinMochaTheme.paneBackground)
     }
 }

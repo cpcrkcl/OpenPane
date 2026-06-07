@@ -71,11 +71,14 @@ struct DualPaneView: View {
                 }
                 .frame(minWidth: 320)
             }
+            .padding(10)
+            .background(CatppuccinMochaTheme.appBackground)
 
             Divider()
 
             statusBar
         }
+        .background(CatppuccinMochaTheme.windowBackground)
         .alert(
             "File Operation Error",
             isPresented: Binding {
@@ -229,8 +232,11 @@ struct DualPaneView: View {
             Spacer()
 
             Text(viewModel.activePaneSide == .left ? "Left pane active" : "Right pane active")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(CatppuccinMochaTheme.secondaryText)
         }
+        .foregroundStyle(CatppuccinMochaTheme.primaryText)
+        .padding(.horizontal, 2)
+        .background(CatppuccinMochaTheme.toolbarBackground)
     }
 
     private var statusBar: some View {
@@ -242,7 +248,7 @@ struct DualPaneView: View {
 
             Text(viewModel.operationStatusMessage ?? "Ready")
                 .lineLimit(1)
-                .foregroundColor(viewModel.errorMessage == nil ? .secondary : .red)
+                .foregroundColor(viewModel.errorMessage == nil ? CatppuccinMochaTheme.secondaryText : CatppuccinMochaTheme.destructive)
 
             Spacer()
         }
@@ -250,6 +256,7 @@ struct DualPaneView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .frame(minHeight: 30)
+        .background(CatppuccinMochaTheme.toolbarBackground)
     }
 
     private var trashConfirmationMessage: String {
@@ -384,7 +391,7 @@ struct DualPaneView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Preview")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
 
                 ForEach(batchRenamePreviewNames.prefix(5), id: \.self) { name in
                     Text(name)
@@ -395,7 +402,7 @@ struct DualPaneView: View {
                 if batchRenamePreviewNames.count > 5 {
                     Text("+ \(batchRenamePreviewNames.count - 5) more")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(CatppuccinMochaTheme.mutedText)
                 }
             }
 

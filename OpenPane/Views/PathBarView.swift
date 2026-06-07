@@ -16,9 +16,13 @@ struct PathBarView: View {
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)
+            .foregroundStyle(CatppuccinMochaTheme.secondaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 6)
             .padding(.horizontal, 8)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            .background(
+                CatppuccinMochaTheme.paneBackgroundElevated,
+                in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+            )
     }
 }

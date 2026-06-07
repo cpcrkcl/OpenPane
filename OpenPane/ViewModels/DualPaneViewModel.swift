@@ -8,7 +8,7 @@
 import Combine
 import Foundation
 
-enum PaneSide: Codable, Equatable, Hashable, Sendable {
+nonisolated enum PaneSide: Codable, Equatable, Hashable, Sendable {
     case left
     case right
 }
