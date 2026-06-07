@@ -40,6 +40,7 @@ final class FilePaneViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var includeHiddenFiles: Bool
     @Published var searchText: String
+    @Published var sortOrder: [KeyPathComparator<FileItem>]
     @Published var recursiveSearchResults: [FileItem]
     @Published var isShowingRecursiveSearchResults: Bool
 
@@ -49,19 +50,23 @@ final class FilePaneViewModel: ObservableObject {
     private let quickLookPreviewService: any QuickLookPreviewServicing
 
     var filteredItems: [FileItem] {
+        let filteredItems: [FileItem]
+
         if isShowingRecursiveSearchResults {
-            return recursiveSearchResults
+            filteredItems = recursiveSearchResults
+        } else {
+            let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if trimmedSearchText.isEmpty {
+                filteredItems = items
+            } else {
+                filteredItems = items.filter { item in
+                    item.name.localizedCaseInsensitiveContains(trimmedSearchText)
+                }
+            }
         }
 
-        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedSearchText.isEmpty else {
-            return items
-        }
-
-        return items.filter { item in
-            item.name.localizedCaseInsensitiveContains(trimmedSearchText)
-        }
+        return sortedItems(filteredItems)
     }
 
     init(
@@ -81,6 +86,7 @@ final class FilePaneViewModel: ObservableObject {
         self.errorMessage = nil
         self.includeHiddenFiles = false
         self.searchText = ""
+        self.sortOrder = []
         self.recursiveSearchResults = []
         self.isShowingRecursiveSearchResults = false
         self.fileBrowserService = fileBrowserService
@@ -153,6 +159,33 @@ final class FilePaneViewModel: ObservableObject {
         if items.isEmpty {
             await loadCurrentDirectory()
         }
+    }
+
+    func detachTab(_ id: FilePaneTab.ID) -> FilePaneTab? {
+        guard tabs.count > 1,
+              let index = tabs.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+
+        saveActiveTabState()
+        let removedTab = tabs.remove(at: index)
+
+        if activeTabID == id {
+            let nextIndex = min(index, tabs.count - 1)
+            applyTab(tabs[nextIndex])
+        }
+
+        return removedTab
+    }
+
+    func receiveTab(_ tab: FilePaneTab) {
+        guard !tabs.contains(where: { $0.id == tab.id }) else {
+            return
+        }
+
+        saveActiveTabState()
+        tabs.append(tab)
+        applyTab(tab)
     }
 
     func performRecursiveSearch(limit: Int = FileSearchService.defaultLimit) async {
@@ -256,6 +289,27 @@ final class FilePaneViewModel: ObservableObject {
         selectedItems = []
         clearRecursiveSearch()
         await loadCurrentDirectory()
+    }
+
+    private func sortedItems(_ items: [FileItem]) -> [FileItem] {
+        guard !sortOrder.isEmpty else {
+            return items
+        }
+
+        return items.sorted { lhs, rhs in
+            for comparator in sortOrder {
+                switch comparator.compare(lhs, rhs) {
+                case .orderedAscending:
+                    return true
+                case .orderedDescending:
+                    return false
+                case .orderedSame:
+                    continue
+                }
+            }
+
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
     }
 
     private func applyTab(_ tab: FilePaneTab) {

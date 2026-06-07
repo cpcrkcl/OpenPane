@@ -34,6 +34,10 @@ Screenshots will be added for the initial GitHub release.
 
 OpenPane uses macOS Move to Trash for deletion-style actions. It does not permanently delete files.
 
+## Development Permissions
+
+The MVP development app target is currently unsandboxed so OpenPane can work as a local file manager across user folders. macOS privacy protections still apply; for protected locations, users may need to grant OpenPane Full Disk Access in System Settings > Privacy & Security.
+
 ## Requirements
 
 - macOS 14+

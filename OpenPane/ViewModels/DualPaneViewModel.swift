@@ -8,7 +8,7 @@
 import Combine
 import Foundation
 
-enum PaneSide: Equatable, Sendable {
+enum PaneSide: Codable, Equatable, Hashable, Sendable {
     case left
     case right
 }
@@ -58,6 +58,10 @@ final class DualPaneViewModel: ObservableObject {
         activePaneSide = side
     }
 
+    func pane(for side: PaneSide) -> FilePaneViewModel {
+        side == .left ? leftPane : rightPane
+    }
+
     func refreshBoth() async {
         await leftPane.refresh()
         await rightPane.refresh()
@@ -69,6 +73,24 @@ final class DualPaneViewModel: ObservableObject {
 
         await leftPane.setDirectory(rightURL)
         await rightPane.setDirectory(leftURL)
+    }
+
+    func moveTab(_ tabID: FilePaneTab.ID, from sourceSide: PaneSide, to destinationSide: PaneSide) {
+        guard sourceSide != destinationSide else {
+            return
+        }
+
+        let sourcePane = pane(for: sourceSide)
+        let destinationPane = pane(for: destinationSide)
+
+        guard let tab = sourcePane.detachTab(tabID) else {
+            errorMessage = "Each pane needs at least one tab."
+            operationStatusMessage = errorMessage
+            return
+        }
+
+        destinationPane.receiveTab(tab)
+        activePaneSide = destinationSide
     }
 
     func copySelectionToOtherPane(conflictResolution: FileConflictResolution = .cancel) async {

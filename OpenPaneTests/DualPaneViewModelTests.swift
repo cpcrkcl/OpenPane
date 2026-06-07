@@ -46,6 +46,38 @@ struct DualPaneViewModelTests {
         #expect(viewModel.rightPane.currentURL == leftURL)
     }
 
+    @Test func moveTabMovesTabBetweenPanesAndActivatesDestination() async {
+        let leftURL = URL(filePath: "/left")
+        let rightURL = URL(filePath: "/right")
+        let leftPane = FilePaneViewModel(currentURL: leftURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: rightURL, fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        await leftPane.newTab()
+        let movedTabID = leftPane.activeTabID
+
+        viewModel.moveTab(movedTabID, from: .left, to: .right)
+
+        #expect(leftPane.tabs.count == 1)
+        #expect(rightPane.tabs.count == 2)
+        #expect(rightPane.activeTabID == movedTabID)
+        #expect(rightPane.currentURL == leftURL)
+        #expect(viewModel.activePaneSide == .right)
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func moveTabShowsErrorWhenMovingOnlySourceTab() {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        viewModel.moveTab(leftPane.activeTabID, from: .left, to: .right)
+
+        #expect(leftPane.tabs.count == 1)
+        #expect(rightPane.tabs.count == 1)
+        #expect(viewModel.errorMessage == "Each pane needs at least one tab.")
+        #expect(viewModel.operationStatusMessage == "Each pane needs at least one tab.")
+    }
+
     @Test func copySelectionToOtherPaneShowsErrorWhenNothingIsSelected() async {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())

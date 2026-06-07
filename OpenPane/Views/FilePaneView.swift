@@ -10,7 +10,9 @@ import SwiftUI
 struct FilePaneView: View {
     @ObservedObject var viewModel: FilePaneViewModel
     var isActive: Bool = false
+    var paneSide: PaneSide?
     var onActivate: () -> Void = {}
+    var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide) -> Void = { _, _, _ in }
 
     private let fileIconService = FileIconService.shared
 
@@ -71,32 +73,7 @@ struct FilePaneView: View {
     private var tabBar: some View {
         HStack(spacing: 4) {
             ForEach(viewModel.tabs) { tab in
-                HStack(spacing: 4) {
-                    Button {
-                        Task {
-                            await viewModel.switchToTab(tab.id)
-                        }
-                    } label: {
-                        Text(tab.title)
-                            .lineLimit(1)
-                            .frame(maxWidth: 140)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(tab.id == viewModel.activeTabID ? .accentColor : nil)
-
-                    Button {
-                        Task {
-                            await viewModel.closeTab(tab.id)
-                        }
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.plain)
-                    .controlSize(.small)
-                    .disabled(viewModel.tabs.count == 1)
-                }
-                .padding(.trailing, 2)
+                tabHeader(for: tab)
             }
 
             Button {
@@ -110,6 +87,52 @@ struct FilePaneView: View {
             .controlSize(.small)
 
             Spacer()
+        }
+        .dropDestination(for: FilePaneTabDragItem.self) { items, _ in
+            guard let paneSide,
+                  let item = items.first,
+                  item.sourcePaneSide != paneSide else {
+                return false
+            }
+
+            onMoveTab(item.tabID, item.sourcePaneSide, paneSide)
+            return true
+        }
+    }
+
+    @ViewBuilder
+    private func tabHeader(for tab: FilePaneTab) -> some View {
+        let header = HStack(spacing: 4) {
+            Button {
+                Task {
+                    await viewModel.switchToTab(tab.id)
+                }
+            } label: {
+                Text(tab.title)
+                    .lineLimit(1)
+                    .frame(maxWidth: 140)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(tab.id == viewModel.activeTabID ? .accentColor : nil)
+
+            Button {
+                Task {
+                    await viewModel.closeTab(tab.id)
+                }
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+            .disabled(viewModel.tabs.count == 1)
+        }
+        .padding(.trailing, 2)
+
+        if let paneSide {
+            header.draggable(FilePaneTabDragItem(tabID: tab.id, sourcePaneSide: paneSide))
+        } else {
+            header
         }
     }
 
@@ -197,8 +220,8 @@ struct FilePaneView: View {
     }
 
     private var fileTable: some View {
-        Table(viewModel.filteredItems, selection: selectedItemIDs) {
-            TableColumn("Name") { item in
+        Table(viewModel.filteredItems, selection: selectedItemIDs, sortOrder: $viewModel.sortOrder) {
+            TableColumn("Name", value: \.name) { item in
                 HStack(spacing: 6) {
                     Image(nsImage: fileIconService.icon(for: item))
                         .resizable()
@@ -231,17 +254,17 @@ struct FilePaneView: View {
                     }
             }
 
-            TableColumn("Size") { item in
+            TableColumn("Size", value: \.sortSize) { item in
                 Text(item.formattedSize)
                     .foregroundStyle(.secondary)
             }
 
-            TableColumn("Modified") { item in
+            TableColumn("Modified", value: \.sortModifiedDate) { item in
                 Text(item.formattedModifiedDate)
                     .foregroundStyle(.secondary)
             }
 
-            TableColumn("Kind") { item in
+            TableColumn("Kind", value: \.kindDescription) { item in
                 Text(item.kindDescription)
                     .foregroundStyle(.secondary)
             }

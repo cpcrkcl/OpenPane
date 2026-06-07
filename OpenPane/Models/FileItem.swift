@@ -73,6 +73,14 @@ nonisolated struct FileItem: Identifiable, Hashable, Sendable {
         return isDirectory ? "Folder" : "File"
     }
 
+    var sortSize: Int64 {
+        size ?? -1
+    }
+
+    var sortModifiedDate: Date {
+        modifiedDate ?? .distantPast
+    }
+
     private static func fileSize(from resourceValues: URLResourceValues) -> Int64? {
         if let fileSize = resourceValues.fileSize {
             return Int64(fileSize)

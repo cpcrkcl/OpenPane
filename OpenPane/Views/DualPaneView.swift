@@ -51,17 +51,23 @@ struct DualPaneView: View {
             HSplitView {
                 FilePaneView(
                     viewModel: viewModel.leftPane,
-                    isActive: viewModel.activePaneSide == .left
+                    isActive: viewModel.activePaneSide == .left,
+                    paneSide: .left
                 ) {
                     viewModel.setActivePane(.left)
+                } onMoveTab: { tabID, sourceSide, destinationSide in
+                    viewModel.moveTab(tabID, from: sourceSide, to: destinationSide)
                 }
                 .frame(minWidth: 320)
 
                 FilePaneView(
                     viewModel: viewModel.rightPane,
-                    isActive: viewModel.activePaneSide == .right
+                    isActive: viewModel.activePaneSide == .right,
+                    paneSide: .right
                 ) {
                     viewModel.setActivePane(.right)
+                } onMoveTab: { tabID, sourceSide, destinationSide in
+                    viewModel.moveTab(tabID, from: sourceSide, to: destinationSide)
                 }
                 .frame(minWidth: 320)
             }
@@ -190,7 +196,7 @@ struct DualPaneView: View {
             Button {
                 prepareMoveToOtherPane()
             } label: {
-                Label("Move to Other Pane", systemImage: "folder.badge.arrow.right")
+                Label("Move to Other Pane", systemImage: "folder.badge.plus")
             }
             .keyboardShortcut("m", modifiers: [.command, .option])
             .disabled(viewModel.isPerformingOperation)

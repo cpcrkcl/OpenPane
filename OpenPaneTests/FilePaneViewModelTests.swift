@@ -184,6 +184,41 @@ struct FilePaneViewModelTests {
         #expect(viewModel.filteredItems == [notesItem, imageItem])
     }
 
+    @Test func filteredItemsSortsByNameWhenSortOrderIsSet() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let zebraItem = try temporaryDirectory.createDirectoryItem(named: "Zebra")
+        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [zebraItem, alphaItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.sortOrder = [KeyPathComparator(\.name)]
+
+        #expect(viewModel.filteredItems == [alphaItem, zebraItem])
+    }
+
+    @Test func filteredItemsSortsBySizeOnly() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let largeItem = try temporaryDirectory.createFileItem(named: "large.txt", contents: "larger contents")
+        let smallItem = try temporaryDirectory.createFileItem(named: "small.txt", contents: "s")
+        let directoryItem = try temporaryDirectory.createDirectoryItem(named: "Folder")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [largeItem, smallItem, directoryItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.sortOrder = [KeyPathComparator(\.sortSize)]
+
+        #expect(viewModel.filteredItems == [directoryItem, smallItem, largeItem])
+    }
+
     @Test func performRecursiveSearchShowsRecursiveResults() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
@@ -595,11 +630,15 @@ private struct PaneTestTemporaryDirectory {
     }
 
     func createFileItem(named relativePath: String) throws -> FileItem {
+        try createFileItem(named: relativePath, contents: relativePath)
+    }
+
+    func createFileItem(named relativePath: String, contents: String) throws -> FileItem {
         let fileURL = url.appendingPathComponent(relativePath)
         let parentURL = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parentURL, withIntermediateDirectories: true)
 
-        let didCreateFile = FileManager.default.createFile(atPath: fileURL.path, contents: Data(relativePath.utf8))
+        let didCreateFile = FileManager.default.createFile(atPath: fileURL.path, contents: Data(contents.utf8))
         #expect(didCreateFile)
 
         return try FileItem(url: fileURL)

@@ -469,6 +469,10 @@ nonisolated struct FileOperationService: FileOperationServicing {
             return description
         }
 
+        if nsError.localizedDescription != "The operation couldn’t be completed." {
+            return nsError.localizedDescription
+        }
+
         return "The operation could not be completed."
     }
 }
