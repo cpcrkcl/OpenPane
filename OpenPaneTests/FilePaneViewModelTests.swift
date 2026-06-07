@@ -21,6 +21,8 @@ struct FilePaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
         #expect(viewModel.includeHiddenFiles == false)
         #expect(viewModel.searchText == "")
+        #expect(viewModel.recursiveSearchResults.isEmpty)
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
         #expect(viewModel.filteredItems.isEmpty)
     }
 
@@ -89,6 +91,68 @@ struct FilePaneViewModelTests {
         viewModel.searchText = "   "
 
         #expect(viewModel.filteredItems == [notesItem, imageItem])
+    }
+
+    @Test func performRecursiveSearchShowsRecursiveResults() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let localItem = try temporaryDirectory.createFileItem(named: "Local.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [localItem]
+            ]),
+            fileSearchService: MockFileSearchService(results: [searchResult])
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+
+        await viewModel.performRecursiveSearch()
+
+        #expect(viewModel.items == [localItem])
+        #expect(viewModel.recursiveSearchResults == [searchResult])
+        #expect(viewModel.filteredItems == [searchResult])
+        #expect(viewModel.isShowingRecursiveSearchResults)
+        #expect(viewModel.isLoading == false)
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func clearRecursiveSearchReturnsToCurrentFolderFilter() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let localItem = try temporaryDirectory.createFileItem(named: "Local Notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [localItem]
+            ]),
+            fileSearchService: MockFileSearchService(results: [searchResult])
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+        await viewModel.performRecursiveSearch()
+
+        viewModel.clearRecursiveSearch()
+
+        #expect(viewModel.recursiveSearchResults.isEmpty)
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+        #expect(viewModel.filteredItems == [localItem])
+    }
+
+    @Test func performRecursiveSearchShowsErrorForEmptyQuery() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            fileSearchService: MockFileSearchService()
+        )
+        viewModel.searchText = "   "
+
+        await viewModel.performRecursiveSearch()
+
+        #expect(viewModel.errorMessage == "Enter a search term.")
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+        #expect(viewModel.isLoading == false)
     }
 
     @Test func setDirectoryClearsSelectionAndLoadsNewItems() async throws {
@@ -401,6 +465,24 @@ nonisolated private struct MockFileBrowserService: FileBrowserServicing {
         }
 
         return itemsByURL[url] ?? []
+    }
+}
+
+nonisolated private struct MockFileSearchService: FileSearchServicing {
+    var results: [FileItem] = []
+    var error: (any Error & Sendable)?
+
+    nonisolated func search(
+        root: URL,
+        query: String,
+        includeHiddenFiles: Bool,
+        limit: Int
+    ) async throws -> [FileItem] {
+        if let error {
+            throw error
+        }
+
+        return Array(results.prefix(limit))
     }
 }
 

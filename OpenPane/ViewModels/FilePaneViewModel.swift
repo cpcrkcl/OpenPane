@@ -17,12 +17,19 @@ final class FilePaneViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var includeHiddenFiles: Bool
     @Published var searchText: String
+    @Published var recursiveSearchResults: [FileItem]
+    @Published var isShowingRecursiveSearchResults: Bool
 
     private let fileBrowserService: any FileBrowserServicing
+    private let fileSearchService: any FileSearchServicing
     private let workspaceService: any WorkspaceServicing
     private let quickLookPreviewService: any QuickLookPreviewServicing
 
     var filteredItems: [FileItem] {
+        if isShowingRecursiveSearchResults {
+            return recursiveSearchResults
+        }
+
         let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedSearchText.isEmpty else {
@@ -37,6 +44,7 @@ final class FilePaneViewModel: ObservableObject {
     init(
         currentURL: URL = FileManager.default.homeDirectoryForCurrentUser,
         fileBrowserService: any FileBrowserServicing = FileBrowserService(),
+        fileSearchService: any FileSearchServicing = FileSearchService(),
         workspaceService: any WorkspaceServicing = WorkspaceService(),
         quickLookPreviewService: (any QuickLookPreviewServicing)? = nil
     ) {
@@ -47,7 +55,10 @@ final class FilePaneViewModel: ObservableObject {
         self.errorMessage = nil
         self.includeHiddenFiles = false
         self.searchText = ""
+        self.recursiveSearchResults = []
+        self.isShowingRecursiveSearchResults = false
         self.fileBrowserService = fileBrowserService
+        self.fileSearchService = fileSearchService
         self.workspaceService = workspaceService
         self.quickLookPreviewService = quickLookPreviewService ?? QuickLookPreviewService.shared
     }
@@ -55,6 +66,7 @@ final class FilePaneViewModel: ObservableObject {
     func loadCurrentDirectory() async {
         isLoading = true
         errorMessage = nil
+        clearRecursiveSearch()
         defer {
             isLoading = false
         }
@@ -72,6 +84,42 @@ final class FilePaneViewModel: ObservableObject {
 
     func refresh() async {
         await loadCurrentDirectory()
+    }
+
+    func performRecursiveSearch(limit: Int = FileSearchService.defaultLimit) async {
+        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedSearchText.isEmpty else {
+            errorMessage = "Enter a search term."
+            return
+        }
+
+        isLoading = true
+        errorMessage = nil
+        selectedItems = []
+        defer {
+            isLoading = false
+        }
+
+        do {
+            recursiveSearchResults = try await fileSearchService.search(
+                root: currentURL,
+                query: trimmedSearchText,
+                includeHiddenFiles: includeHiddenFiles,
+                limit: limit
+            )
+            isShowingRecursiveSearchResults = true
+        } catch {
+            recursiveSearchResults = []
+            isShowingRecursiveSearchResults = false
+            errorMessage = Self.userReadableError(for: error, at: currentURL)
+        }
+    }
+
+    func clearRecursiveSearch() {
+        recursiveSearchResults = []
+        isShowingRecursiveSearchResults = false
+        selectedItems = []
     }
 
     func open(_ item: FileItem) async {
@@ -137,6 +185,7 @@ final class FilePaneViewModel: ObservableObject {
     func setDirectory(_ url: URL) async {
         currentURL = url
         selectedItems = []
+        clearRecursiveSearch()
         await loadCurrentDirectory()
     }
 

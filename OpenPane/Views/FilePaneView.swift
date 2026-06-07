@@ -85,7 +85,11 @@ struct FilePaneView: View {
             Button {
                 viewModel.includeHiddenFiles.toggle()
                 Task {
-                    await viewModel.refresh()
+                    if viewModel.isShowingRecursiveSearchResults {
+                        await viewModel.performRecursiveSearch()
+                    } else {
+                        await viewModel.refresh()
+                    }
                 }
             } label: {
                 Label(
@@ -121,6 +125,23 @@ struct FilePaneView: View {
             TextField("Filter", text: $viewModel.searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 180)
+
+            Button {
+                Task {
+                    await viewModel.performRecursiveSearch()
+                }
+            } label: {
+                Label("Recursive Search", systemImage: "magnifyingglass")
+            }
+            .disabled(viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            if viewModel.isShowingRecursiveSearchResults {
+                Button {
+                    viewModel.clearRecursiveSearch()
+                } label: {
+                    Label("Clear Search", systemImage: "xmark.circle")
+                }
+            }
 
             PathBarView(path: viewModel.currentURL.path)
         }
