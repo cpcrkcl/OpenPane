@@ -19,6 +19,8 @@ final class DualPaneViewModel: ObservableObject {
     @Published var rightPane: FilePaneViewModel
     @Published var activePaneSide: PaneSide
     @Published var errorMessage: String?
+    @Published var isPerformingOperation: Bool
+    @Published var operationStatusMessage: String?
 
     private let fileOperationService: any FileOperationServicing
 
@@ -47,6 +49,8 @@ final class DualPaneViewModel: ObservableObject {
         self.rightPane = rightPane
         self.activePaneSide = activePaneSide
         self.errorMessage = nil
+        self.isPerformingOperation = false
+        self.operationStatusMessage = nil
         self.fileOperationService = fileOperationService
     }
 
@@ -72,13 +76,13 @@ final class DualPaneViewModel: ObservableObject {
             return
         }
 
-        errorMessage = nil
-
-        do {
+        await performOperation(
+            statusMessage: "Copying \(Self.itemCountDescription(selectedItems)) to \(Self.displayName(for: inactivePane.currentURL))...",
+            successMessage: "Copied \(Self.itemCountDescription(selectedItems)) to \(Self.displayName(for: inactivePane.currentURL)).",
+            failureMessage: "Copy failed."
+        ) {
             try await fileOperationService.copy(items: selectedItems, to: inactivePane.currentURL)
             await inactivePane.refresh()
-        } catch {
-            errorMessage = Self.userReadableError(for: error)
         }
     }
 
@@ -87,14 +91,14 @@ final class DualPaneViewModel: ObservableObject {
             return
         }
 
-        errorMessage = nil
-
-        do {
+        await performOperation(
+            statusMessage: "Moving \(Self.itemCountDescription(selectedItems)) to \(Self.displayName(for: inactivePane.currentURL))...",
+            successMessage: "Moved \(Self.itemCountDescription(selectedItems)) to \(Self.displayName(for: inactivePane.currentURL)).",
+            failureMessage: "Move failed."
+        ) {
             try await fileOperationService.move(items: selectedItems, to: inactivePane.currentURL)
             activePane.selectedItems = []
             await refreshBoth()
-        } catch {
-            errorMessage = Self.userReadableError(for: error)
         }
     }
 
@@ -103,25 +107,25 @@ final class DualPaneViewModel: ObservableObject {
             return
         }
 
-        errorMessage = nil
-
-        do {
+        await performOperation(
+            statusMessage: "Moving \(Self.itemCountDescription(selectedItems)) to Trash...",
+            successMessage: "Moved \(Self.itemCountDescription(selectedItems)) to Trash.",
+            failureMessage: "Move to Trash failed."
+        ) {
             try await fileOperationService.trash(items: selectedItems)
             activePane.selectedItems = []
             await activePane.refresh()
-        } catch {
-            errorMessage = Self.userReadableError(for: error)
         }
     }
 
     func createFolderInActivePane(named name: String) async {
-        errorMessage = nil
-
-        do {
+        await performOperation(
+            statusMessage: "Creating folder...",
+            successMessage: "Created folder.",
+            failureMessage: "New folder failed."
+        ) {
             _ = try await fileOperationService.createFolder(named: name, in: activePane.currentURL)
             await activePane.refresh()
-        } catch {
-            errorMessage = Self.userReadableError(for: error)
         }
     }
 
@@ -132,16 +136,44 @@ final class DualPaneViewModel: ObservableObject {
             errorMessage = selectedItems.isEmpty
                 ? "Select one item to rename."
                 : "Select only one item to rename."
+            operationStatusMessage = errorMessage
             return
         }
 
-        errorMessage = nil
-
-        do {
+        await performOperation(
+            statusMessage: "Renaming \(selectedItem.name)...",
+            successMessage: "Renamed \(selectedItem.name).",
+            failureMessage: "Rename failed."
+        ) {
             _ = try await fileOperationService.rename(item: selectedItem, to: newName)
             activePane.selectedItems = []
             await activePane.refresh()
+        }
+    }
+
+    private func performOperation(
+        statusMessage: String,
+        successMessage: String,
+        failureMessage: String,
+        operation: () async throws -> Void
+    ) async {
+        guard !isPerformingOperation else {
+            return
+        }
+
+        isPerformingOperation = true
+        operationStatusMessage = statusMessage
+        errorMessage = nil
+
+        defer {
+            isPerformingOperation = false
+        }
+
+        do {
+            try await operation()
+            operationStatusMessage = successMessage
         } catch {
+            operationStatusMessage = failureMessage
             errorMessage = Self.userReadableError(for: error)
         }
     }
@@ -151,10 +183,21 @@ final class DualPaneViewModel: ObservableObject {
 
         guard !selectedItems.isEmpty else {
             errorMessage = "Select one or more items to \(verb)."
+            operationStatusMessage = errorMessage
             return nil
         }
 
         return selectedItems
+    }
+
+    private static func itemCountDescription(_ items: [FileItem]) -> String {
+        let itemText = items.count == 1 ? "item" : "items"
+        return "\(items.count) \(itemText)"
+    }
+
+    private static func displayName(for url: URL) -> String {
+        let name = url.lastPathComponent
+        return name.isEmpty ? url.path : name
     }
 
     private static func userReadableError(for error: Error) -> String {

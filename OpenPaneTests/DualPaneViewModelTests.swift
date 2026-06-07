@@ -54,6 +54,8 @@ struct DualPaneViewModelTests {
         await viewModel.copySelectionToOtherPane()
 
         #expect(viewModel.errorMessage == "Select one or more items to copy.")
+        #expect(viewModel.operationStatusMessage == "Select one or more items to copy.")
+        #expect(viewModel.isPerformingOperation == false)
     }
 
     @Test func copySelectionToOtherPaneCopiesToInactivePaneAndRefreshesIt() async throws {
@@ -72,6 +74,8 @@ struct DualPaneViewModelTests {
         #expect(rightPane.items.map(\.name) == ["copy.txt"])
         #expect(leftPane.selectedItems == [sourceItem])
         #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.isPerformingOperation == false)
+        #expect(viewModel.operationStatusMessage == "Copied 1 item to Destination.")
     }
 
     @Test func moveSelectionToOtherPaneShowsErrorWhenNothingIsSelected() async {
@@ -82,6 +86,8 @@ struct DualPaneViewModelTests {
         await viewModel.moveSelectionToOtherPane()
 
         #expect(viewModel.errorMessage == "Select one or more items to move.")
+        #expect(viewModel.operationStatusMessage == "Select one or more items to move.")
+        #expect(viewModel.isPerformingOperation == false)
     }
 
     @Test func moveSelectionToOtherPaneMovesFileRefreshesBothAndClearsSelection() async throws {
@@ -102,6 +108,8 @@ struct DualPaneViewModelTests {
         #expect(rightPane.items.map(\.name) == ["move.txt"])
         #expect(leftPane.selectedItems.isEmpty)
         #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.isPerformingOperation == false)
+        #expect(viewModel.operationStatusMessage == "Moved 1 item to Destination.")
     }
 
     @Test func trashSelectionInActivePaneShowsErrorWhenNothingIsSelected() async {
@@ -117,6 +125,8 @@ struct DualPaneViewModelTests {
         await viewModel.trashSelectionInActivePane()
 
         #expect(viewModel.errorMessage == "Select one or more items to move to Trash.")
+        #expect(viewModel.operationStatusMessage == "Select one or more items to move to Trash.")
+        #expect(viewModel.isPerformingOperation == false)
         #expect(fileOperationService.trashedItems.isEmpty)
     }
 
@@ -140,6 +150,8 @@ struct DualPaneViewModelTests {
         #expect(leftPane.items.isEmpty)
         #expect(leftPane.selectedItems.isEmpty)
         #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.isPerformingOperation == false)
+        #expect(viewModel.operationStatusMessage == "Moved 1 item to Trash.")
     }
 
     @Test func trashSelectionInActivePaneSurfacesErrors() async throws {
@@ -162,6 +174,8 @@ struct DualPaneViewModelTests {
         #expect(leftPane.items == [sourceItem])
         #expect(leftPane.selectedItems == [sourceItem])
         #expect(viewModel.errorMessage == "Could not move trash.txt to Trash: Trash is unavailable")
+        #expect(viewModel.isPerformingOperation == false)
+        #expect(viewModel.operationStatusMessage == "Move to Trash failed.")
     }
 
     @Test func createFolderInActivePaneCreatesFolderAndRefreshesActivePane() async throws {
@@ -178,6 +192,8 @@ struct DualPaneViewModelTests {
         #expect(isDirectory.boolValue)
         #expect(leftPane.items.map(\.name) == ["Projects"])
         #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.isPerformingOperation == false)
+        #expect(viewModel.operationStatusMessage == "Created folder.")
     }
 
     @Test func createFolderInActivePaneShowsErrorForEmptyName() async {
@@ -188,6 +204,8 @@ struct DualPaneViewModelTests {
         await viewModel.createFolderInActivePane(named: "")
 
         #expect(viewModel.errorMessage == "Name cannot be empty.")
+        #expect(viewModel.isPerformingOperation == false)
+        #expect(viewModel.operationStatusMessage == "New folder failed.")
     }
 
     @Test func renameSelectedItemShowsErrorWhenNothingIsSelected() async {
@@ -198,6 +216,8 @@ struct DualPaneViewModelTests {
         await viewModel.renameSelectedItem(to: "Renamed.txt")
 
         #expect(viewModel.errorMessage == "Select one item to rename.")
+        #expect(viewModel.operationStatusMessage == "Select one item to rename.")
+        #expect(viewModel.isPerformingOperation == false)
     }
 
     @Test func renameSelectedItemShowsErrorWhenMultipleItemsAreSelected() async throws {
@@ -212,6 +232,8 @@ struct DualPaneViewModelTests {
         await viewModel.renameSelectedItem(to: "Renamed.txt")
 
         #expect(viewModel.errorMessage == "Select only one item to rename.")
+        #expect(viewModel.operationStatusMessage == "Select only one item to rename.")
+        #expect(viewModel.isPerformingOperation == false)
     }
 
     @Test func renameSelectedItemRenamesFileRefreshesActivePaneAndClearsSelection() async throws {
@@ -231,6 +253,8 @@ struct DualPaneViewModelTests {
         #expect(leftPane.items.map(\.name) == ["Renamed.txt"])
         #expect(leftPane.selectedItems.isEmpty)
         #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.isPerformingOperation == false)
+        #expect(viewModel.operationStatusMessage == "Renamed Original.txt.")
     }
 }
 

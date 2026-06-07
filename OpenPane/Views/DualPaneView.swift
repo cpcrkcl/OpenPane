@@ -54,6 +54,10 @@ struct DualPaneView: View {
                 }
                 .frame(minWidth: 320)
             }
+
+            Divider()
+
+            statusBar
         }
         .alert(
             "File Operation Error",
@@ -89,6 +93,7 @@ struct DualPaneView: View {
                     await viewModel.trashSelectionInActivePane()
                 }
             }
+            .disabled(viewModel.isPerformingOperation)
 
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -104,6 +109,7 @@ struct DualPaneView: View {
                 Label("New Folder", systemImage: "folder.badge.plus")
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(viewModel.isPerformingOperation)
 
             Button {
                 prepareRenameSheet()
@@ -111,6 +117,7 @@ struct DualPaneView: View {
                 Label("Rename", systemImage: "pencil")
             }
             .keyboardShortcut(.return, modifiers: [])
+            .disabled(viewModel.isPerformingOperation)
 
             Button {
                 Task {
@@ -138,6 +145,7 @@ struct DualPaneView: View {
                 Label("Copy to Other Pane", systemImage: "doc.on.doc")
             }
             .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled(viewModel.isPerformingOperation)
 
             Button {
                 Task {
@@ -147,6 +155,7 @@ struct DualPaneView: View {
                 Label("Move to Other Pane", systemImage: "folder.badge.arrow.right")
             }
             .keyboardShortcut("m", modifiers: [.command, .option])
+            .disabled(viewModel.isPerformingOperation)
 
             Button {
                 prepareTrashConfirmation()
@@ -154,6 +163,7 @@ struct DualPaneView: View {
                 Label("Move to Trash", systemImage: "trash")
             }
             .keyboardShortcut(.delete, modifiers: .command)
+            .disabled(viewModel.isPerformingOperation)
 
             Button {
                 Task {
@@ -179,12 +189,35 @@ struct DualPaneView: View {
         }
     }
 
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            if viewModel.isPerformingOperation {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Text(viewModel.operationStatusMessage ?? "Ready")
+                .lineLimit(1)
+                .foregroundColor(viewModel.errorMessage == nil ? .secondary : .red)
+
+            Spacer()
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(minHeight: 30)
+    }
+
     private var trashConfirmationMessage: String {
         let itemText = trashConfirmationItemCount == 1 ? "item" : "items"
         return "Move \(trashConfirmationItemCount) selected \(itemText) to Trash?"
     }
 
     private func prepareNewFolderSheet() {
+        guard !viewModel.isPerformingOperation else {
+            return
+        }
+
         newFolderName = "Untitled Folder"
         activeSheet = .newFolder
     }
@@ -209,7 +242,10 @@ struct DualPaneView: View {
                     createFolderFromSheet()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    viewModel.isPerformingOperation ||
+                        newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
             }
         }
         .padding(20)
@@ -245,7 +281,10 @@ struct DualPaneView: View {
                     renameFromSheet()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(renameItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    viewModel.isPerformingOperation ||
+                        renameItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
             }
         }
         .padding(20)
@@ -253,6 +292,10 @@ struct DualPaneView: View {
     }
 
     private func prepareRenameSheet() {
+        guard !viewModel.isPerformingOperation else {
+            return
+        }
+
         let selectedItems = Array(viewModel.activePane.selectedItems)
 
         guard selectedItems.count == 1, let selectedItem = selectedItems.first else {
@@ -276,6 +319,10 @@ struct DualPaneView: View {
     }
 
     private func prepareTrashConfirmation() {
+        guard !viewModel.isPerformingOperation else {
+            return
+        }
+
         let selectedItemCount = viewModel.activePane.selectedItems.count
 
         guard selectedItemCount > 0 else {
