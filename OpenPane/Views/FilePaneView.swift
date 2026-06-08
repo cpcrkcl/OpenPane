@@ -35,6 +35,7 @@ struct FilePaneView: View {
     @State private var isTabDropTargeted = false
     @State private var activeSortColumn: FileListColumn?
     @State private var isSortAscending = true
+    @State private var infoItem: FileItem?
 
     private let fileIconService = FileIconService.shared
 
@@ -154,6 +155,22 @@ struct FilePaneView: View {
                     isActive ? CatppuccinMochaTheme.activePaneBorder.opacity(0.95) : CatppuccinMochaTheme.inactivePaneBorder.opacity(0.55),
                     lineWidth: isActive ? CatppuccinMochaTheme.paneBorderWidth : CatppuccinMochaTheme.hairlineBorderWidth
                 )
+        }
+        .sheet(item: $infoItem) { item in
+            FileInfoView(
+                item: item,
+                onCopyPath: {
+                    viewModel.copyPath(of: item)
+                    onStatusMessage("Copied path.")
+                },
+                onRevealInFinder: {
+                    viewModel.selectedItems = [item]
+                    viewModel.revealSelectedItemsInFinder()
+                },
+                onClose: {
+                    infoItem = nil
+                }
+            )
         }
     }
 
@@ -514,6 +531,9 @@ struct FilePaneView: View {
                                     await viewModel.open(item)
                                 }
                             },
+                            onGetInfo: {
+                                infoItem = item
+                            },
                             onRename: onRenameSelected,
                             onTrash: onTrashSelected,
                             onDuplicate: {
@@ -684,6 +704,7 @@ private struct FilePaneRowView: View {
     let onSelect: () -> Void
     let onContextSelect: () -> Void
     let onOpen: () -> Void
+    let onGetInfo: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
     let onDuplicate: () -> Void
@@ -767,6 +788,7 @@ private struct FilePaneRowView: View {
                 isPaneActive: isPaneActive,
                 onPrepare: onContextSelect,
                 onOpen: onOpen,
+                onGetInfo: onGetInfo,
                 onRename: onRename,
                 onTrash: onTrash,
                 onDuplicate: onDuplicate,
@@ -783,6 +805,7 @@ private struct FileItemContextMenu: View {
     let isPaneActive: Bool
     let onPrepare: () -> Void
     let onOpen: () -> Void
+    let onGetInfo: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
     let onDuplicate: () -> Void
@@ -797,6 +820,15 @@ private struct FileItemContextMenu: View {
         } label: {
             Label("Open", systemImage: "arrow.forward")
         }
+
+        Button {
+            onPrepare()
+            onGetInfo()
+        } label: {
+            Label("Get Info", systemImage: "info.circle")
+        }
+
+        Divider()
 
         Button {
             onPrepare()
