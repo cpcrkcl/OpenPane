@@ -19,10 +19,21 @@ private enum FilePaneListMetrics {
     static let kindColumnWidth: CGFloat = 128
 }
 
+private let fileURLPasteboardTypeIdentifier = NSPasteboard.PasteboardType.fileURL.rawValue
+private let fileNamesPasteboardTypeIdentifier = NSPasteboard.PasteboardType("NSFilenamesPboardType").rawValue
+private let externalFileDropTypeIdentifiers = [
+    UTType.fileURL.identifier,
+    fileURLPasteboardTypeIdentifier,
+    UTType.url.identifier,
+    fileNamesPasteboardTypeIdentifier
+]
 private let fileDropTypeIdentifiers = [
     FileDragPayload.typeIdentifier,
-    UTType.fileURL.identifier
-]
+    UTType.fileURL.identifier,
+    fileURLPasteboardTypeIdentifier,
+    UTType.url.identifier,
+    fileNamesPasteboardTypeIdentifier
+].uniqued()
 
 private struct FileDrop {
     let sourcePaneSide: PaneSide?
@@ -890,7 +901,13 @@ struct FilePaneView: View {
 
     private func canLoadFileDropProvider(_ provider: NSItemProvider) -> Bool {
         provider.hasItemConformingToTypeIdentifier(FileDragPayload.typeIdentifier) ||
-            provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+            externalFileTypeIdentifier(for: provider) != nil
+    }
+
+    private func externalFileTypeIdentifier(for provider: NSItemProvider) -> String? {
+        externalFileDropTypeIdentifiers.first {
+            provider.hasItemConformingToTypeIdentifier($0)
+        }
     }
 
     private func loadDroppedFiles(from providers: [NSItemProvider], completion: @escaping (FileDrop) -> Void) {
@@ -913,15 +930,19 @@ struct FilePaneView: View {
                     }
                     group.leave()
                 }
-            } else {
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    if let fileURL = fileURL(from: item) {
+            } else if let typeIdentifier = externalFileTypeIdentifier(for: provider) {
+                provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { item, _ in
+                    let loadedFileURLs = decodedFileURLs(from: item)
+
+                    if !loadedFileURLs.isEmpty {
                         lock.withLock {
-                            fileURLs.append(fileURL)
+                            fileURLs.append(contentsOf: loadedFileURLs)
                         }
                     }
                     group.leave()
                 }
+            } else {
+                group.leave()
             }
         }
 
@@ -930,35 +951,66 @@ struct FilePaneView: View {
         }
     }
 
-    private func fileURL(from item: NSSecureCoding?) -> URL? {
+    private func decodedFileURLs(from item: NSSecureCoding?) -> [URL] {
         if let url = item as? URL {
-            return url
+            return url.isFileURL ? [url] : []
         }
 
         if let url = item as? NSURL {
-            return url as URL
+            let swiftURL = url as URL
+            return swiftURL.isFileURL ? [swiftURL] : []
+        }
+
+        if let urls = item as? [URL] {
+            return urls.filter(\.isFileURL)
+        }
+
+        if let urls = item as? [NSURL] {
+            return urls
+                .map { $0 as URL }
+                .filter(\.isFileURL)
+        }
+
+        if let paths = item as? [String] {
+            return paths.compactMap(fileURL(from:))
         }
 
         if let data = item as? Data,
-           let string = String(data: data, encoding: .utf8) {
-            return fileURL(from: string)
+           let fileURLs = fileURLs(from: data) {
+            return fileURLs
         }
 
         if let string = item as? String {
-            return fileURL(from: string)
+            return fileURL(from: string).map { [$0] } ?? []
+        }
+
+        return []
+    }
+
+    private func fileURLs(from data: Data) -> [URL]? {
+        if let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+           let paths = propertyList as? [String] {
+            return paths.compactMap(fileURL(from:))
+        }
+
+        if let string = String(data: data, encoding: .utf8),
+           let fileURL = fileURL(from: string) {
+            return [fileURL]
         }
 
         return nil
     }
 
     private func fileURL(from string: String) -> URL? {
-        if let url = URL(string: string),
+        let trimmedString = string.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let url = URL(string: trimmedString),
            url.isFileURL {
             return url
         }
 
-        if string.hasPrefix("/") {
-            return URL(fileURLWithPath: string)
+        if trimmedString.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmedString)
         }
 
         return nil
@@ -1177,6 +1229,8 @@ private struct FilePaneRowView: View {
         let provider = NSItemProvider()
 
         if let firstItem = draggedItems.first {
+            provider.suggestedName = firstItem.name
+
             provider.registerFileRepresentation(
                 forTypeIdentifier: UTType.fileURL.identifier,
                 fileOptions: [],
@@ -1187,6 +1241,7 @@ private struct FilePaneRowView: View {
             }
 
             provider.registerObject(firstItem.url as NSURL, visibility: .all)
+            registerFileURLDataRepresentations(for: firstItem.url, on: provider)
         }
 
         let payload = FileDragPayload(
@@ -1205,6 +1260,22 @@ private struct FilePaneRowView: View {
         }
 
         return provider
+    }
+
+    private func registerFileURLDataRepresentations(for url: URL, on provider: NSItemProvider) {
+        guard let data = url.absoluteString.data(using: .utf8) else {
+            return
+        }
+
+        for typeIdentifier in [UTType.fileURL.identifier, fileURLPasteboardTypeIdentifier].uniqued() {
+            provider.registerDataRepresentation(
+                forTypeIdentifier: typeIdentifier,
+                visibility: .all
+            ) { completion in
+                completion(data, nil)
+                return nil
+            }
+        }
     }
 }
 
@@ -1641,6 +1712,21 @@ private extension View {
             )
         } else {
             self
+        }
+    }
+}
+
+private extension Array where Element: Hashable {
+    func uniqued() -> [Element] {
+        var seenElements: Set<Element> = []
+
+        return filter { element in
+            guard !seenElements.contains(element) else {
+                return false
+            }
+
+            seenElements.insert(element)
+            return true
         }
     }
 }
