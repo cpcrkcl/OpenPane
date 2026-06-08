@@ -49,6 +49,7 @@ struct FilePaneView: View {
     @State private var isTabAppendDropTargeted = false
     @State private var targetedTabID: FilePaneTab.ID?
     @State private var isPaneFileDropTargeted = false
+    @State private var targetedFolderDropID: FileItem.ID?
     @State private var infoItem: FileItem?
     @State private var isShowingViewOptions = false
 
@@ -705,6 +706,13 @@ struct FilePaneView: View {
                             onDropFiles: { providers, targetDirectory in
                                 handleFileDrop(providers, targetDirectory: targetDirectory)
                             },
+                            onFileDropTargetedChange: { isTargeted in
+                                if isTargeted {
+                                    targetedFolderDropID = item.id
+                                } else if targetedFolderDropID == item.id {
+                                    targetedFolderDropID = nil
+                                }
+                            },
                             compressItemCount: viewModel.contextMenuTargetItems(clickedItem: item).count
                         )
                     }
@@ -713,7 +721,7 @@ struct FilePaneView: View {
             }
             .background(CatppuccinMochaTheme.base)
             .overlay {
-                if isPaneFileDropTargeted {
+                if isPaneFileDropTargeted && targetedFolderDropID == nil {
                     RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
                         .stroke(CatppuccinMochaTheme.accent.opacity(0.62), lineWidth: CatppuccinMochaTheme.paneBorderWidth)
                         .background(
@@ -858,6 +866,9 @@ struct FilePaneView: View {
         guard providers.contains(where: canLoadFileDropProvider) else {
             return false
         }
+
+        targetedFolderDropID = nil
+        isPaneFileDropTargeted = false
 
         loadDroppedFiles(from: providers) { drop in
             Task { @MainActor in
@@ -1014,6 +1025,7 @@ private struct FilePaneRowView: View {
     let onPreview: () -> Void
     let onCopyText: (FileItemCopyTextFormat) -> Void
     let onDropFiles: ([NSItemProvider], URL) -> Bool
+    let onFileDropTargetedChange: (Bool) -> Void
     let compressItemCount: Int
 
     @State private var isHovered = false
@@ -1021,7 +1033,7 @@ private struct FilePaneRowView: View {
 
     private var rowBackground: Color {
         if isFileDropTargeted {
-            return CatppuccinMochaTheme.surface2.opacity(0.34)
+            return CatppuccinMochaTheme.accent.opacity(0.14)
         }
 
         if isSelected {
@@ -1037,7 +1049,7 @@ private struct FilePaneRowView: View {
 
     private var rowBorder: Color {
         if isFileDropTargeted {
-            return CatppuccinMochaTheme.accent.opacity(0.7)
+            return CatppuccinMochaTheme.accentSecondary.opacity(0.78)
         }
 
         return isSelected ? CatppuccinMochaTheme.accent.opacity(0.45) : Color.clear
@@ -1081,7 +1093,33 @@ private struct FilePaneRowView: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
-                .stroke(rowBorder, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+                .stroke(rowBorder, lineWidth: isFileDropTargeted ? CatppuccinMochaTheme.paneBorderWidth : CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+        .overlay(alignment: .leading) {
+            if isFileDropTargeted {
+                Capsule()
+                    .fill(CatppuccinMochaTheme.accentSecondary)
+                    .frame(width: 3, height: 22)
+                    .padding(.leading, 3)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            if isFileDropTargeted {
+                HStack(spacing: 5) {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Drop into folder")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(CatppuccinMochaTheme.accentSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    CatppuccinMochaTheme.surface0.opacity(0.9),
+                    in: Capsule()
+                )
+                .padding(.trailing, 8)
+            }
         }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
@@ -1107,6 +1145,9 @@ private struct FilePaneRowView: View {
                 onDropFiles(providers, item.url)
             }
         )
+        .onChange(of: isFileDropTargeted) { _, isTargeted in
+            onFileDropTargetedChange(isTargeted)
+        }
         .contextMenu {
             FileItemContextMenu(
                 item: item,
