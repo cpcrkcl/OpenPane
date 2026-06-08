@@ -26,7 +26,7 @@ struct MainWindowView: View {
         .padding(14)
         .background(CatppuccinMochaTheme.appBackground)
         .preferredColorScheme(.dark)
-        .frame(minWidth: 1100, minHeight: 620)
+        .frame(minWidth: 1000, minHeight: 650)
     }
 
     private var header: some View {

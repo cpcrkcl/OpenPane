@@ -28,6 +28,14 @@ struct FilePaneView: View {
         case kind = "Kind"
     }
 
+    private enum PaneContentState {
+        case loading
+        case error(String)
+        case emptyFolder
+        case emptySearch
+        case emptyRecursiveSearch
+    }
+
     private var paneSurfaceColor: Color {
         isActive ? CatppuccinMochaTheme.paneBackgroundElevated : CatppuccinMochaTheme.windowBackground
     }
@@ -35,6 +43,37 @@ struct FilePaneView: View {
     private var selectedCountText: String {
         let count = viewModel.selectedItems.count
         return count == 1 ? "1 selected" : "\(count) selected"
+    }
+
+    private var paneContentState: PaneContentState? {
+        if viewModel.isLoading {
+            return .loading
+        }
+
+        if let errorMessage = viewModel.errorMessage,
+           viewModel.filteredItems.isEmpty {
+            return .error(errorMessage)
+        }
+
+        guard viewModel.filteredItems.isEmpty else {
+            return nil
+        }
+
+        if viewModel.isShowingRecursiveSearchResults {
+            return .emptyRecursiveSearch
+        }
+
+        if !viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .emptySearch
+        }
+
+        return .emptyFolder
+    }
+
+    private var shouldShowErrorBanner: Bool {
+        viewModel.errorMessage != nil &&
+            !viewModel.filteredItems.isEmpty &&
+            !viewModel.isLoading
     }
 
     var body: some View {
@@ -50,22 +89,22 @@ struct FilePaneView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 6)
 
-            if let errorMessage = viewModel.errorMessage {
-                Text(errorMessage)
-                    .foregroundStyle(CatppuccinMochaTheme.destructive)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if shouldShowErrorBanner, let errorMessage = viewModel.errorMessage {
+                paneErrorBanner(errorMessage)
                     .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 4)
             }
 
             ZStack {
                 fileTable
 
-                if viewModel.isLoading {
-                    ProgressView()
-                        .controlSize(.large)
+                if let paneContentState {
+                    paneStateView(paneContentState)
+                        .transition(.opacity)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(CatppuccinMochaTheme.base)
             .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium))
             .padding(.horizontal, 10)
             .padding(.bottom, 10)
@@ -98,6 +137,112 @@ struct FilePaneView: View {
                     isActive ? CatppuccinMochaTheme.activePaneBorder.opacity(0.95) : CatppuccinMochaTheme.inactivePaneBorder.opacity(0.55),
                     lineWidth: isActive ? CatppuccinMochaTheme.paneBorderWidth : CatppuccinMochaTheme.hairlineBorderWidth
                 )
+        }
+    }
+
+    private func paneErrorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(CatppuccinMochaTheme.destructive)
+
+            Text(message)
+                .lineLimit(2)
+                .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            CatppuccinMochaTheme.destructive.opacity(0.12),
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+                .stroke(CatppuccinMochaTheme.destructive.opacity(0.28), lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+    }
+
+    private func paneStateView(_ state: PaneContentState) -> some View {
+        let details = paneStateDetails(for: state)
+
+        return VStack(spacing: 12) {
+            if case .loading = state {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(CatppuccinMochaTheme.accent)
+            } else {
+                Image(systemName: details.systemImage)
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(details.tint)
+                    .frame(width: 42, height: 42)
+                    .background(details.tint.opacity(0.12), in: Circle())
+            }
+
+            VStack(spacing: 5) {
+                Text(details.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+                Text(details.message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .frame(maxWidth: 320)
+        .background(
+            CatppuccinMochaTheme.mantle.opacity(0.96),
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+                .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func paneStateDetails(for state: PaneContentState) -> (systemImage: String, title: String, message: String, tint: Color) {
+        switch state {
+        case .loading:
+            return (
+                "arrow.clockwise",
+                "Loading folder",
+                "Reading \(viewModel.currentURL.openPaneDisplayName)...",
+                CatppuccinMochaTheme.accent
+            )
+        case .error(let message):
+            return (
+                "exclamationmark.triangle",
+                "Couldn’t load this folder",
+                message,
+                CatppuccinMochaTheme.destructive
+            )
+        case .emptyFolder:
+            return (
+                "folder",
+                "Folder is empty",
+                "There are no visible items in \(viewModel.currentURL.openPaneDisplayName).",
+                CatppuccinMochaTheme.accentSecondary
+            )
+        case .emptySearch:
+            return (
+                "magnifyingglass",
+                "No matches",
+                "No items in this folder match your filter.",
+                CatppuccinMochaTheme.mutedText
+            )
+        case .emptyRecursiveSearch:
+            return (
+                "magnifyingglass",
+                "No recursive results",
+                "No files or folders under this location match your search.",
+                CatppuccinMochaTheme.mutedText
+            )
         }
     }
 
@@ -363,6 +508,7 @@ struct FilePaneView: View {
             }
             .background(CatppuccinMochaTheme.base)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CatppuccinMochaTheme.base)
     }
 
