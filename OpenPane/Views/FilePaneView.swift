@@ -34,7 +34,7 @@ struct FilePaneView: View {
     var onPaste: () -> Void = {}
     var onStatusMessage: (String) -> Void = { _ in }
 
-    @State private var isTabDropTargeted = false
+    @State private var isTabAppendDropTargeted = false
     @State private var targetedTabID: FilePaneTab.ID?
     @State private var infoItem: FileItem?
     @State private var isShowingViewOptions = false
@@ -87,6 +87,10 @@ struct FilePaneView: View {
         viewModel.errorMessage != nil &&
             !viewModel.filteredItems.isEmpty &&
             !viewModel.isLoading
+    }
+
+    private var isAnyTabDropTargeted: Bool {
+        isTabAppendDropTargeted || targetedTabID != nil
     }
 
     var body: some View {
@@ -327,18 +331,54 @@ struct FilePaneView: View {
             }
             .buttonStyle(ToolbarIconButtonStyle())
 
-            Spacer()
+            tabAppendDropTarget
         }
         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
         .contentShape(Rectangle())
-        .background(isTabDropTargeted ? CatppuccinMochaTheme.accent.opacity(0.14) : Color.clear)
-        .onDrop(
-            of: [FilePaneTabDragItem.typeIdentifier],
-            isTargeted: $isTabDropTargeted,
-            perform: { providers in
-                handleTabDrop(providers, destinationIndex: viewModel.tabs.count)
-            }
+        .padding(3)
+        .background(
+            isAnyTabDropTargeted
+                ? CatppuccinMochaTheme.surface1.opacity(0.5)
+                : CatppuccinMochaTheme.surface0.opacity(0.26),
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+                .stroke(
+                    isAnyTabDropTargeted
+                        ? CatppuccinMochaTheme.accent.opacity(0.42)
+                        : CatppuccinMochaTheme.surface1.opacity(0.55),
+                    lineWidth: CatppuccinMochaTheme.hairlineBorderWidth
+                )
+        )
+    }
+
+    private var tabAppendDropTarget: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .contentShape(Rectangle())
+            .background(
+                isTabAppendDropTargeted
+                    ? CatppuccinMochaTheme.surface2.opacity(0.32)
+                    : Color.clear,
+                in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+            )
+            .overlay(alignment: .leading) {
+                if isTabAppendDropTargeted {
+                    Capsule()
+                        .fill(CatppuccinMochaTheme.accentSecondary)
+                        .frame(width: 3, height: 22)
+                        .padding(.leading, 4)
+                }
+            }
+            .onDrop(
+                of: [FilePaneTabDragItem.typeIdentifier],
+                isTargeted: $isTabAppendDropTargeted,
+                perform: { providers in
+                    handleTabDrop(providers, destinationIndex: viewModel.tabs.count)
+                }
+            )
     }
 
     private func handleTabDrop(_ providers: [NSItemProvider], destinationIndex: Int?) -> Bool {
@@ -359,6 +399,7 @@ struct FilePaneView: View {
 
             Task { @MainActor in
                 targetedTabID = nil
+                isTabAppendDropTargeted = false
                 moveTab(item.tabID, item.sourcePaneSide, destinationSide, destinationIndex)
             }
         }
@@ -394,15 +435,23 @@ struct FilePaneView: View {
         .padding(2)
         .background(
             targetedTabID == tab.id
-                ? CatppuccinMochaTheme.accent.opacity(0.12)
+                ? CatppuccinMochaTheme.surface2.opacity(0.36)
                 : Color.clear,
             in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
         )
+        .overlay(alignment: .leading) {
+            if targetedTabID == tab.id {
+                Capsule()
+                    .fill(CatppuccinMochaTheme.accent)
+                    .frame(width: 3, height: 22)
+                    .padding(.leading, 1)
+            }
+        }
         .overlay(
             RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
                 .stroke(
                     targetedTabID == tab.id
-                        ? CatppuccinMochaTheme.accent.opacity(0.55)
+                        ? CatppuccinMochaTheme.accent.opacity(0.62)
                         : Color.clear,
                     lineWidth: CatppuccinMochaTheme.hairlineBorderWidth
                 )
@@ -411,6 +460,8 @@ struct FilePaneView: View {
         if let paneSide {
             header.onDrag {
                 tabDragProvider(for: tab, paneSide: paneSide)
+            } preview: {
+                tabDragPreview(for: tab)
             }
             .onDrop(
                 of: [FilePaneTabDragItem.typeIdentifier],
@@ -422,6 +473,24 @@ struct FilePaneView: View {
         } else {
             header
         }
+    }
+
+    private func tabDragPreview(for tab: FilePaneTab) -> some View {
+        Text(tab.title)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .foregroundStyle(CatppuccinMochaTheme.primaryText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                CatppuccinMochaTheme.surface2.opacity(0.95),
+                in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                    .stroke(CatppuccinMochaTheme.accent.opacity(0.72), lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+            )
+            .shadow(color: CatppuccinMochaTheme.accent.opacity(0.18), radius: 8, x: 0, y: 3)
     }
 
     private func tabDropTargetBinding(for tabID: FilePaneTab.ID) -> Binding<Bool> {

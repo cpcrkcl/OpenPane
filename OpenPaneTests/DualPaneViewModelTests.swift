@@ -63,6 +63,7 @@ struct DualPaneViewModelTests {
         #expect(rightPane.currentURL == leftURL)
         #expect(viewModel.activePaneSide == .right)
         #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.operationStatusMessage == "Moved tab to right pane.")
     }
 
     @Test func moveTabShowsErrorWhenMovingOnlySourceTab() {
@@ -138,6 +139,7 @@ struct DualPaneViewModelTests {
         #expect(rightPane.tabs[1].title == "Projects")
         #expect(viewModel.activePaneSide == .right)
         #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.operationStatusMessage == "Moved tab to right pane.")
     }
 
     @Test func moveTabWithinSamePaneReordersTabs() async {

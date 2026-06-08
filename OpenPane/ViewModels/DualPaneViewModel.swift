@@ -123,6 +123,8 @@ final class DualPaneViewModel: ObservableObject {
 
         destinationPane.receiveTab(tab, at: destinationIndex)
         activePaneSide = destinationSide
+        errorMessage = nil
+        operationStatusMessage = "Moved tab to \(Self.paneDescription(destinationSide)) pane."
     }
 
     func reorderTab(tabID: FilePaneTab.ID, in paneSide: PaneSide, toIndex: Int) {
@@ -411,6 +413,15 @@ final class DualPaneViewModel: ObservableObject {
     private static func itemCountDescription(_ count: Int) -> String {
         let itemText = count == 1 ? "item" : "items"
         return "\(count) \(itemText)"
+    }
+
+    private static func paneDescription(_ side: PaneSide) -> String {
+        switch side {
+        case .left:
+            return "left"
+        case .right:
+            return "right"
+        }
     }
 
     private static func userReadableError(for error: Error) -> String {
