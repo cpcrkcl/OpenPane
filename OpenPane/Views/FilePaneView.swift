@@ -247,6 +247,7 @@ struct FilePaneView: View {
             } label: {
                 Label("Up", systemImage: "arrow.up")
             }
+            .buttonStyle(ToolbarIconButtonStyle())
 
             Button {
                 Task {
@@ -255,6 +256,7 @@ struct FilePaneView: View {
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
+            .buttonStyle(ToolbarIconButtonStyle())
 
             Button {
                 viewModel.includeHiddenFiles.toggle()
@@ -271,6 +273,7 @@ struct FilePaneView: View {
                     systemImage: viewModel.includeHiddenFiles ? "eye.slash" : "eye"
                 )
             }
+            .buttonStyle(SecondaryActionButtonStyle())
 
             Button {
                 Task {
@@ -279,6 +282,7 @@ struct FilePaneView: View {
             } label: {
                 Label("Open", systemImage: "arrow.forward")
             }
+            .buttonStyle(SecondaryActionButtonStyle())
             .disabled(viewModel.selectedItems.count != 1)
 
             Button {
@@ -286,6 +290,7 @@ struct FilePaneView: View {
             } label: {
                 Label("Preview", systemImage: "eye")
             }
+            .buttonStyle(SecondaryActionButtonStyle())
             .keyboardShortcut(.space, modifiers: [])
             .disabled(viewModel.selectedItems.count != 1)
 
@@ -294,6 +299,7 @@ struct FilePaneView: View {
             } label: {
                 Label("Reveal in Finder", systemImage: "finder")
             }
+            .buttonStyle(SecondaryActionButtonStyle())
             .disabled(viewModel.selectedItems.isEmpty)
 
             TextField("Filter", text: $viewModel.searchText)
@@ -307,6 +313,7 @@ struct FilePaneView: View {
             } label: {
                 Label("Recursive Search", systemImage: "magnifyingglass")
             }
+            .buttonStyle(SecondaryActionButtonStyle())
             .disabled(viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
             if viewModel.isShowingRecursiveSearchResults {
@@ -315,10 +322,10 @@ struct FilePaneView: View {
                 } label: {
                     Label("Clear Search", systemImage: "xmark.circle")
                 }
+                .buttonStyle(SecondaryActionButtonStyle())
             }
         }
         .controlSize(.small)
-        .buttonStyle(.bordered)
         .foregroundStyle(CatppuccinMochaTheme.primaryText)
     }
 

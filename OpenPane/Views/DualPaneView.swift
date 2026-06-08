@@ -165,6 +165,7 @@ struct DualPaneView: View {
             } label: {
                 Label("New Folder", systemImage: "folder.badge.plus")
             }
+            .buttonStyle(SecondaryActionButtonStyle())
             .keyboardShortcut("n", modifiers: [.command, .shift])
             .disabled(viewModel.isPerformingOperation)
 
@@ -173,6 +174,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Rename", systemImage: "pencil")
             }
+            .buttonStyle(SecondaryActionButtonStyle())
             .keyboardShortcut(.return, modifiers: [])
             .disabled(viewModel.isPerformingOperation)
 
@@ -183,6 +185,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Up", systemImage: "arrow.up")
             }
+            .buttonStyle(ToolbarIconButtonStyle())
             .keyboardShortcut(.upArrow, modifiers: .command)
 
             Button {
@@ -192,6 +195,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Refresh Active", systemImage: "arrow.clockwise")
             }
+            .buttonStyle(ToolbarIconButtonStyle())
             .keyboardShortcut("r", modifiers: .command)
 
             Button {
@@ -199,14 +203,16 @@ struct DualPaneView: View {
             } label: {
                 Label("Copy to Other Pane", systemImage: "doc.on.doc")
             }
+            .buttonStyle(PrimaryActionButtonStyle())
             .keyboardShortcut("c", modifiers: [.command, .option])
             .disabled(viewModel.isPerformingOperation)
 
             Button {
                 prepareMoveToOtherPane()
             } label: {
-                Label("Move to Other Pane", systemImage: "folder.badge.plus")
+                Label("Move to Other Pane", systemImage: "arrow.right")
             }
+            .buttonStyle(PrimaryActionButtonStyle())
             .keyboardShortcut("m", modifiers: [.command, .option])
             .disabled(viewModel.isPerformingOperation)
 
@@ -215,6 +221,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Move to Trash", systemImage: "trash")
             }
+            .buttonStyle(DestructiveActionButtonStyle())
             .keyboardShortcut(.delete, modifiers: .command)
             .disabled(viewModel.isPerformingOperation)
 
@@ -225,6 +232,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Refresh Both", systemImage: "arrow.clockwise")
             }
+            .buttonStyle(SecondaryActionButtonStyle())
             .keyboardShortcut("r", modifiers: [.command, .shift])
 
             Button {
@@ -234,6 +242,7 @@ struct DualPaneView: View {
             } label: {
                 Label("Swap Panes", systemImage: "arrow.left.arrow.right")
             }
+            .buttonStyle(SecondaryActionButtonStyle())
 
             Spacer()
 
@@ -241,6 +250,7 @@ struct DualPaneView: View {
                 .foregroundStyle(CatppuccinMochaTheme.secondaryText)
         }
         .foregroundStyle(CatppuccinMochaTheme.primaryText)
+        .controlSize(.small)
         .padding(.horizontal, 2)
         .background(CatppuccinMochaTheme.toolbarBackground)
     }
