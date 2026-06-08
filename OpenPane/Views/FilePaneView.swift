@@ -5,6 +5,7 @@
 //  Created by Christopher Rego on 6/4/26.
 //
 
+import AppKit
 import SwiftUI
 
 struct FilePaneView: View {
@@ -15,15 +16,16 @@ struct FilePaneView: View {
     var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide) -> Void = { _, _, _ in }
 
     @State private var isTabDropTargeted = false
+    @State private var activeSortColumn: FileListColumn?
+    @State private var isSortAscending = true
 
     private let fileIconService = FileIconService.shared
 
-    private var selectedItemIDs: Binding<Set<FileItem.ID>> {
-        Binding {
-            Set(viewModel.selectedItems.map(\.id))
-        } set: { newSelection in
-            viewModel.selectedItems = Set(viewModel.filteredItems.filter { newSelection.contains($0.id) })
-        }
+    private enum FileListColumn: String {
+        case name = "Name"
+        case size = "Size"
+        case modified = "Modified"
+        case kind = "Kind"
     }
 
     private var paneSurfaceColor: Color {
@@ -321,56 +323,211 @@ struct FilePaneView: View {
     }
 
     private var fileTable: some View {
-        Table(viewModel.filteredItems, selection: selectedItemIDs, sortOrder: $viewModel.sortOrder) {
-            TableColumn("Name", value: \.name) { item in
-                HStack(spacing: 6) {
-                    Image(nsImage: fileIconService.icon(for: item))
-                        .resizable()
-                        .frame(width: 16, height: 16)
+        VStack(spacing: 0) {
+            fileListHeader
 
-                    Text(item.displayName)
-                        .lineLimit(1)
-                }
-                    .onTapGesture(count: 2) {
-                        Task {
-                            await viewModel.open(item)
-                        }
-                    }
-                    .contextMenu {
-                        Button("Open") {
-                            Task {
-                                await viewModel.open(item)
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(viewModel.filteredItems) { item in
+                        FilePaneRowView(
+                            item: item,
+                            icon: fileIconService.icon(for: item),
+                            isSelected: viewModel.selectedItems.contains(item),
+                            onSelect: {
+                                selectItem(item)
+                            },
+                            onOpen: {
+                                Task {
+                                    await viewModel.open(item)
+                                }
+                            },
+                            onReveal: {
+                                viewModel.selectedItems = [item]
+                                viewModel.revealSelectedItemsInFinder()
+                            },
+                            onPreview: {
+                                viewModel.selectedItems = [item]
+                                viewModel.previewSelectedItem()
                             }
-                        }
-
-                        Button("Reveal in Finder") {
-                            viewModel.selectedItems = [item]
-                            viewModel.revealSelectedItemsInFinder()
-                        }
-
-                        Button("Preview") {
-                            viewModel.selectedItems = [item]
-                            viewModel.previewSelectedItem()
-                        }
+                        )
                     }
+                }
+                .padding(6)
+            }
+            .background(CatppuccinMochaTheme.base)
+        }
+        .background(CatppuccinMochaTheme.base)
+    }
+
+    private var fileListHeader: some View {
+        HStack(spacing: 0) {
+            sortHeader(.name)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            sortHeader(.size)
+                .frame(width: 92, alignment: .trailing)
+
+            sortHeader(.modified)
+                .frame(width: 150, alignment: .leading)
+
+            sortHeader(.kind)
+                .frame(width: 128, alignment: .leading)
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(CatppuccinMochaTheme.mutedText)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(CatppuccinMochaTheme.mantle)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(CatppuccinMochaTheme.surface0)
+                .frame(height: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+    }
+
+    private func sortHeader(_ column: FileListColumn) -> some View {
+        Button {
+            applySort(column)
+        } label: {
+            HStack(spacing: 4) {
+                Text(column.rawValue)
+                    .lineLimit(1)
+
+                if activeSortColumn == column {
+                    Image(systemName: isSortAscending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(CatppuccinMochaTheme.accentSecondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: column == .size ? .trailing : .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func applySort(_ column: FileListColumn) {
+        if activeSortColumn == column {
+            isSortAscending.toggle()
+        } else {
+            activeSortColumn = column
+            isSortAscending = true
+        }
+
+        let order: SortOrder = isSortAscending ? .forward : .reverse
+
+        switch column {
+        case .name:
+            viewModel.sortOrder = [KeyPathComparator(\.name, order: order)]
+        case .size:
+            viewModel.sortOrder = [KeyPathComparator(\.sortSize, order: order)]
+        case .modified:
+            viewModel.sortOrder = [KeyPathComparator(\.sortModifiedDate, order: order)]
+        case .kind:
+            viewModel.sortOrder = [KeyPathComparator(\.kindDescription, order: order)]
+        }
+    }
+
+    private func selectItem(_ item: FileItem) {
+        if NSEvent.modifierFlags.contains(.command) {
+            if viewModel.selectedItems.contains(item) {
+                viewModel.selectedItems.remove(item)
+            } else {
+                viewModel.selectedItems.insert(item)
+            }
+        } else {
+            viewModel.selectedItems = [item]
+        }
+    }
+}
+
+private struct FilePaneRowView: View {
+    let item: FileItem
+    let icon: NSImage
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+    let onReveal: () -> Void
+    let onPreview: () -> Void
+
+    @State private var isHovered = false
+
+    private var rowBackground: Color {
+        if isSelected {
+            return CatppuccinMochaTheme.rowSelectedBackground
+        }
+
+        if isHovered {
+            return CatppuccinMochaTheme.rowHoverBackground
+        }
+
+        return Color.clear
+    }
+
+    private var rowBorder: Color {
+        isSelected ? CatppuccinMochaTheme.accent.opacity(0.45) : Color.clear
+    }
+
+    private var nameColor: Color {
+        item.isDirectory ? CatppuccinMochaTheme.lavender : CatppuccinMochaTheme.primaryText
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 17, height: 17)
+                    .opacity(item.isDirectory ? 1 : 0.92)
+
+                Text(item.displayName)
+                    .font(.system(size: 13, weight: item.isDirectory ? .medium : .regular))
+                    .foregroundStyle(nameColor)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(item.formattedSize)
+                .frame(width: 92, alignment: .trailing)
+
+            Text(item.formattedModifiedDate)
+                .frame(width: 150, alignment: .leading)
+
+            Text(item.kindDescription)
+                .frame(width: 128, alignment: .leading)
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(CatppuccinMochaTheme.subtext0)
+        .padding(.horizontal, 8)
+        .frame(minHeight: 31)
+        .background(
+            rowBackground,
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                .stroke(rowBorder, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .onTapGesture {
+            onSelect()
+        }
+        .onTapGesture(count: 2) {
+            onSelect()
+            onOpen()
+        }
+        .contextMenu {
+            Button("Open") {
+                onOpen()
             }
 
-            TableColumn("Size", value: \.sortSize) { item in
-                Text(item.formattedSize)
-                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+            Button("Reveal in Finder") {
+                onReveal()
             }
 
-            TableColumn("Modified", value: \.sortModifiedDate) { item in
-                Text(item.formattedModifiedDate)
-                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
-            }
-
-            TableColumn("Kind", value: \.kindDescription) { item in
-                Text(item.kindDescription)
-                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+            Button("Preview") {
+                onPreview()
             }
         }
-        .foregroundStyle(CatppuccinMochaTheme.primaryText)
-        .background(CatppuccinMochaTheme.paneBackground)
     }
 }
