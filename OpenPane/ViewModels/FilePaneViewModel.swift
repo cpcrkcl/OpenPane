@@ -381,7 +381,7 @@ final class FilePaneViewModel: ObservableObject {
         update(&tabs[index])
     }
 
-    private func contextMenuTargetItems(clickedItem: FileItem) -> [FileItem] {
+    func contextMenuTargetItems(clickedItem: FileItem) -> [FileItem] {
         guard selectedItems.contains(clickedItem) else {
             return [clickedItem]
         }

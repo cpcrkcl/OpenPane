@@ -392,6 +392,8 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
         }
     }
 
+    func duplicate(items: [FileItem]) async throws {}
+
     func rename(item: FileItem, to newName: String) async throws -> URL {
         item.url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: item.isDirectory)
     }
@@ -462,6 +464,8 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
     }
 
     func trash(items: [FileItem]) async throws {}
+
+    func duplicate(items: [FileItem]) async throws {}
 
     func rename(item: FileItem, to newName: String) async throws -> URL {
         item.url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: item.isDirectory)

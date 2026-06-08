@@ -34,6 +34,62 @@ struct FileOperationServiceTests {
         #expect(movedContents == "move me")
     }
 
+    @Test func duplicatesSimpleFile() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "README", contents: "copy me")
+
+        try await FileOperationService().duplicate(items: [sourceFile])
+
+        let duplicateURL = temporaryDirectory.sourceURL.appendingPathComponent("README copy")
+        let duplicateContents = try String(contentsOf: duplicateURL, encoding: .utf8)
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+        #expect(duplicateContents == "copy me")
+    }
+
+    @Test func duplicatesFileWithExtensionAndPreservesExtension() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "File.txt", contents: "copy me")
+
+        try await FileOperationService().duplicate(items: [sourceFile])
+
+        let duplicateURL = temporaryDirectory.sourceURL.appendingPathComponent("File copy.txt")
+        let duplicateContents = try String(contentsOf: duplicateURL, encoding: .utf8)
+        #expect(duplicateContents == "copy me")
+    }
+
+    @Test func duplicateIncrementsNameWhenCopyAlreadyExists() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "File.txt", contents: "source")
+        _ = try temporaryDirectory.createFile(named: "File copy.txt", contents: "existing")
+
+        try await FileOperationService().duplicate(items: [sourceFile])
+
+        let duplicateURL = temporaryDirectory.sourceURL.appendingPathComponent("File copy 2.txt")
+        let duplicateContents = try String(contentsOf: duplicateURL, encoding: .utf8)
+        #expect(duplicateContents == "source")
+    }
+
+    @Test func duplicatesFolder() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let folderURL = temporaryDirectory.sourceURL.appendingPathComponent("Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: false)
+        try "nested".write(
+            to: folderURL.appendingPathComponent("note.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let folderItem = try FileItem(url: folderURL)
+
+        try await FileOperationService().duplicate(items: [folderItem])
+
+        let duplicateURL = temporaryDirectory.sourceURL.appendingPathComponent("Folder copy", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: duplicateURL.path, isDirectory: &isDirectory))
+        #expect(isDirectory.boolValue)
+        let nestedContents = try String(contentsOf: duplicateURL.appendingPathComponent("note.txt"), encoding: .utf8)
+        #expect(nestedContents == "nested")
+    }
+
     @Test func trashesItemsUsingTrashService() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "first")

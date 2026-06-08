@@ -27,6 +27,7 @@ struct FilePaneView: View {
     var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide) -> Void = { _, _, _ in }
     var onRenameSelected: () -> Void = {}
     var onTrashSelected: () -> Void = {}
+    var onDuplicate: (FileItem) -> Void = { _ in }
     var onCreateFolder: () -> Void = {}
     var onCreateFile: () -> Void = {}
     var onStatusMessage: (String) -> Void = { _ in }
@@ -515,6 +516,9 @@ struct FilePaneView: View {
                             },
                             onRename: onRenameSelected,
                             onTrash: onTrashSelected,
+                            onDuplicate: {
+                                onDuplicate(item)
+                            },
                             onReveal: {
                                 viewModel.selectedItems = [item]
                                 viewModel.revealSelectedItemsInFinder()
@@ -682,6 +686,7 @@ private struct FilePaneRowView: View {
     let onOpen: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
+    let onDuplicate: () -> Void
     let onReveal: () -> Void
     let onPreview: () -> Void
     let onCopyText: (FileItemCopyTextFormat) -> Void
@@ -764,6 +769,7 @@ private struct FilePaneRowView: View {
                 onOpen: onOpen,
                 onRename: onRename,
                 onTrash: onTrash,
+                onDuplicate: onDuplicate,
                 onPreview: onPreview,
                 onReveal: onReveal,
                 onCopyText: onCopyText
@@ -779,6 +785,7 @@ private struct FileItemContextMenu: View {
     let onOpen: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
+    let onDuplicate: () -> Void
     let onPreview: () -> Void
     let onReveal: () -> Void
     let onCopyText: (FileItemCopyTextFormat) -> Void
@@ -796,6 +803,13 @@ private struct FileItemContextMenu: View {
             onRename()
         } label: {
             Label("Rename", systemImage: "pencil")
+        }
+
+        Button {
+            onPrepare()
+            onDuplicate()
+        } label: {
+            Label("Duplicate", systemImage: "plus.square.on.square")
         }
 
         Button(role: .destructive) {

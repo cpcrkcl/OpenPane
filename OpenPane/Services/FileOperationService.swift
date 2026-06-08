@@ -70,6 +70,7 @@ nonisolated protocol FileOperationServicing: Sendable {
     ) async throws
 
     nonisolated func trash(items: [FileItem]) async throws
+    nonisolated func duplicate(items: [FileItem]) async throws
     nonisolated func rename(item: FileItem, to newName: String) async throws -> URL
     nonisolated func batchRename(
         items: [FileItem],
@@ -193,6 +194,26 @@ nonisolated struct FileOperationService: FileOperationServicing {
                     try trashService.trashItem(at: item.url)
                 } catch {
                     throw FileOperationError.trashFailed(item.url, Self.userReadableReason(for: error))
+                }
+            }
+        }.value
+    }
+
+    nonisolated func duplicate(items: [FileItem]) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            var reservedURLs: Set<URL> = []
+            let plans = try items.map { item in
+                try Self.validateSourceExists(item.url)
+                let duplicateURL = Self.uniqueCopyURL(for: item.url, reservedURLs: reservedURLs)
+                reservedURLs.insert(duplicateURL)
+                return TransferPlan(item: item, destinationURL: duplicateURL, shouldReplaceExistingItem: false)
+            }
+
+            for plan in plans {
+                do {
+                    try FileManager.default.copyItem(at: plan.item.url, to: plan.destinationURL)
+                } catch {
+                    throw FileOperationError.operationFailed("duplicate", plan.item.url, Self.userReadableReason(for: error))
                 }
             }
         }.value

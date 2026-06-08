@@ -163,6 +163,21 @@ final class DualPaneViewModel: ObservableObject {
         }
     }
 
+    func duplicateSelectionInActivePane() async {
+        let sourcePane = activePane
+
+        guard let selectedItems = selectedItemsForOperation(in: sourcePane, verb: "duplicate") else {
+            return
+        }
+
+        await duplicate(items: selectedItems, in: sourcePane)
+    }
+
+    func duplicateForContextMenu(clickedItem: FileItem, in pane: FilePaneViewModel) async {
+        let targetItems = pane.contextMenuTargetItems(clickedItem: clickedItem)
+        await duplicate(items: targetItems, in: pane)
+    }
+
     func createFolderInActivePane(named name: String) async {
         let sourcePane = activePane
         let currentURL = sourcePane.currentURL
@@ -237,6 +252,17 @@ final class DualPaneViewModel: ObservableObject {
             )
             sourcePane.selectedItems = []
             await sourcePane.refresh()
+        }
+    }
+
+    private func duplicate(items: [FileItem], in pane: FilePaneViewModel) async {
+        await performOperation(
+            statusMessage: "Duplicating \(Self.itemCountDescription(items))...",
+            successMessage: "Duplicated \(Self.itemCountDescription(items)).",
+            failureMessage: "Duplicate failed."
+        ) {
+            try await fileOperationService.duplicate(items: items)
+            await pane.refresh()
         }
     }
 
