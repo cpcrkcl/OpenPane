@@ -80,7 +80,36 @@ final class DualPaneViewModel: ObservableObject {
     }
 
     func moveTab(_ tabID: FilePaneTab.ID, from sourceSide: PaneSide, to destinationSide: PaneSide) {
-        guard sourceSide != destinationSide else {
+        moveTab(tabID: tabID, from: sourceSide, to: destinationSide, at: nil)
+    }
+
+    func canMoveTab(tabID: FilePaneTab.ID, from sourceSide: PaneSide, to destinationSide: PaneSide) -> Bool {
+        let sourcePane = pane(for: sourceSide)
+        let destinationPane = pane(for: destinationSide)
+
+        guard sourcePane.containsTab(tabID) else {
+            return false
+        }
+
+        if sourceSide == destinationSide {
+            return true
+        }
+
+        return sourcePane.canDetachTab(tabID) && !destinationPane.containsTab(tabID)
+    }
+
+    func moveTab(tabID: FilePaneTab.ID, from sourceSide: PaneSide, to destinationSide: PaneSide, at destinationIndex: Int?) {
+        if sourceSide == destinationSide {
+            guard let destinationIndex else {
+                return
+            }
+
+            reorderTab(tabID: tabID, in: sourceSide, toIndex: destinationIndex)
+            return
+        }
+
+        guard canMoveTab(tabID: tabID, from: sourceSide, to: destinationSide) else {
+            showTabMoveError(tabID: tabID, from: sourceSide, to: destinationSide)
             return
         }
 
@@ -88,13 +117,25 @@ final class DualPaneViewModel: ObservableObject {
         let destinationPane = pane(for: destinationSide)
 
         guard let tab = sourcePane.detachTab(tabID) else {
-            errorMessage = "Each pane needs at least one tab."
+            showTabMoveError(tabID: tabID, from: sourceSide, to: destinationSide)
+            return
+        }
+
+        destinationPane.receiveTab(tab, at: destinationIndex)
+        activePaneSide = destinationSide
+    }
+
+    func reorderTab(tabID: FilePaneTab.ID, in paneSide: PaneSide, toIndex: Int) {
+        let pane = pane(for: paneSide)
+
+        guard pane.containsTab(tabID) else {
+            errorMessage = "Tab could not be reordered."
             operationStatusMessage = errorMessage
             return
         }
 
-        destinationPane.receiveTab(tab)
-        activePaneSide = destinationSide
+        pane.reorderTab(tabID, toIndex: toIndex)
+        activePaneSide = paneSide
     }
 
     func copySelectionToOtherPane(conflictResolution: FileConflictResolution = .cancel) async {
@@ -343,6 +384,24 @@ final class DualPaneViewModel: ObservableObject {
         }
 
         return selectedItems
+    }
+
+    private func showTabMoveError(tabID: FilePaneTab.ID, from sourceSide: PaneSide, to destinationSide: PaneSide) {
+        let sourcePane = pane(for: sourceSide)
+        let destinationPane = pane(for: destinationSide)
+
+        if sourceSide != destinationSide,
+           sourcePane.containsTab(tabID),
+           sourcePane.tabs.count == 1 {
+            errorMessage = "Each pane needs at least one tab."
+        } else if sourceSide != destinationSide,
+                  destinationPane.containsTab(tabID) {
+            errorMessage = "That tab is already open in the destination pane."
+        } else {
+            errorMessage = "Tab could not be moved."
+        }
+
+        operationStatusMessage = errorMessage
     }
 
     private static func itemCountDescription(_ items: [FileItem]) -> String {

@@ -11,6 +11,13 @@ import UniformTypeIdentifiers
 nonisolated struct FilePaneTabDragItem: Codable, Sendable {
     let tabID: FilePaneTab.ID
     let sourcePaneSide: PaneSide
+    let currentURL: URL?
+
+    init(tabID: FilePaneTab.ID, sourcePaneSide: PaneSide, currentURL: URL? = nil) {
+        self.tabID = tabID
+        self.sourcePaneSide = sourcePaneSide
+        self.currentURL = currentURL
+    }
 
     static var typeIdentifier: String {
         UTType.openPaneTabDragItem.identifier

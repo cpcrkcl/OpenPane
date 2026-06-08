@@ -78,6 +78,78 @@ struct DualPaneViewModelTests {
         #expect(viewModel.operationStatusMessage == "Each pane needs at least one tab.")
     }
 
+    @Test func canMoveTabPreventsMovingLastTabBetweenPanes() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        #expect(viewModel.canMoveTab(tabID: leftPane.activeTabID, from: .left, to: .right) == false)
+        #expect(viewModel.canMoveTab(tabID: leftPane.activeTabID, from: .left, to: .left) == true)
+
+        await leftPane.newTab()
+
+        #expect(viewModel.canMoveTab(tabID: leftPane.activeTabID, from: .left, to: .right) == true)
+    }
+
+    @Test func moveTabInsertsAtDestinationIndex() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        await leftPane.newTab()
+        await rightPane.newTab()
+        let movedTabID = leftPane.activeTabID
+        let firstRightTabID = rightPane.tabs[0].id
+        let secondRightTabID = rightPane.tabs[1].id
+
+        viewModel.moveTab(tabID: movedTabID, from: .left, to: .right, at: 1)
+
+        #expect(leftPane.tabs.count == 1)
+        #expect(rightPane.tabs.map(\.id) == [firstRightTabID, movedTabID, secondRightTabID])
+        #expect(rightPane.activeTabID == movedTabID)
+        #expect(viewModel.activePaneSide == .right)
+    }
+
+    @Test func moveTabWithinSamePaneReordersTabs() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        let firstTabID = leftPane.activeTabID
+        await leftPane.newTab()
+        let secondTabID = leftPane.activeTabID
+        await leftPane.newTab()
+        let thirdTabID = leftPane.activeTabID
+
+        viewModel.moveTab(tabID: firstTabID, from: .left, to: .left, at: 2)
+
+        #expect(leftPane.tabs.map(\.id) == [secondTabID, thirdTabID, firstTabID])
+        #expect(leftPane.activeTabID == thirdTabID)
+        #expect(viewModel.activePaneSide == .left)
+    }
+
+    @Test func reorderTabShowsErrorForMissingTab() {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        viewModel.reorderTab(tabID: UUID(), in: .left, toIndex: 0)
+
+        #expect(viewModel.errorMessage == "Tab could not be reordered.")
+        #expect(viewModel.operationStatusMessage == "Tab could not be reordered.")
+    }
+
+    @Test func tabDragItemEncodesSourceSideTabIDAndCurrentURL() throws {
+        let tabID = UUID()
+        let currentURL = URL(filePath: "/Users/example/Documents")
+        let item = FilePaneTabDragItem(tabID: tabID, sourcePaneSide: .left, currentURL: currentURL)
+
+        let data = try #require(item.encodedData)
+        let decodedItem = try #require(FilePaneTabDragItem.decoded(from: data))
+
+        #expect(decodedItem.tabID == tabID)
+        #expect(decodedItem.sourcePaneSide == .left)
+        #expect(decodedItem.currentURL == currentURL)
+    }
+
     @Test func copySelectionToOtherPaneShowsErrorWhenNothingIsSelected() async {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())

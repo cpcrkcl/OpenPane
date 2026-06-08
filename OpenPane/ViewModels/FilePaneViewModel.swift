@@ -239,14 +239,39 @@ final class FilePaneViewModel: ObservableObject {
         return removedTab
     }
 
-    func receiveTab(_ tab: FilePaneTab) {
+    func receiveTab(_ tab: FilePaneTab, at index: Int? = nil) {
         guard !tabs.contains(where: { $0.id == tab.id }) else {
             return
         }
 
         saveActiveTabState()
-        tabs.append(tab)
+        if let index {
+            let insertionIndex = boundedTabInsertionIndex(index)
+            tabs.insert(tab, at: insertionIndex)
+        } else {
+            tabs.append(tab)
+        }
         applyTab(tab)
+    }
+
+    func containsTab(_ id: FilePaneTab.ID) -> Bool {
+        tabs.contains { $0.id == id }
+    }
+
+    func canDetachTab(_ id: FilePaneTab.ID) -> Bool {
+        tabs.count > 1 && containsTab(id)
+    }
+
+    func reorderTab(_ id: FilePaneTab.ID, toIndex: Int) {
+        guard tabs.count > 1,
+              let sourceIndex = tabs.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        saveActiveTabState()
+        let tab = tabs.remove(at: sourceIndex)
+        let insertionIndex = boundedTabInsertionIndex(toIndex)
+        tabs.insert(tab, at: insertionIndex)
     }
 
     func performRecursiveSearch(limit: Int = FileSearchService.defaultLimit) async {
@@ -520,6 +545,10 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         update(&tabs[index])
+    }
+
+    private func boundedTabInsertionIndex(_ index: Int) -> Int {
+        min(max(index, 0), tabs.count)
     }
 
     func contextMenuTargetItems(clickedItem: FileItem) -> [FileItem] {

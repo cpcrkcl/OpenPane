@@ -400,7 +400,11 @@ struct FilePaneView: View {
 
     private func tabDragProvider(for tab: FilePaneTab, paneSide: PaneSide) -> NSItemProvider {
         let provider = NSItemProvider()
-        let item = FilePaneTabDragItem(tabID: tab.id, sourcePaneSide: paneSide)
+        let item = FilePaneTabDragItem(
+            tabID: tab.id,
+            sourcePaneSide: paneSide,
+            currentURL: tab.currentURL
+        )
 
         if let data = item.encodedData {
             provider.registerDataRepresentation(
