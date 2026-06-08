@@ -301,6 +301,11 @@ final class FilePaneViewModel: ObservableObject {
         _ = copyTextForContextMenu(clickedItem: item, format: .absolutePath)
     }
 
+    func copyCurrentFolderPath() {
+        errorMessage = nil
+        workspaceService.copyText(currentURL.path)
+    }
+
     func copyTextForContextMenu(clickedItem: FileItem, format: FileItemCopyTextFormat) -> Int {
         errorMessage = nil
         let targetItems = contextMenuTargetItems(clickedItem: clickedItem)
@@ -404,6 +409,16 @@ final class FilePaneViewModel: ObservableObject {
 
         errorMessage = nil
         workspaceService.revealInFinder(urls: selectedItems.map(\.url))
+    }
+
+    func revealForContextMenu(clickedItem: FileItem) {
+        errorMessage = nil
+        workspaceService.revealInFinder(urls: contextMenuTargetItems(clickedItem: clickedItem).map(\.url))
+    }
+
+    func revealCurrentFolderInFinder() {
+        errorMessage = nil
+        workspaceService.revealInFinder(urls: [currentURL])
     }
 
     func previewSelectedItem() {

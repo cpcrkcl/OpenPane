@@ -559,8 +559,7 @@ struct FilePaneView: View {
                                 onCompress(item)
                             },
                             onReveal: {
-                                viewModel.selectedItems = [item]
-                                viewModel.revealSelectedItemsInFinder()
+                                viewModel.revealForContextMenu(clickedItem: item)
                             },
                             onPreview: {
                                 viewModel.selectedItems = [item]
@@ -586,6 +585,13 @@ struct FilePaneView: View {
                     onPaste: onPaste,
                     onShowViewOptions: {
                         isShowingViewOptions = true
+                    },
+                    onCopyCurrentFolderPath: {
+                        viewModel.copyCurrentFolderPath()
+                        onStatusMessage("Copied current folder path.")
+                    },
+                    onRevealCurrentFolder: {
+                        viewModel.revealCurrentFolderInFinder()
                     },
                     onRefresh: {
                         Task {
@@ -864,7 +870,7 @@ private struct FileItemContextMenu: View {
                 onPrepare()
                 onOpen()
             } label: {
-                Label("Default App", systemImage: "app")
+                Label("Default", systemImage: "app")
             }
 
             if !applicationOptions.isEmpty {
@@ -889,22 +895,19 @@ private struct FileItemContextMenu: View {
                 Label("Choose Application...", systemImage: "ellipsis.circle")
             }
         } label: {
-            Label("Open With", systemImage: "square.and.arrow.up")
+            Label("Open With", systemImage: "app.badge")
         }
 
-        Button {
+        Divider()
+
+        Button(role: .destructive) {
             onPrepare()
-            onShare()
+            onTrash()
         } label: {
-            Label("Share...", systemImage: "square.and.arrow.up")
+            Label("Move to Trash", systemImage: "trash")
         }
 
-        Button {
-            onPrepare()
-            onCopyItems()
-        } label: {
-            Label("Copy", systemImage: "doc.on.doc")
-        }
+        Divider()
 
         Button {
             onPrepare()
@@ -912,8 +915,6 @@ private struct FileItemContextMenu: View {
         } label: {
             Label("Get Info", systemImage: "info.circle")
         }
-
-        Divider()
 
         Button {
             onPrepare()
@@ -936,15 +937,6 @@ private struct FileItemContextMenu: View {
             Label(compressTitle, systemImage: "archivebox")
         }
 
-        Button(role: .destructive) {
-            onPrepare()
-            onTrash()
-        } label: {
-            Label("Move to Trash", systemImage: "trash")
-        }
-
-        Divider()
-
         Button {
             onPrepare()
             onPreview()
@@ -958,6 +950,22 @@ private struct FileItemContextMenu: View {
             onReveal()
         } label: {
             Label("Reveal in Finder", systemImage: "finder")
+        }
+
+        Button {
+            onPrepare()
+            onShare()
+        } label: {
+            Label("Share...", systemImage: "square.and.arrow.up")
+        }
+
+        Divider()
+
+        Button {
+            onPrepare()
+            onCopyItems()
+        } label: {
+            Label("Copy", systemImage: "doc.on.doc")
         }
 
         Menu {
@@ -983,12 +991,6 @@ private struct FileItemContextMenu: View {
             }
         } label: {
             Label("Copy Path", systemImage: "doc.on.clipboard")
-        }
-
-        if !isPaneActive {
-            Divider()
-
-            Label("Activates this pane", systemImage: "sidebar.leading")
         }
     }
 
@@ -1024,6 +1026,8 @@ private struct EmptyPaneContextMenu: View {
     let onNewFile: () -> Void
     let onPaste: () -> Void
     let onShowViewOptions: () -> Void
+    let onCopyCurrentFolderPath: () -> Void
+    let onRevealCurrentFolder: () -> Void
     let onRefresh: () -> Void
     let onToggleHiddenFiles: () -> Void
 
@@ -1040,20 +1044,14 @@ private struct EmptyPaneContextMenu: View {
             Label("New File", systemImage: "doc.badge.plus")
         }
 
+        Divider()
+
         Button {
             onPaste()
         } label: {
             Label("Paste", systemImage: "doc.on.clipboard")
         }
         .disabled(!canPasteFiles)
-
-        Divider()
-
-        Button {
-            onShowViewOptions()
-        } label: {
-            Label("Show View Options", systemImage: "slider.horizontal.3")
-        }
 
         Divider()
 
@@ -1070,6 +1068,26 @@ private struct EmptyPaneContextMenu: View {
                 includeHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files",
                 systemImage: includeHiddenFiles ? "eye.slash" : "eye"
             )
+        }
+
+        Button {
+            onShowViewOptions()
+        } label: {
+            Label("Show View Options", systemImage: "slider.horizontal.3")
+        }
+
+        Divider()
+
+        Button {
+            onCopyCurrentFolderPath()
+        } label: {
+            Label("Copy Current Folder Path", systemImage: "doc.on.clipboard")
+        }
+
+        Button {
+            onRevealCurrentFolder()
+        } label: {
+            Label("Reveal Current Folder in Finder", systemImage: "finder")
         }
     }
 }
