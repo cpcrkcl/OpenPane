@@ -19,6 +19,20 @@ struct ApplicationOption: Identifiable {
     }
 }
 
+enum WorkspaceError: LocalizedError {
+    case noShareItems
+    case sharingUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .noShareItems:
+            return "Select one or more items to share."
+        case .sharingUnavailable:
+            return "Sharing is not available right now."
+        }
+    }
+}
+
 nonisolated protocol WorkspaceServicing: Sendable {
     @MainActor
     func open(url: URL)
@@ -34,6 +48,9 @@ nonisolated protocol WorkspaceServicing: Sendable {
 
     @MainActor
     func revealInFinder(urls: [URL])
+
+    @MainActor
+    func share(urls: [URL]) throws
 
     @MainActor
     func copyPath(url: URL)
@@ -113,6 +130,27 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
     @MainActor
     func revealInFinder(urls: [URL]) {
         NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+
+    @MainActor
+    func share(urls: [URL]) throws {
+        guard !urls.isEmpty else {
+            throw WorkspaceError.noShareItems
+        }
+
+        guard let contentView = NSApp.keyWindow?.contentView ?? NSApp.mainWindow?.contentView else {
+            throw WorkspaceError.sharingUnavailable
+        }
+
+        let picker = NSSharingServicePicker(items: urls)
+        let anchorRect = NSRect(
+            x: contentView.bounds.midX,
+            y: contentView.bounds.midY,
+            width: 1,
+            height: 1
+        )
+
+        picker.show(relativeTo: anchorRect, of: contentView, preferredEdge: .minY)
     }
 
     @MainActor

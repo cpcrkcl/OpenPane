@@ -568,6 +568,7 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
     private(set) var openedWithApplicationRequests: [(url: URL, applicationURL: URL)] = []
     private(set) var chooseApplicationURLs: [URL] = []
     private(set) var revealedURLs: [URL] = []
+    private(set) var sharedURLs: [URL] = []
     private(set) var copiedPathURLs: [URL] = []
     private(set) var copiedText: [String] = []
     var applicationOptions: [ApplicationOption] = []
@@ -590,6 +591,10 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
 
     func revealInFinder(urls: [URL]) {
         revealedURLs.append(contentsOf: urls)
+    }
+
+    func share(urls: [URL]) throws {
+        sharedURLs.append(contentsOf: urls)
     }
 
     func copyPath(url: URL) {

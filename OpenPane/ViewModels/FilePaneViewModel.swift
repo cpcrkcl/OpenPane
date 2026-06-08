@@ -292,6 +292,17 @@ final class FilePaneViewModel: ObservableObject {
         workspaceService.chooseApplicationAndOpen(url: item.url)
     }
 
+    func shareForContextMenu(clickedItem: FileItem) {
+        errorMessage = nil
+        let targetItems = contextMenuTargetItems(clickedItem: clickedItem)
+
+        do {
+            try workspaceService.share(urls: targetItems.map(\.url))
+        } catch {
+            errorMessage = Self.userReadableWorkspaceError(for: error)
+        }
+    }
+
     func openSelectedItem() async {
         let selectedItems = Array(self.selectedItems)
 
@@ -439,5 +450,14 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         return "Could not load \(directoryName)."
+    }
+
+    private static func userReadableWorkspaceError(for error: Error) -> String {
+        if let localizedError = error as? LocalizedError,
+           let description = localizedError.errorDescription {
+            return description
+        }
+
+        return "The action could not be completed."
     }
 }

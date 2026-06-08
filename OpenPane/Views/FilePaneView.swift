@@ -538,6 +538,9 @@ struct FilePaneView: View {
                             onChooseApplication: {
                                 viewModel.chooseApplicationToOpen(item)
                             },
+                            onShare: {
+                                viewModel.shareForContextMenu(clickedItem: item)
+                            },
                             onGetInfo: {
                                 infoItem = item
                             },
@@ -714,6 +717,7 @@ private struct FilePaneRowView: View {
     let applicationOptions: [ApplicationOption]
     let onOpenWithApplication: (URL) -> Void
     let onChooseApplication: () -> Void
+    let onShare: () -> Void
     let onGetInfo: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
@@ -801,6 +805,7 @@ private struct FilePaneRowView: View {
                 applicationOptions: applicationOptions,
                 onOpenWithApplication: onOpenWithApplication,
                 onChooseApplication: onChooseApplication,
+                onShare: onShare,
                 onGetInfo: onGetInfo,
                 onRename: onRename,
                 onTrash: onTrash,
@@ -821,6 +826,7 @@ private struct FileItemContextMenu: View {
     let applicationOptions: [ApplicationOption]
     let onOpenWithApplication: (URL) -> Void
     let onChooseApplication: () -> Void
+    let onShare: () -> Void
     let onGetInfo: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
@@ -868,6 +874,13 @@ private struct FileItemContextMenu: View {
             }
         } label: {
             Label("Open With", systemImage: "square.and.arrow.up")
+        }
+
+        Button {
+            onPrepare()
+            onShare()
+        } label: {
+            Label("Share...", systemImage: "square.and.arrow.up")
         }
 
         Button {
