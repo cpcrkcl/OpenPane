@@ -1138,6 +1138,7 @@ private struct FilePaneRowView: View {
     let isSelected: Bool
     let isPaneActive: Bool
     let paneSide: PaneSide?
+    let isOperationInProgress: Bool
     let onSelect: () -> Void
     let onDragItems: () -> [FileItem]
     let onContextSelect: () -> Void
@@ -1162,28 +1163,81 @@ private struct FilePaneRowView: View {
     @State private var isHovered = false
     @State private var isFileDropTargeted = false
 
+    private var dropVisualState: FileDropVisualState {
+        guard isFileDropTargeted else {
+            return .none
+        }
+
+        return item.isDirectory ? .valid : .invalid
+    }
+
     private var rowBackground: Color {
-        if isFileDropTargeted {
+        switch dropVisualState {
+        case .valid:
             return CatppuccinMochaTheme.accent.opacity(0.14)
+        case .invalid:
+            return CatppuccinMochaTheme.destructive.opacity(0.12)
+        case .none:
+            break
         }
 
         if isSelected {
-            return CatppuccinMochaTheme.rowSelectedBackground
+            return isPaneActive
+                ? CatppuccinMochaTheme.rowSelectedBackground
+                : CatppuccinMochaTheme.surface1.opacity(0.58)
         }
 
         if isHovered {
-            return CatppuccinMochaTheme.rowHoverBackground
+            return CatppuccinMochaTheme.surface1.opacity(0.58)
         }
 
         return Color.clear
     }
 
     private var rowBorder: Color {
-        if isFileDropTargeted {
+        switch dropVisualState {
+        case .valid:
             return CatppuccinMochaTheme.accentSecondary.opacity(0.78)
+        case .invalid:
+            return CatppuccinMochaTheme.destructive.opacity(0.72)
+        case .none:
+            break
         }
 
         return isSelected ? CatppuccinMochaTheme.accent.opacity(0.45) : Color.clear
+    }
+
+    private var dropTint: Color {
+        switch dropVisualState {
+        case .valid:
+            return CatppuccinMochaTheme.accentSecondary
+        case .invalid:
+            return CatppuccinMochaTheme.destructive
+        case .none:
+            return Color.clear
+        }
+    }
+
+    private var dropHintTitle: String {
+        switch dropVisualState {
+        case .valid:
+            return "Drop to copy here"
+        case .invalid:
+            return "Drop into folders only"
+        case .none:
+            return ""
+        }
+    }
+
+    private var dropHintSystemImage: String {
+        switch dropVisualState {
+        case .valid:
+            return "folder.fill"
+        case .invalid:
+            return "nosign"
+        case .none:
+            return ""
+        }
     }
 
     private var nameColor: Color {
@@ -1218,6 +1272,7 @@ private struct FilePaneRowView: View {
         .foregroundStyle(CatppuccinMochaTheme.subtext0)
         .padding(.horizontal, FilePaneListMetrics.rowHorizontalPadding)
         .frame(minHeight: 31)
+        .opacity(isOperationInProgress ? 0.68 : 1)
         .background(
             rowBackground,
             in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
@@ -1229,7 +1284,7 @@ private struct FilePaneRowView: View {
         .overlay(alignment: .leading) {
             if isFileDropTargeted {
                 Capsule()
-                    .fill(CatppuccinMochaTheme.accentSecondary)
+                    .fill(dropTint)
                     .frame(width: 3, height: 22)
                     .padding(.leading, 3)
             }
@@ -1237,18 +1292,22 @@ private struct FilePaneRowView: View {
         .overlay(alignment: .trailing) {
             if isFileDropTargeted {
                 HStack(spacing: 5) {
-                    Image(systemName: "folder.fill")
+                    Image(systemName: dropHintSystemImage)
                         .font(.system(size: 10, weight: .semibold))
-                    Text("Drop into folder")
+                    Text(dropHintTitle)
                         .font(.system(size: 10, weight: .semibold))
                 }
-                .foregroundStyle(CatppuccinMochaTheme.accentSecondary)
+                .foregroundStyle(dropTint)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(
-                    CatppuccinMochaTheme.surface0.opacity(0.9),
+                    CatppuccinMochaTheme.surface0.opacity(0.94),
                     in: Capsule()
                 )
+                .overlay {
+                    Capsule()
+                        .stroke(dropTint.opacity(0.28), lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+                }
                 .padding(.trailing, 8)
             }
         }
@@ -1267,13 +1326,17 @@ private struct FilePaneRowView: View {
         .onDrag {
             dragItemProvider()
         }
-        // Only folders accept row-level file drops. Regular file rows are left to
-        // the pane-level drop target, which previews a drop into the current folder.
+        // Folder rows are valid targets. Regular file rows deliberately reject
+        // drops so a drag never looks like it might overwrite that file.
         .fileDropTarget(
-            enabled: item.isDirectory,
+            enabled: true,
             isTargeted: $isFileDropTargeted,
             perform: { providers in
-                onDropFiles(providers, item.url)
+                guard item.isDirectory else {
+                    return false
+                }
+
+                return onDropFiles(providers, item.url)
             }
         )
         .onChange(of: isFileDropTargeted) { _, isTargeted in
