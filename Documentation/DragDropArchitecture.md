@@ -18,18 +18,18 @@ Basic tab support already exists.
 
 `FilePaneTabDragItem` is already defined as a Codable drag payload with a custom UTType: `cpcr.kcl.OpenPane.tab`.
 
-`FilePaneView` already starts tab drags from tab headers and accepts tab drops on the tab bar. `DualPaneView` passes the drop request to `DualPaneViewModel.moveTab(_:from:to:)`, which detaches the tab from the source pane and receives it in the destination pane.
+`FilePaneView` starts tab drags from tab headers and accepts tab drops on tab headers or empty tab bar space. `DualPaneView` passes the drop request to `DualPaneViewModel.moveTab(tabID:from:to:at:)`, which reorders tabs within a pane or detaches the tab from the source pane and receives it in the destination pane.
 
 The safest place to refine tab drag and drop is:
 
 - Drag source and visual drop target: `FilePaneView` tab bar/tab header code.
-- Cross-pane state mutation: `DualPaneViewModel.moveTab(_:from:to:)`.
+- Cross-pane state mutation: `DualPaneViewModel.moveTab(tabID:from:to:at:)`.
 - Per-pane tab state mutation: `FilePaneViewModel.detachTab(_:)` and `FilePaneViewModel.receiveTab(_:)`.
 
 Current limitations to keep separate from file drag/drop:
 
 - Same-pane tab reordering is exposed through tab-header and tab-bar drop targets.
-- Drops are intended for the other pane's tab bar, not arbitrary pane content.
+- Cross-pane tab drops are intended for the other pane's tab bar, not arbitrary pane content.
 - The tab payload carries tab identity, source pane side, and current URL, not a full serialized tab snapshot.
 
 ## File Drag and Drop

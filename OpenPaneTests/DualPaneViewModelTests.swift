@@ -109,6 +109,37 @@ struct DualPaneViewModelTests {
         #expect(viewModel.activePaneSide == .right)
     }
 
+    @Test func moveTabBetweenPanesPreservesMovedTabState() {
+        let sourceURL = URL(filePath: "/source")
+        let movedURL = URL(filePath: "/source/Projects")
+        let destinationURL = URL(filePath: "/destination")
+        let leftPane = FilePaneViewModel(currentURL: sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        let sourceFallbackTab = FilePaneTab(currentURL: sourceURL)
+        let movedTab = FilePaneTab(currentURL: movedURL)
+        let destinationFirstTab = FilePaneTab(currentURL: destinationURL)
+        let destinationSecondTab = FilePaneTab(currentURL: URL(filePath: "/destination/Downloads"))
+        leftPane.tabs = [sourceFallbackTab, movedTab]
+        leftPane.activeTabID = movedTab.id
+        leftPane.currentURL = movedURL
+        rightPane.tabs = [destinationFirstTab, destinationSecondTab]
+        rightPane.activeTabID = destinationFirstTab.id
+
+        viewModel.moveTab(tabID: movedTab.id, from: .left, to: .right, at: 1)
+
+        #expect(leftPane.tabs.map(\.id) == [sourceFallbackTab.id])
+        #expect(leftPane.activeTabID == sourceFallbackTab.id)
+        #expect(leftPane.currentURL == sourceURL)
+        #expect(rightPane.tabs.map(\.id) == [destinationFirstTab.id, movedTab.id, destinationSecondTab.id])
+        #expect(rightPane.activeTabID == movedTab.id)
+        #expect(rightPane.currentURL == movedURL)
+        #expect(rightPane.tabs[1].currentURL == movedURL)
+        #expect(rightPane.tabs[1].title == "Projects")
+        #expect(viewModel.activePaneSide == .right)
+        #expect(viewModel.errorMessage == nil)
+    }
+
     @Test func moveTabWithinSamePaneReordersTabs() async {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
