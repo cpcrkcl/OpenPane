@@ -24,6 +24,11 @@ private let fileDropTypeIdentifiers = [
     UTType.fileURL.identifier
 ]
 
+private struct FileDrop {
+    let sourcePaneSide: PaneSide?
+    let fileURLs: [URL]
+}
+
 struct FilePaneView: View {
     @ObservedObject var viewModel: FilePaneViewModel
     @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
@@ -39,6 +44,7 @@ struct FilePaneView: View {
     var onCreateFile: () -> Void = {}
     var onPaste: () -> Void = {}
     var onStatusMessage: (String) -> Void = { _ in }
+    var onDropFiles: ([URL], PaneSide?, URL) -> Void = { _, _, _ in }
 
     @State private var isTabAppendDropTargeted = false
     @State private var targetedTabID: FilePaneTab.ID?
@@ -853,16 +859,17 @@ struct FilePaneView: View {
             return false
         }
 
-        loadDroppedFileURLs(from: providers) { fileURLs in
+        loadDroppedFiles(from: providers) { drop in
             Task { @MainActor in
-                let uniqueURLs = uniqueFileURLs(fileURLs)
+                let uniqueURLs = uniqueFileURLs(drop.fileURLs)
                 let itemDescription = itemCountDescription(uniqueURLs.count)
                 let targetName = targetDirectory.openPaneDisplayName
 
                 if uniqueURLs.isEmpty {
                     onStatusMessage("No file URLs found to drop.")
                 } else {
-                    onStatusMessage("Ready to drop \(itemDescription) into \(targetName).")
+                    onStatusMessage("Copying \(itemDescription) into \(targetName)...")
+                    onDropFiles(uniqueURLs, drop.sourcePaneSide, targetDirectory)
                 }
             }
         }
@@ -875,10 +882,11 @@ struct FilePaneView: View {
             provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
     }
 
-    private func loadDroppedFileURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+    private func loadDroppedFiles(from providers: [NSItemProvider], completion: @escaping (FileDrop) -> Void) {
         let group = DispatchGroup()
         let lock = NSLock()
         var fileURLs: [URL] = []
+        var sourcePaneSide: PaneSide?
 
         for provider in providers where canLoadFileDropProvider(provider) {
             group.enter()
@@ -888,6 +896,7 @@ struct FilePaneView: View {
                     if let data,
                        let payload = FileDragPayload.decoded(from: data) {
                         lock.withLock {
+                            sourcePaneSide = sourcePaneSide ?? payload.sourcePaneSide
                             fileURLs.append(contentsOf: payload.fileURLs)
                         }
                     }
@@ -906,7 +915,7 @@ struct FilePaneView: View {
         }
 
         group.notify(queue: .main) {
-            completion(fileURLs)
+            completion(FileDrop(sourcePaneSide: sourcePaneSide, fileURLs: fileURLs))
         }
     }
 

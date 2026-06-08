@@ -163,6 +163,48 @@ final class DualPaneViewModel: ObservableObject {
         }
     }
 
+    func copyDroppedFileURLs(
+        _ fileURLs: [URL],
+        sourcePaneSide: PaneSide?,
+        to targetDirectory: URL,
+        in targetPaneSide: PaneSide,
+        conflictResolution: FileConflictResolution = .cancel
+    ) async {
+        let uniqueFileURLs = Self.uniqueFileURLs(fileURLs)
+
+        guard !uniqueFileURLs.isEmpty else {
+            errorMessage = "No file URLs found to drop."
+            operationStatusMessage = errorMessage
+            return
+        }
+
+        let targetPane = pane(for: targetPaneSide)
+        let targetName = targetDirectory.openPaneDisplayName
+
+        await performOperation(
+            statusMessage: "Copying \(Self.itemCountDescription(uniqueFileURLs.count)) to \(targetName)...",
+            successMessage: "Copied \(Self.itemCountDescription(uniqueFileURLs.count)) to \(targetName).",
+            failureMessage: "Drop copy failed."
+        ) {
+            let items = try uniqueFileURLs.map { try FileItem(url: $0) }
+            try await fileOperationService.copy(
+                items: items,
+                to: targetDirectory,
+                conflictResolution: conflictResolution
+            )
+
+            await targetPane.refresh()
+
+            if let sourcePaneSide {
+                let sourcePane = pane(for: sourcePaneSide)
+                if sourcePane !== targetPane,
+                   sourcePane.currentURL == targetDirectory {
+                    await sourcePane.refresh()
+                }
+            }
+        }
+    }
+
     func moveSelectionToOtherPane(conflictResolution: FileConflictResolution = .cancel) async {
         let sourcePane = activePane
         let destinationPane = inactivePane
@@ -413,6 +455,19 @@ final class DualPaneViewModel: ObservableObject {
     private static func itemCountDescription(_ count: Int) -> String {
         let itemText = count == 1 ? "item" : "items"
         return "\(count) \(itemText)"
+    }
+
+    private static func uniqueFileURLs(_ urls: [URL]) -> [URL] {
+        var seenURLs: Set<URL> = []
+
+        return urls.filter { url in
+            guard !seenURLs.contains(url) else {
+                return false
+            }
+
+            seenURLs.insert(url)
+            return true
+        }
     }
 
     private static func paneDescription(_ side: PaneSide) -> String {

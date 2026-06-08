@@ -301,6 +301,35 @@ struct DualPaneViewModelTests {
         #expect(viewModel.operationStatusMessage == "Pasted 1 item.")
     }
 
+    @Test func copyDroppedFileURLsCopiesIntoTargetDirectoryAndRefreshesTargetPane() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "drop.txt", contents: "drop me")
+        let targetFolderURL = temporaryDirectory.destinationURL.appendingPathComponent("Target Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: targetFolderURL, withIntermediateDirectories: true)
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: FileBrowserService())
+        let fileOperationService = MockFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+
+        await viewModel.copyDroppedFileURLs(
+            [sourceItem.url],
+            sourcePaneSide: .left,
+            to: targetFolderURL,
+            in: .right
+        )
+
+        #expect(fileOperationService.copiedItems == [sourceItem])
+        #expect(fileOperationService.copyDestinationURL == targetFolderURL)
+        #expect(fileOperationService.copyConflictResolution == .cancel)
+        #expect(rightPane.items.map(\.name) == ["Target Folder"])
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.operationStatusMessage == "Copied 1 item to Target Folder.")
+    }
+
     @Test func trashSelectionInActivePaneShowsErrorWhenNothingIsSelected() async {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
@@ -506,6 +535,9 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
     private let error: Error?
     private let queue = DispatchQueue(label: "OpenPaneTests.MockFileOperationService")
     private var protectedTrashedItems: [FileItem] = []
+    private var protectedCopiedItems: [FileItem] = []
+    private var protectedCopyDestinationURL: URL?
+    private var protectedCopyConflictResolution: FileConflictResolution?
 
     init(error: Error? = nil) {
         self.error = error
@@ -517,11 +549,39 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
         }
     }
 
+    var copiedItems: [FileItem] {
+        queue.sync {
+            protectedCopiedItems
+        }
+    }
+
+    var copyDestinationURL: URL? {
+        queue.sync {
+            protectedCopyDestinationURL
+        }
+    }
+
+    var copyConflictResolution: FileConflictResolution? {
+        queue.sync {
+            protectedCopyConflictResolution
+        }
+    }
+
     func copy(
         items: [FileItem],
         to destinationDirectory: URL,
         conflictResolution: FileConflictResolution
-    ) async throws {}
+    ) async throws {
+        queue.sync {
+            protectedCopiedItems.append(contentsOf: items)
+            protectedCopyDestinationURL = destinationDirectory
+            protectedCopyConflictResolution = conflictResolution
+        }
+
+        if let error {
+            throw error
+        }
+    }
 
     func move(
         items: [FileItem],

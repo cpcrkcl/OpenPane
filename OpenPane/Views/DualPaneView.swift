@@ -97,6 +97,16 @@ struct DualPaneView: View {
                     }
                 } onStatusMessage: { message in
                     viewModel.showStatusMessage(message)
+                } onDropFiles: { fileURLs, sourcePaneSide, targetDirectory in
+                    viewModel.setActivePane(.left)
+                    Task {
+                        await viewModel.copyDroppedFileURLs(
+                            fileURLs,
+                            sourcePaneSide: sourcePaneSide,
+                            to: targetDirectory,
+                            in: .left
+                        )
+                    }
                 }
                 .frame(minWidth: 320)
 
@@ -135,6 +145,16 @@ struct DualPaneView: View {
                     }
                 } onStatusMessage: { message in
                     viewModel.showStatusMessage(message)
+                } onDropFiles: { fileURLs, sourcePaneSide, targetDirectory in
+                    viewModel.setActivePane(.right)
+                    Task {
+                        await viewModel.copyDroppedFileURLs(
+                            fileURLs,
+                            sourcePaneSide: sourcePaneSide,
+                            to: targetDirectory,
+                            in: .right
+                        )
+                    }
                 }
                 .frame(minWidth: 320)
             }
