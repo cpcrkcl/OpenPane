@@ -28,7 +28,7 @@ The safest place to refine tab drag and drop is:
 
 Current limitations to keep separate from file drag/drop:
 
-- Same-pane tab reordering is prepared in the view-model layer, but the visual tab bar does not expose a reorder drop interaction yet.
+- Same-pane tab reordering is exposed through tab-header and tab-bar drop targets.
 - Drops are intended for the other pane's tab bar, not arbitrary pane content.
 - The tab payload carries tab identity, source pane side, and current URL, not a full serialized tab snapshot.
 

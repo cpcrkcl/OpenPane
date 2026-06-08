@@ -24,7 +24,7 @@ struct FilePaneView: View {
     var isActive: Bool = false
     var paneSide: PaneSide?
     var onActivate: () -> Void = {}
-    var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide) -> Void = { _, _, _ in }
+    var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide, Int?) -> Void = { _, _, _, _ in }
     var onRenameSelected: () -> Void = {}
     var onTrashSelected: () -> Void = {}
     var onDuplicate: (FileItem) -> Void = { _ in }
@@ -35,6 +35,7 @@ struct FilePaneView: View {
     var onStatusMessage: (String) -> Void = { _ in }
 
     @State private var isTabDropTargeted = false
+    @State private var targetedTabID: FilePaneTab.ID?
     @State private var infoItem: FileItem?
     @State private var isShowingViewOptions = false
 
@@ -334,11 +335,13 @@ struct FilePaneView: View {
         .onDrop(
             of: [FilePaneTabDragItem.typeIdentifier],
             isTargeted: $isTabDropTargeted,
-            perform: handleTabDrop(_:)
+            perform: { providers in
+                handleTabDrop(providers, destinationIndex: viewModel.tabs.count)
+            }
         )
     }
 
-    private func handleTabDrop(_ providers: [NSItemProvider]) -> Bool {
+    private func handleTabDrop(_ providers: [NSItemProvider], destinationIndex: Int?) -> Bool {
         guard let destinationSide = paneSide,
               let provider = providers.first(where: {
                   $0.hasItemConformingToTypeIdentifier(FilePaneTabDragItem.typeIdentifier)
@@ -350,13 +353,13 @@ struct FilePaneView: View {
 
         provider.loadDataRepresentation(forTypeIdentifier: FilePaneTabDragItem.typeIdentifier) { data, _ in
             guard let data,
-                  let item = FilePaneTabDragItem.decoded(from: data),
-                  item.sourcePaneSide != destinationSide else {
+                  let item = FilePaneTabDragItem.decoded(from: data) else {
                 return
             }
 
             Task { @MainActor in
-                moveTab(item.tabID, item.sourcePaneSide, destinationSide)
+                targetedTabID = nil
+                moveTab(item.tabID, item.sourcePaneSide, destinationSide, destinationIndex)
             }
         }
 
@@ -388,14 +391,53 @@ struct FilePaneView: View {
             .disabled(viewModel.tabs.count == 1)
         }
         .padding(.trailing, 2)
+        .padding(2)
+        .background(
+            targetedTabID == tab.id
+                ? CatppuccinMochaTheme.accent.opacity(0.12)
+                : Color.clear,
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                .stroke(
+                    targetedTabID == tab.id
+                        ? CatppuccinMochaTheme.accent.opacity(0.55)
+                        : Color.clear,
+                    lineWidth: CatppuccinMochaTheme.hairlineBorderWidth
+                )
+        )
 
         if let paneSide {
             header.onDrag {
                 tabDragProvider(for: tab, paneSide: paneSide)
             }
+            .onDrop(
+                of: [FilePaneTabDragItem.typeIdentifier],
+                isTargeted: tabDropTargetBinding(for: tab.id),
+                perform: { providers in
+                    handleTabDrop(providers, destinationIndex: tabIndex(for: tab.id))
+                }
+            )
         } else {
             header
         }
+    }
+
+    private func tabDropTargetBinding(for tabID: FilePaneTab.ID) -> Binding<Bool> {
+        Binding {
+            targetedTabID == tabID
+        } set: { isTargeted in
+            if isTargeted {
+                targetedTabID = tabID
+            } else if targetedTabID == tabID {
+                targetedTabID = nil
+            }
+        }
+    }
+
+    private func tabIndex(for tabID: FilePaneTab.ID) -> Int? {
+        viewModel.tabs.firstIndex { $0.id == tabID }
     }
 
     private func tabDragProvider(for tab: FilePaneTab, paneSide: PaneSide) -> NSItemProvider {

@@ -68,8 +68,8 @@ struct DualPaneView: View {
                     paneSide: .left
                 ) {
                     viewModel.setActivePane(.left)
-                } onMoveTab: { tabID, sourceSide, destinationSide in
-                    viewModel.moveTab(tabID, from: sourceSide, to: destinationSide)
+                } onMoveTab: { tabID, sourceSide, destinationSide, destinationIndex in
+                    viewModel.moveTab(tabID: tabID, from: sourceSide, to: destinationSide, at: destinationIndex)
                 } onRenameSelected: {
                     prepareRenameSheet()
                 } onTrashSelected: {
@@ -106,8 +106,8 @@ struct DualPaneView: View {
                     paneSide: .right
                 ) {
                     viewModel.setActivePane(.right)
-                } onMoveTab: { tabID, sourceSide, destinationSide in
-                    viewModel.moveTab(tabID, from: sourceSide, to: destinationSide)
+                } onMoveTab: { tabID, sourceSide, destinationSide, destinationIndex in
+                    viewModel.moveTab(tabID: tabID, from: sourceSide, to: destinationSide, at: destinationIndex)
                 } onRenameSelected: {
                     prepareRenameSheet()
                 } onTrashSelected: {
