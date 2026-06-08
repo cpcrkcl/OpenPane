@@ -278,6 +278,20 @@ final class FilePaneViewModel: ObservableObject {
         workspaceService.open(url: item.url)
     }
 
+    func applicationsAvailableToOpen(_ item: FileItem) -> [ApplicationOption] {
+        workspaceService.appsAvailableToOpen(url: item.url)
+    }
+
+    func open(_ item: FileItem, withApplication applicationURL: URL) {
+        errorMessage = nil
+        workspaceService.open(url: item.url, withApplication: applicationURL)
+    }
+
+    func chooseApplicationToOpen(_ item: FileItem) {
+        errorMessage = nil
+        workspaceService.chooseApplicationAndOpen(url: item.url)
+    }
+
     func openSelectedItem() async {
         let selectedItems = Array(self.selectedItems)
 

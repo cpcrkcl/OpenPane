@@ -565,12 +565,27 @@ private final class MockQuickLookPreviewService: QuickLookPreviewServicing {
 @MainActor
 private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendable {
     private(set) var openedURLs: [URL] = []
+    private(set) var openedWithApplicationRequests: [(url: URL, applicationURL: URL)] = []
+    private(set) var chooseApplicationURLs: [URL] = []
     private(set) var revealedURLs: [URL] = []
     private(set) var copiedPathURLs: [URL] = []
     private(set) var copiedText: [String] = []
+    var applicationOptions: [ApplicationOption] = []
 
     func open(url: URL) {
         openedURLs.append(url)
+    }
+
+    func appsAvailableToOpen(url: URL) -> [ApplicationOption] {
+        applicationOptions
+    }
+
+    func open(url: URL, withApplication applicationURL: URL) {
+        openedWithApplicationRequests.append((url, applicationURL))
+    }
+
+    func chooseApplicationAndOpen(url: URL) {
+        chooseApplicationURLs.append(url)
     }
 
     func revealInFinder(urls: [URL]) {

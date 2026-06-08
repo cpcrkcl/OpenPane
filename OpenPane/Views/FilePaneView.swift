@@ -531,6 +531,13 @@ struct FilePaneView: View {
                                     await viewModel.open(item)
                                 }
                             },
+                            applicationOptions: viewModel.applicationsAvailableToOpen(item),
+                            onOpenWithApplication: { applicationURL in
+                                viewModel.open(item, withApplication: applicationURL)
+                            },
+                            onChooseApplication: {
+                                viewModel.chooseApplicationToOpen(item)
+                            },
                             onGetInfo: {
                                 infoItem = item
                             },
@@ -704,6 +711,9 @@ private struct FilePaneRowView: View {
     let onSelect: () -> Void
     let onContextSelect: () -> Void
     let onOpen: () -> Void
+    let applicationOptions: [ApplicationOption]
+    let onOpenWithApplication: (URL) -> Void
+    let onChooseApplication: () -> Void
     let onGetInfo: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
@@ -788,6 +798,9 @@ private struct FilePaneRowView: View {
                 isPaneActive: isPaneActive,
                 onPrepare: onContextSelect,
                 onOpen: onOpen,
+                applicationOptions: applicationOptions,
+                onOpenWithApplication: onOpenWithApplication,
+                onChooseApplication: onChooseApplication,
                 onGetInfo: onGetInfo,
                 onRename: onRename,
                 onTrash: onTrash,
@@ -805,6 +818,9 @@ private struct FileItemContextMenu: View {
     let isPaneActive: Bool
     let onPrepare: () -> Void
     let onOpen: () -> Void
+    let applicationOptions: [ApplicationOption]
+    let onOpenWithApplication: (URL) -> Void
+    let onChooseApplication: () -> Void
     let onGetInfo: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
@@ -819,6 +835,39 @@ private struct FileItemContextMenu: View {
             onOpen()
         } label: {
             Label("Open", systemImage: "arrow.forward")
+        }
+
+        Menu {
+            Button {
+                onPrepare()
+                onOpen()
+            } label: {
+                Label("Default App", systemImage: "app")
+            }
+
+            if !applicationOptions.isEmpty {
+                Divider()
+
+                ForEach(applicationOptions) { application in
+                    Button {
+                        onPrepare()
+                        onOpenWithApplication(application.url)
+                    } label: {
+                        ApplicationOptionLabel(application: application)
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                onPrepare()
+                onChooseApplication()
+            } label: {
+                Label("Choose Application...", systemImage: "ellipsis.circle")
+            }
+        } label: {
+            Label("Open With", systemImage: "square.and.arrow.up")
         }
 
         Button {
@@ -897,6 +946,22 @@ private struct FileItemContextMenu: View {
             Divider()
 
             Label("Activates this pane", systemImage: "sidebar.leading")
+        }
+    }
+}
+
+private struct ApplicationOptionLabel: View {
+    let application: ApplicationOption
+
+    var body: some View {
+        if let icon = application.icon {
+            Label {
+                Text(application.name)
+            } icon: {
+                Image(nsImage: icon)
+            }
+        } else {
+            Label(application.name, systemImage: "app")
         }
     }
 }
