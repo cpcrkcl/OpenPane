@@ -533,14 +533,9 @@ struct FilePaneView: View {
             .background(CatppuccinMochaTheme.base)
             .contextMenu {
                 EmptyPaneContextMenu(
-                    currentURL: viewModel.currentURL,
                     includeHiddenFiles: viewModel.includeHiddenFiles,
-                    isActive: isActive,
                     onNewFolder: onCreateFolder,
                     onNewFile: onCreateFile,
-                    onPaste: {
-                        viewModel.showPlaceholderError("Paste is not implemented yet.")
-                    },
                     onRefresh: {
                         Task {
                             await viewModel.refresh()
@@ -828,12 +823,9 @@ private struct FileItemContextMenu: View {
 }
 
 private struct EmptyPaneContextMenu: View {
-    let currentURL: URL
     let includeHiddenFiles: Bool
-    let isActive: Bool
     let onNewFolder: () -> Void
     let onNewFile: () -> Void
-    let onPaste: () -> Void
     let onRefresh: () -> Void
     let onToggleHiddenFiles: () -> Void
 
@@ -848,12 +840,6 @@ private struct EmptyPaneContextMenu: View {
             onNewFile()
         } label: {
             Label("New File", systemImage: "doc.badge.plus")
-        }
-
-        Button {
-            onPaste()
-        } label: {
-            Label("Paste", systemImage: "doc.on.clipboard")
         }
 
         Divider()
@@ -872,10 +858,6 @@ private struct EmptyPaneContextMenu: View {
                 systemImage: includeHiddenFiles ? "eye.slash" : "eye"
             )
         }
-
-        Divider()
-
-        Label(currentURL.openPaneDisplayName, systemImage: isActive ? "checkmark.circle" : "circle")
     }
 }
 

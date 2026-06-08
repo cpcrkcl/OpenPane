@@ -75,8 +75,10 @@ struct DualPaneView: View {
                 } onTrashSelected: {
                     prepareTrashConfirmation()
                 } onCreateFolder: {
+                    viewModel.setActivePane(.left)
                     prepareNewFolderSheet()
                 } onCreateFile: {
+                    viewModel.setActivePane(.left)
                     prepareNewFileSheet()
                 }
                 .frame(minWidth: 320)
@@ -94,8 +96,10 @@ struct DualPaneView: View {
                 } onTrashSelected: {
                     prepareTrashConfirmation()
                 } onCreateFolder: {
+                    viewModel.setActivePane(.right)
                     prepareNewFolderSheet()
                 } onCreateFile: {
+                    viewModel.setActivePane(.right)
                     prepareNewFileSheet()
                 }
                 .frame(minWidth: 320)
