@@ -18,6 +18,8 @@ struct MainWindowView: View {
             HStack(spacing: 12) {
                 sidebarSurface
 
+                sidebarDivider
+
                 mainContentSurface
             }
         }
@@ -72,7 +74,10 @@ struct MainWindowView: View {
     }
 
     private var sidebarSurface: some View {
-        SidebarView(viewModel: sidebarViewModel) { location in
+        SidebarView(
+            viewModel: sidebarViewModel,
+            activeURL: dualPaneViewModel.activePane.currentURL
+        ) { location in
             Task {
                 await dualPaneViewModel.activePane.setDirectory(location.url)
             }
@@ -83,6 +88,13 @@ struct MainWindowView: View {
             RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
                 .stroke(CatppuccinMochaTheme.surface0, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
         }
+    }
+
+    private var sidebarDivider: some View {
+        Rectangle()
+            .fill(CatppuccinMochaTheme.surface0.opacity(0.9))
+            .frame(width: CatppuccinMochaTheme.hairlineBorderWidth)
+            .padding(.vertical, 4)
     }
 
     private var mainContentSurface: some View {

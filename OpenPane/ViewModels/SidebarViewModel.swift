@@ -39,7 +39,7 @@ final class SidebarViewModel: ObservableObject {
             FavoriteLocation(
                 name: "Applications",
                 url: applicationsURL(fileManager: fileManager),
-                systemImage: "app"
+                systemImage: "square.grid.2x2"
             )
         ]
     }
