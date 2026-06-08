@@ -8,6 +8,12 @@
 import Combine
 import Foundation
 
+nonisolated enum FileItemCopyTextFormat: Sendable {
+    case absolutePath
+    case fileURL
+    case name
+}
+
 @MainActor
 final class FilePaneViewModel: ObservableObject {
     @Published var currentURL: URL {
@@ -237,8 +243,18 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     func copyPath(of item: FileItem) {
+        _ = copyTextForContextMenu(clickedItem: item, format: .absolutePath)
+    }
+
+    func copyTextForContextMenu(clickedItem: FileItem, format: FileItemCopyTextFormat) -> Int {
         errorMessage = nil
-        workspaceService.copyPath(url: item.url)
+        let targetItems = contextMenuTargetItems(clickedItem: clickedItem)
+        let copiedText = targetItems
+            .map { copyText(for: $0, format: format) }
+            .joined(separator: "\n")
+
+        workspaceService.copyText(copiedText)
+        return targetItems.count
     }
 
     func toggleHiddenFiles() async {
@@ -363,6 +379,27 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         update(&tabs[index])
+    }
+
+    private func contextMenuTargetItems(clickedItem: FileItem) -> [FileItem] {
+        guard selectedItems.contains(clickedItem) else {
+            return [clickedItem]
+        }
+
+        return selectedItems.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private func copyText(for item: FileItem, format: FileItemCopyTextFormat) -> String {
+        switch format {
+        case .absolutePath:
+            item.url.path
+        case .fileURL:
+            item.url.absoluteString
+        case .name:
+            item.name
+        }
     }
 
     private static func userReadableError(for error: Error, at url: URL) -> String {

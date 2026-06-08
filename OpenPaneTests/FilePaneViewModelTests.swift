@@ -567,6 +567,7 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
     private(set) var openedURLs: [URL] = []
     private(set) var revealedURLs: [URL] = []
     private(set) var copiedPathURLs: [URL] = []
+    private(set) var copiedText: [String] = []
 
     func open(url: URL) {
         openedURLs.append(url)
@@ -578,6 +579,10 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
 
     func copyPath(url: URL) {
         copiedPathURLs.append(url)
+    }
+
+    func copyText(_ text: String) {
+        copiedText.append(text)
     }
 }
 

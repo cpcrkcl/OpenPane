@@ -17,6 +17,9 @@ nonisolated protocol WorkspaceServicing: Sendable {
 
     @MainActor
     func copyPath(url: URL)
+
+    @MainActor
+    func copyText(_ text: String)
 }
 
 nonisolated struct WorkspaceService: WorkspaceServicing {
@@ -34,8 +37,13 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
 
     @MainActor
     func copyPath(url: URL) {
+        copyText(url.path)
+    }
+
+    @MainActor
+    func copyText(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(url.path, forType: .string)
+        pasteboard.setString(text, forType: .string)
     }
 }

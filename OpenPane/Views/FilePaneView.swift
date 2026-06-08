@@ -29,6 +29,7 @@ struct FilePaneView: View {
     var onTrashSelected: () -> Void = {}
     var onCreateFolder: () -> Void = {}
     var onCreateFile: () -> Void = {}
+    var onStatusMessage: (String) -> Void = { _ in }
 
     @State private var isTabDropTargeted = false
     @State private var activeSortColumn: FileListColumn?
@@ -522,8 +523,9 @@ struct FilePaneView: View {
                                 viewModel.selectedItems = [item]
                                 viewModel.previewSelectedItem()
                             },
-                            onCopyPath: {
-                                viewModel.copyPath(of: item)
+                            onCopyText: { format in
+                                let copiedItemCount = viewModel.copyTextForContextMenu(clickedItem: item, format: format)
+                                onStatusMessage(copyStatusMessage(for: format, itemCount: copiedItemCount))
                             }
                         )
                     }
@@ -655,6 +657,19 @@ struct FilePaneView: View {
         onActivate()
         viewModel.selectForContextMenu(item)
     }
+
+    private func copyStatusMessage(for format: FileItemCopyTextFormat, itemCount: Int) -> String {
+        let suffix = itemCount == 1 ? "" : "s"
+
+        switch format {
+        case .absolutePath:
+            return "Copied path\(suffix)."
+        case .fileURL:
+            return "Copied file URL\(suffix)."
+        case .name:
+            return "Copied name\(suffix)."
+        }
+    }
 }
 
 private struct FilePaneRowView: View {
@@ -669,7 +684,7 @@ private struct FilePaneRowView: View {
     let onTrash: () -> Void
     let onReveal: () -> Void
     let onPreview: () -> Void
-    let onCopyPath: () -> Void
+    let onCopyText: (FileItemCopyTextFormat) -> Void
 
     @State private var isHovered = false
 
@@ -751,7 +766,7 @@ private struct FilePaneRowView: View {
                 onTrash: onTrash,
                 onPreview: onPreview,
                 onReveal: onReveal,
-                onCopyPath: onCopyPath
+                onCopyText: onCopyText
             )
         }
     }
@@ -766,7 +781,7 @@ private struct FileItemContextMenu: View {
     let onTrash: () -> Void
     let onPreview: () -> Void
     let onReveal: () -> Void
-    let onCopyPath: () -> Void
+    let onCopyText: (FileItemCopyTextFormat) -> Void
 
     var body: some View {
         Button {
@@ -807,9 +822,27 @@ private struct FileItemContextMenu: View {
             Label("Reveal in Finder", systemImage: "finder")
         }
 
-        Button {
-            onPrepare()
-            onCopyPath()
+        Menu {
+            Button {
+                onPrepare()
+                onCopyText(.absolutePath)
+            } label: {
+                Label("Copy Absolute Path", systemImage: "doc.on.clipboard")
+            }
+
+            Button {
+                onPrepare()
+                onCopyText(.fileURL)
+            } label: {
+                Label("Copy File URL", systemImage: "link")
+            }
+
+            Button {
+                onPrepare()
+                onCopyText(.name)
+            } label: {
+                Label("Copy Name", systemImage: "textformat")
+            }
         } label: {
             Label("Copy Path", systemImage: "doc.on.clipboard")
         }

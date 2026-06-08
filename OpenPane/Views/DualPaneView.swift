@@ -80,6 +80,8 @@ struct DualPaneView: View {
                 } onCreateFile: {
                     viewModel.setActivePane(.left)
                     prepareNewFileSheet()
+                } onStatusMessage: { message in
+                    viewModel.showStatusMessage(message)
                 }
                 .frame(minWidth: 320)
 
@@ -101,6 +103,8 @@ struct DualPaneView: View {
                 } onCreateFile: {
                     viewModel.setActivePane(.right)
                     prepareNewFileSheet()
+                } onStatusMessage: { message in
+                    viewModel.showStatusMessage(message)
                 }
                 .frame(minWidth: 320)
             }

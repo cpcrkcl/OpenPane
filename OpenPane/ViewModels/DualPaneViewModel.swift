@@ -58,6 +58,10 @@ final class DualPaneViewModel: ObservableObject {
         activePaneSide = side
     }
 
+    func showStatusMessage(_ message: String) {
+        operationStatusMessage = message
+    }
+
     func pane(for side: PaneSide) -> FilePaneViewModel {
         side == .left ? leftPane : rightPane
     }
