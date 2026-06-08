@@ -19,6 +19,11 @@ private enum FilePaneListMetrics {
     static let kindColumnWidth: CGFloat = 128
 }
 
+private let fileDropTypeIdentifiers = [
+    FileDragPayload.typeIdentifier,
+    UTType.fileURL.identifier
+]
+
 struct FilePaneView: View {
     @ObservedObject var viewModel: FilePaneViewModel
     @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
@@ -37,6 +42,7 @@ struct FilePaneView: View {
 
     @State private var isTabAppendDropTargeted = false
     @State private var targetedTabID: FilePaneTab.ID?
+    @State private var isPaneFileDropTargeted = false
     @State private var infoItem: FileItem?
     @State private var isShowingViewOptions = false
 
@@ -690,6 +696,9 @@ struct FilePaneView: View {
                                 let copiedItemCount = viewModel.copyTextForContextMenu(clickedItem: item, format: format)
                                 onStatusMessage(copyStatusMessage(for: format, itemCount: copiedItemCount))
                             },
+                            onDropFiles: { providers, targetDirectory in
+                                handleFileDrop(providers, targetDirectory: targetDirectory)
+                            },
                             compressItemCount: viewModel.contextMenuTargetItems(clickedItem: item).count
                         )
                     }
@@ -697,6 +706,24 @@ struct FilePaneView: View {
                 .padding(FilePaneListMetrics.contentPadding)
             }
             .background(CatppuccinMochaTheme.base)
+            .overlay {
+                if isPaneFileDropTargeted {
+                    RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                        .stroke(CatppuccinMochaTheme.accent.opacity(0.62), lineWidth: CatppuccinMochaTheme.paneBorderWidth)
+                        .background(
+                            CatppuccinMochaTheme.accent.opacity(0.08),
+                            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                        )
+                        .padding(3)
+                }
+            }
+            .onDrop(
+                of: fileDropTypeIdentifiers,
+                isTargeted: $isPaneFileDropTargeted,
+                perform: { providers in
+                    handleFileDrop(providers, targetDirectory: viewModel.currentURL)
+                }
+            )
             .contextMenu {
                 EmptyPaneContextMenu(
                     includeHiddenFiles: viewModel.includeHiddenFiles,
@@ -821,6 +848,120 @@ struct FilePaneView: View {
         viewModel.selectForContextMenu(item)
     }
 
+    private func handleFileDrop(_ providers: [NSItemProvider], targetDirectory: URL) -> Bool {
+        guard providers.contains(where: canLoadFileDropProvider) else {
+            return false
+        }
+
+        loadDroppedFileURLs(from: providers) { fileURLs in
+            Task { @MainActor in
+                let uniqueURLs = uniqueFileURLs(fileURLs)
+                let itemDescription = itemCountDescription(uniqueURLs.count)
+                let targetName = targetDirectory.openPaneDisplayName
+
+                if uniqueURLs.isEmpty {
+                    onStatusMessage("No file URLs found to drop.")
+                } else {
+                    onStatusMessage("Ready to drop \(itemDescription) into \(targetName).")
+                }
+            }
+        }
+
+        return true
+    }
+
+    private func canLoadFileDropProvider(_ provider: NSItemProvider) -> Bool {
+        provider.hasItemConformingToTypeIdentifier(FileDragPayload.typeIdentifier) ||
+            provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+    }
+
+    private func loadDroppedFileURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var fileURLs: [URL] = []
+
+        for provider in providers where canLoadFileDropProvider(provider) {
+            group.enter()
+
+            if provider.hasItemConformingToTypeIdentifier(FileDragPayload.typeIdentifier) {
+                provider.loadDataRepresentation(forTypeIdentifier: FileDragPayload.typeIdentifier) { data, _ in
+                    if let data,
+                       let payload = FileDragPayload.decoded(from: data) {
+                        lock.withLock {
+                            fileURLs.append(contentsOf: payload.fileURLs)
+                        }
+                    }
+                    group.leave()
+                }
+            } else {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    if let fileURL = fileURL(from: item) {
+                        lock.withLock {
+                            fileURLs.append(fileURL)
+                        }
+                    }
+                    group.leave()
+                }
+            }
+        }
+
+        group.notify(queue: .main) {
+            completion(fileURLs)
+        }
+    }
+
+    private func fileURL(from item: NSSecureCoding?) -> URL? {
+        if let url = item as? URL {
+            return url
+        }
+
+        if let url = item as? NSURL {
+            return url as URL
+        }
+
+        if let data = item as? Data,
+           let string = String(data: data, encoding: .utf8) {
+            return fileURL(from: string)
+        }
+
+        if let string = item as? String {
+            return fileURL(from: string)
+        }
+
+        return nil
+    }
+
+    private func fileURL(from string: String) -> URL? {
+        if let url = URL(string: string),
+           url.isFileURL {
+            return url
+        }
+
+        if string.hasPrefix("/") {
+            return URL(fileURLWithPath: string)
+        }
+
+        return nil
+    }
+
+    private func uniqueFileURLs(_ urls: [URL]) -> [URL] {
+        var seenURLs: Set<URL> = []
+
+        return urls.filter { url in
+            guard !seenURLs.contains(url) else {
+                return false
+            }
+
+            seenURLs.insert(url)
+            return true
+        }
+    }
+
+    private func itemCountDescription(_ count: Int) -> String {
+        let itemText = count == 1 ? "item" : "items"
+        return "\(count) \(itemText)"
+    }
+
     private func copyStatusMessage(for format: FileItemCopyTextFormat, itemCount: Int) -> String {
         let suffix = itemCount == 1 ? "" : "s"
 
@@ -863,11 +1004,17 @@ private struct FilePaneRowView: View {
     let onReveal: () -> Void
     let onPreview: () -> Void
     let onCopyText: (FileItemCopyTextFormat) -> Void
+    let onDropFiles: ([NSItemProvider], URL) -> Bool
     let compressItemCount: Int
 
     @State private var isHovered = false
+    @State private var isFileDropTargeted = false
 
     private var rowBackground: Color {
+        if isFileDropTargeted {
+            return CatppuccinMochaTheme.surface2.opacity(0.34)
+        }
+
         if isSelected {
             return CatppuccinMochaTheme.rowSelectedBackground
         }
@@ -880,7 +1027,11 @@ private struct FilePaneRowView: View {
     }
 
     private var rowBorder: Color {
-        isSelected ? CatppuccinMochaTheme.accent.opacity(0.45) : Color.clear
+        if isFileDropTargeted {
+            return CatppuccinMochaTheme.accent.opacity(0.7)
+        }
+
+        return isSelected ? CatppuccinMochaTheme.accent.opacity(0.45) : Color.clear
     }
 
     private var nameColor: Color {
@@ -938,6 +1089,15 @@ private struct FilePaneRowView: View {
         .onDrag {
             dragItemProvider()
         }
+        // Only folders accept row-level file drops. Regular file rows are left to
+        // the pane-level drop target, which previews a drop into the current folder.
+        .fileDropTarget(
+            enabled: item.isDirectory,
+            isTargeted: $isFileDropTargeted,
+            perform: { providers in
+                onDropFiles(providers, item.url)
+            }
+        )
         .contextMenu {
             FileItemContextMenu(
                 item: item,
@@ -1415,5 +1575,22 @@ private final class RightClickMonitorNSView: NSView {
 private extension View {
     func onRightClickInside(_ action: @escaping () -> Void) -> some View {
         background(RightClickMonitorView(action: action))
+    }
+
+    @ViewBuilder
+    func fileDropTarget(
+        enabled: Bool,
+        isTargeted: Binding<Bool>,
+        perform: @escaping ([NSItemProvider]) -> Bool
+    ) -> some View {
+        if enabled {
+            onDrop(
+                of: fileDropTypeIdentifiers,
+                isTargeted: isTargeted,
+                perform: perform
+            )
+        } else {
+            self
+        }
     }
 }
