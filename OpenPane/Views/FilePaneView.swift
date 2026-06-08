@@ -112,7 +112,7 @@ struct FilePaneView: View {
         .background(paneSurfaceColor)
         .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge))
         .shadow(
-            color: isActive ? CatppuccinMochaTheme.accent.opacity(0.12) : Color.black.opacity(0.18),
+            color: isActive ? CatppuccinMochaTheme.accent.opacity(0.12) : CatppuccinMochaTheme.crust.opacity(0.65),
             radius: isActive ? 12 : 6,
             x: 0,
             y: isActive ? 5 : 2
@@ -288,8 +288,7 @@ struct FilePaneView: View {
             } label: {
                 Image(systemName: "plus")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(ToolbarIconButtonStyle())
 
             Spacer()
         }
@@ -340,9 +339,7 @@ struct FilePaneView: View {
                     .lineLimit(1)
                     .frame(maxWidth: 140)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(tab.id == viewModel.activeTabID ? CatppuccinMochaTheme.accent : nil)
+            .buttonStyle(PaneTabButtonStyle(isActive: tab.id == viewModel.activeTabID))
 
             Button {
                 Task {
@@ -351,8 +348,7 @@ struct FilePaneView: View {
             } label: {
                 Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
-            .controlSize(.small)
+            .buttonStyle(PaneTabCloseButtonStyle())
             .disabled(viewModel.tabs.count == 1)
         }
         .padding(.trailing, 2)
@@ -447,9 +443,7 @@ struct FilePaneView: View {
             .buttonStyle(SecondaryActionButtonStyle())
             .disabled(viewModel.selectedItems.isEmpty)
 
-            TextField("Filter", text: $viewModel.searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 180)
+            searchField
 
             Button {
                 Task {
@@ -472,6 +466,29 @@ struct FilePaneView: View {
         }
         .controlSize(.small)
         .foregroundStyle(CatppuccinMochaTheme.primaryText)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(CatppuccinMochaTheme.mutedText)
+
+            TextField("Filter", text: $viewModel.searchText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(CatppuccinMochaTheme.primaryText)
+        }
+        .padding(.horizontal, 9)
+        .frame(width: 180, height: 28)
+        .background(
+            CatppuccinMochaTheme.surface0.opacity(0.78),
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                .stroke(CatppuccinMochaTheme.surface1.opacity(0.76), lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
     }
 
     private var fileTable: some View {

@@ -271,7 +271,7 @@ struct DualPaneView: View {
 
             Text(viewModel.operationStatusMessage ?? "Ready")
                 .lineLimit(1)
-                .foregroundColor(viewModel.errorMessage == nil ? CatppuccinMochaTheme.secondaryText : CatppuccinMochaTheme.destructive)
+                .foregroundStyle(viewModel.errorMessage == nil ? CatppuccinMochaTheme.secondaryText : CatppuccinMochaTheme.destructive)
 
             Spacer()
         }

@@ -134,3 +134,77 @@ struct ToolbarIconButtonStyle: ButtonStyle {
         return isPressed ? CatppuccinMochaTheme.surface2.opacity(0.68) : CatppuccinMochaTheme.surface0.opacity(0.72)
     }
 }
+
+struct PaneTabButtonStyle: ButtonStyle {
+    let isActive: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                backgroundColor(isPressed: configuration.isPressed),
+                in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                    .stroke(borderColor, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+            }
+            .opacity(isEnabled ? 1 : 0.55)
+    }
+
+    private var foregroundColor: Color {
+        guard isEnabled else {
+            return CatppuccinMochaTheme.mutedText
+        }
+
+        return isActive ? CatppuccinMochaTheme.primaryText : CatppuccinMochaTheme.secondaryText
+    }
+
+    private var borderColor: Color {
+        guard isEnabled else {
+            return CatppuccinMochaTheme.surface1.opacity(0.38)
+        }
+
+        return isActive ? CatppuccinMochaTheme.accent.opacity(0.48) : CatppuccinMochaTheme.surface1.opacity(0.58)
+    }
+
+    private func backgroundColor(isPressed: Bool) -> Color {
+        guard isEnabled else {
+            return CatppuccinMochaTheme.surface0.opacity(0.36)
+        }
+
+        if isPressed {
+            return CatppuccinMochaTheme.surface2.opacity(0.68)
+        }
+
+        return isActive ? CatppuccinMochaTheme.surface1.opacity(0.88) : CatppuccinMochaTheme.surface0.opacity(0.58)
+    }
+}
+
+struct PaneTabCloseButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(isEnabled ? CatppuccinMochaTheme.mutedText : CatppuccinMochaTheme.overlay0.opacity(0.55))
+            .frame(width: 20, height: 20)
+            .background(
+                closeBackground(isPressed: configuration.isPressed),
+                in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+            )
+            .opacity(isEnabled ? 1 : 0.45)
+    }
+
+    private func closeBackground(isPressed: Bool) -> Color {
+        guard isEnabled else {
+            return Color.clear
+        }
+
+        return isPressed ? CatppuccinMochaTheme.surface2.opacity(0.62) : Color.clear
+    }
+}
