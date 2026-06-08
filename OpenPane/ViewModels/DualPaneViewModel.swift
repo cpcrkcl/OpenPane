@@ -519,11 +519,13 @@ final class DualPaneViewModel: ObservableObject {
         var seenURLs: Set<URL> = []
 
         return urls.filter { url in
-            guard !seenURLs.contains(url) else {
+            let standardizedURL = url.standardizedFileURL
+
+            guard !seenURLs.contains(standardizedURL) else {
                 return false
             }
 
-            seenURLs.insert(url)
+            seenURLs.insert(standardizedURL)
             return true
         }
     }

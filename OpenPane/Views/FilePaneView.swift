@@ -1383,7 +1383,7 @@ private struct FilePaneRowView: View {
             }
 
             provider.registerObject(firstItem.url as NSURL, visibility: .all)
-            registerFileURLDataRepresentations(for: firstItem.url, on: provider)
+            registerFileURLDataRepresentations(for: draggedItems.map(\.url), on: provider)
         }
 
         let payload = FileDragPayload(
@@ -1404,8 +1404,9 @@ private struct FilePaneRowView: View {
         return provider
     }
 
-    private func registerFileURLDataRepresentations(for url: URL, on provider: NSItemProvider) {
-        guard let data = url.absoluteString.data(using: .utf8) else {
+    private func registerFileURLDataRepresentations(for urls: [URL], on provider: NSItemProvider) {
+        guard let firstURL = urls.first,
+              let data = firstURL.absoluteString.data(using: .utf8) else {
             return
         }
 
@@ -1415,6 +1416,21 @@ private struct FilePaneRowView: View {
                 visibility: .all
             ) { completion in
                 completion(data, nil)
+                return nil
+            }
+        }
+
+        let paths = urls.map(\.path)
+        if let filenamesData = try? PropertyListSerialization.data(
+            fromPropertyList: paths,
+            format: .binary,
+            options: 0
+        ) {
+            provider.registerDataRepresentation(
+                forTypeIdentifier: fileNamesPasteboardTypeIdentifier,
+                visibility: .all
+            ) { completion in
+                completion(filenamesData, nil)
                 return nil
             }
         }

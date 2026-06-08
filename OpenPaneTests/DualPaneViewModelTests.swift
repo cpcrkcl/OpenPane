@@ -356,6 +356,106 @@ struct DualPaneViewModelTests {
         #expect(viewModel.operationStatusMessage == "Moved 1 item to Destination.")
     }
 
+    @Test func copyDroppedFileURLsCopiesFromRightToLeft() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createDestinationFile(named: "right-drop.txt", contents: "right to left")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = MockFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+
+        await viewModel.copyDroppedFileURLs(
+            [sourceItem.url],
+            sourcePaneSide: .right,
+            to: temporaryDirectory.sourceURL,
+            in: .left
+        )
+
+        #expect(fileOperationService.copiedItems == [sourceItem])
+        #expect(fileOperationService.copyDestinationURL == temporaryDirectory.sourceURL)
+        #expect(fileOperationService.copyConflictResolution == .cancel)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.operationStatusMessage == "Copied 1 item to Source.")
+    }
+
+    @Test func copyDroppedFileURLsDeduplicatesStandardizedURLs() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "dedupe.txt", contents: "once")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = MockFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+
+        await viewModel.copyDroppedFileURLs(
+            [
+                sourceItem.url,
+                temporaryDirectory.sourceURL.appendingPathComponent(".").appendingPathComponent("dedupe.txt")
+            ],
+            sourcePaneSide: .left,
+            to: temporaryDirectory.destinationURL,
+            in: .right
+        )
+
+        #expect(fileOperationService.copiedItems == [sourceItem])
+        #expect(viewModel.operationStatusMessage == "Copied 1 item to Destination.")
+    }
+
+    @Test func copyDroppedFileURLsCancelsCollisionWithoutOverwriting() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "collision.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "collision.txt", contents: "existing")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: FileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: FileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await viewModel.copyDroppedFileURLs(
+            [sourceItem.url],
+            sourcePaneSide: .left,
+            to: temporaryDirectory.destinationURL,
+            in: .right
+        )
+
+        let existingContents = try String(
+            contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("collision.txt"),
+            encoding: .utf8
+        )
+        #expect(existingContents == "existing")
+        #expect(viewModel.errorMessage == "Operation cancelled because an item named collision.txt already exists.")
+        #expect(viewModel.operationStatusMessage == "Drop copy failed.")
+    }
+
+    @Test func moveDroppedFileURLsFromRightToLeftRefreshesBothPanes() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createDestinationFile(named: "right-move.txt", contents: "move left")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: FileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: FileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await viewModel.moveDroppedFileURLs(
+            [sourceItem.url],
+            sourcePaneSide: .right,
+            to: temporaryDirectory.sourceURL,
+            in: .left
+        )
+
+        let movedURL = temporaryDirectory.sourceURL.appendingPathComponent("right-move.txt")
+        let movedContents = try String(contentsOf: movedURL, encoding: .utf8)
+        #expect(movedContents == "move left")
+        #expect(!FileManager.default.fileExists(atPath: sourceItem.url.path))
+        #expect(leftPane.items.map(\.name) == ["right-move.txt"])
+        #expect(rightPane.items.isEmpty)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.operationStatusMessage == "Moved 1 item to Source.")
+    }
+
     @Test func droppedFileOperationRejectsSameDirectoryDrop() async throws {
         let temporaryDirectory = try DualPaneTestTemporaryDirectory()
         let sourceItem = try temporaryDirectory.createSourceFile(named: "same-place.txt", contents: "same")
@@ -825,6 +925,12 @@ private struct DualPaneTestTemporaryDirectory {
 
     func createSourceFile(named name: String, contents: String) throws -> FileItem {
         let fileURL = sourceURL.appendingPathComponent(name)
+        try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+        return try FileItem(url: fileURL)
+    }
+
+    func createDestinationFile(named name: String, contents: String) throws -> FileItem {
+        let fileURL = destinationURL.appendingPathComponent(name)
         try contents.write(to: fileURL, atomically: true, encoding: .utf8)
         return try FileItem(url: fileURL)
     }
