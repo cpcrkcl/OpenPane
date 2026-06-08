@@ -20,9 +20,11 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
     case invalidName(String)
     case sourceDoesNotExist(URL)
     case destinationIsNotDirectory(URL)
+    case destinationIsNotWritable(URL)
     case destinationExists(URL)
     case operationCancelled(URL)
     case cannotReplaceItemWithItself(URL)
+    case cannotPlaceFolderInsideItself(URL)
     case duplicateDestinationNames
     case operationFailed(String, URL, String)
     case trashFailed(URL, String)
@@ -39,12 +41,16 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
             return "\(Self.displayName(for: url)) could not be found."
         case .destinationIsNotDirectory(let url):
             return "\(Self.displayName(for: url)) is not a folder."
+        case .destinationIsNotWritable(let url):
+            return "You do not have permission to write to \(Self.displayName(for: url))."
         case .destinationExists(let url):
             return "An item named \(Self.displayName(for: url)) already exists."
         case .operationCancelled(let url):
             return "Operation cancelled because an item named \(Self.displayName(for: url)) already exists."
         case .cannotReplaceItemWithItself(let url):
             return "Cannot replace \(Self.displayName(for: url)) with itself."
+        case .cannotPlaceFolderInsideItself(let url):
+            return "Cannot place \(Self.displayName(for: url)) inside itself."
         case .duplicateDestinationNames:
             return "The rename pattern creates duplicate names."
         case .operationFailed(let action, let url, let reason):
@@ -341,6 +347,18 @@ nonisolated struct FileOperationService: FileOperationServicing {
         return uniqueArchiveURL(in: directoryURL, baseName: baseName)
     }
 
+    nonisolated static func validateTransfer(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution = .cancel
+    ) throws {
+        _ = try transferPlans(
+            for: items,
+            to: destinationDirectory,
+            conflictResolution: conflictResolution
+        )
+    }
+
     nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL {
         try await Task.detached(priority: .userInitiated) {
             let trimmedName = try Self.validateName(name)
@@ -398,11 +416,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
         to destinationDirectory: URL,
         conflictResolution: FileConflictResolution
     ) throws -> [TransferPlan] {
-        try validateDirectory(destinationDirectory)
+        try validateWritableDirectory(destinationDirectory)
         var destinationURLs: Set<URL> = []
 
         return try items.compactMap { item in
             try validateSourceExists(item.url)
+            try validateTransferSafety(for: item, to: destinationDirectory)
             let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
             let destinationIsReserved = destinationURLs.contains(destinationURL)
             let destinationExists = FileManager.default.fileExists(atPath: destinationURL.path)
@@ -560,6 +579,35 @@ nonisolated struct FileOperationService: FileOperationServicing {
         }
     }
 
+    private nonisolated static func validateWritableDirectory(_ url: URL) throws {
+        try validateDirectory(url)
+
+        guard FileManager.default.isWritableFile(atPath: url.path) else {
+            throw FileOperationError.destinationIsNotWritable(url)
+        }
+    }
+
+    private nonisolated static func validateTransferSafety(for item: FileItem, to destinationDirectory: URL) throws {
+        let standardizedSourceURL = item.url.standardizedFileURL
+        let standardizedDestinationDirectory = destinationDirectory.standardizedFileURL
+        let destinationURL = destinationDirectory
+            .appendingPathComponent(item.name, isDirectory: item.isDirectory)
+            .standardizedFileURL
+
+        guard standardizedSourceURL != destinationURL else {
+            throw FileOperationError.cannotReplaceItemWithItself(item.url)
+        }
+
+        guard item.isDirectory else {
+            return
+        }
+
+        if standardizedSourceURL == standardizedDestinationDirectory ||
+            standardizedDestinationDirectory.isDescendant(of: standardizedSourceURL) {
+            throw FileOperationError.cannotPlaceFolderInsideItself(item.url)
+        }
+    }
+
     private nonisolated static func validateDestinationDoesNotExist(_ url: URL) throws {
         guard !FileManager.default.fileExists(atPath: url.path) else {
             throw FileOperationError.destinationExists(url)
@@ -586,5 +634,18 @@ nonisolated struct FileOperationService: FileOperationServicing {
         }
 
         return "The operation could not be completed."
+    }
+}
+
+private extension URL {
+    nonisolated func isDescendant(of ancestorURL: URL) -> Bool {
+        let ancestorComponents = ancestorURL.standardizedFileURL.pathComponents
+        let childComponents = standardizedFileURL.pathComponents
+
+        guard childComponents.count > ancestorComponents.count else {
+            return false
+        }
+
+        return zip(ancestorComponents, childComponents).allSatisfy { $0 == $1 }
     }
 }

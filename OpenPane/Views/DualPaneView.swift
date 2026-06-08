@@ -44,8 +44,9 @@ struct DualPaneView: View {
     }
 
     private enum PendingConflictOperation {
-        case copy
-        case move
+        case copySelection
+        case moveSelection
+        case fileDrop(PendingFileDrop, FileDropOperation)
     }
 
     private struct PendingFileDrop: Identifiable {
@@ -240,7 +241,7 @@ struct DualPaneView: View {
                 pendingConflictOperation = nil
             }
         } message: {
-            Text("One or more selected items already exist in the other pane. Choose how OpenPane should handle those conflicts.")
+            Text(pendingConflictMessage)
         }
         .confirmationDialog(
             "Drop Items",
@@ -416,7 +417,18 @@ struct DualPaneView: View {
         }
 
         let itemText = pendingFileDrop.fileURLs.count == 1 ? "item" : "items"
-        return "Choose how to place \(pendingFileDrop.fileURLs.count) \(itemText) into \(pendingFileDrop.targetDirectory.openPaneDisplayName)."
+        return "Choose how to place \(pendingFileDrop.fileURLs.count) \(itemText) into \(pendingFileDrop.targetDirectory.openPaneDisplayName). Move changes the original location."
+    }
+
+    private var pendingConflictMessage: String {
+        switch pendingConflictOperation {
+        case .copySelection, .moveSelection:
+            return "One or more selected items already exist in the other pane. Choose how OpenPane should handle those conflicts."
+        case .fileDrop(let drop, _):
+            return "One or more dropped items already exist in \(drop.targetDirectory.openPaneDisplayName). Choose how OpenPane should handle those conflicts."
+        case nil:
+            return ""
+        }
     }
 
     private func prepareFileDrop(
@@ -448,6 +460,19 @@ struct DualPaneView: View {
         self.pendingFileDrop = nil
         viewModel.setActivePane(pendingFileDrop.targetPaneSide)
 
+        if hasPotentialConflict(in: pendingFileDrop) {
+            pendingConflictOperation = .fileDrop(pendingFileDrop, operation)
+            return
+        }
+
+        runFileDrop(pendingFileDrop, operation: operation, conflictResolution: .cancel)
+    }
+
+    private func runFileDrop(
+        _ pendingFileDrop: PendingFileDrop,
+        operation: FileDropOperation,
+        conflictResolution: FileConflictResolution
+    ) {
         Task {
             switch operation {
             case .copy:
@@ -455,14 +480,16 @@ struct DualPaneView: View {
                     pendingFileDrop.fileURLs,
                     sourcePaneSide: pendingFileDrop.sourcePaneSide,
                     to: pendingFileDrop.targetDirectory,
-                    in: pendingFileDrop.targetPaneSide
+                    in: pendingFileDrop.targetPaneSide,
+                    conflictResolution: conflictResolution
                 )
             case .move:
                 await viewModel.moveDroppedFileURLs(
                     pendingFileDrop.fileURLs,
                     sourcePaneSide: pendingFileDrop.sourcePaneSide,
                     to: pendingFileDrop.targetDirectory,
-                    in: pendingFileDrop.targetPaneSide
+                    in: pendingFileDrop.targetPaneSide,
+                    conflictResolution: conflictResolution
                 )
             }
         }
@@ -824,7 +851,7 @@ struct DualPaneView: View {
             return
         }
 
-        pendingConflictOperation = .copy
+        pendingConflictOperation = .copySelection
     }
 
     private func prepareMoveToOtherPane() {
@@ -839,7 +866,7 @@ struct DualPaneView: View {
             return
         }
 
-        pendingConflictOperation = .move
+        pendingConflictOperation = .moveSelection
     }
 
     private func runPendingConflictOperation(with resolution: FileConflictResolution) {
@@ -851,10 +878,12 @@ struct DualPaneView: View {
 
         Task {
             switch pendingConflictOperation {
-            case .copy:
+            case .copySelection:
                 await viewModel.copySelectionToOtherPane(conflictResolution: resolution)
-            case .move:
+            case .moveSelection:
                 await viewModel.moveSelectionToOtherPane(conflictResolution: resolution)
+            case .fileDrop(let drop, let operation):
+                runFileDrop(drop, operation: operation, conflictResolution: resolution)
             }
         }
     }
@@ -868,5 +897,12 @@ struct DualPaneView: View {
 
         let inactivePaneNames = Set(viewModel.inactivePane.items.map(\.name))
         return selectedItems.contains { inactivePaneNames.contains($0.name) }
+    }
+
+    private func hasPotentialConflict(in pendingFileDrop: PendingFileDrop) -> Bool {
+        pendingFileDrop.fileURLs.contains { fileURL in
+            let destinationURL = pendingFileDrop.targetDirectory.appendingPathComponent(fileURL.lastPathComponent)
+            return FileManager.default.fileExists(atPath: destinationURL.path)
+        }
     }
 }

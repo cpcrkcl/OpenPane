@@ -291,6 +291,48 @@ struct FileOperationServiceTests {
         }
     }
 
+    @Test func validateTransferRejectsSameSourceAndDestination() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "same.txt", contents: "same")
+
+        #expect(throws: FileOperationError.cannotReplaceItemWithItself(sourceFile.url)) {
+            try FileOperationService.validateTransfer(items: [sourceFile], to: temporaryDirectory.sourceURL)
+        }
+    }
+
+    @Test func validateTransferRejectsFolderIntoItself() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let folderURL = try temporaryDirectory.createSourceDirectory(named: "Folder")
+        let folderItem = try FileItem(url: folderURL)
+
+        #expect(throws: FileOperationError.cannotPlaceFolderInsideItself(folderURL)) {
+            try FileOperationService.validateTransfer(items: [folderItem], to: folderURL)
+        }
+    }
+
+    @Test func validateTransferRejectsFolderIntoDescendant() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let folderURL = try temporaryDirectory.createSourceDirectory(named: "Folder")
+        let childURL = folderURL.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        let folderItem = try FileItem(url: folderURL)
+
+        #expect(throws: FileOperationError.cannotPlaceFolderInsideItself(folderURL)) {
+            try FileOperationService.validateTransfer(items: [folderItem], to: childURL)
+        }
+    }
+
+    @Test func validateTransferRejectsExistingDestinationCollision() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "duplicate.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "duplicate.txt", contents: "existing")
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("duplicate.txt")
+
+        #expect(throws: FileOperationError.operationCancelled(destinationURL)) {
+            try FileOperationService.validateTransfer(items: [sourceFile], to: temporaryDirectory.destinationURL)
+        }
+    }
+
     @Test func copyKeepBothPreservesExtensionAndCreatesCopyName() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let sourceFile = try temporaryDirectory.createFile(named: "file.txt", contents: "source")
@@ -517,6 +559,12 @@ private struct OperationTestTemporaryDirectory {
 
     func createDestinationFile(named name: String, contents: String) throws -> FileItem {
         try createFile(at: destinationURL.appendingPathComponent(name), contents: contents)
+    }
+
+    func createSourceDirectory(named name: String) throws -> URL {
+        let url = sourceURL.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        return url
     }
 
     private func createFile(at url: URL, contents: String) throws -> FileItem {
