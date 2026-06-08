@@ -257,6 +257,21 @@ final class FilePaneViewModel: ObservableObject {
         return targetItems.count
     }
 
+    func copyItemsForContextMenu(clickedItem: FileItem) -> Int {
+        errorMessage = nil
+        let targetItems = contextMenuTargetItems(clickedItem: clickedItem)
+        workspaceService.copyFileURLs(targetItems.map(\.url))
+        return targetItems.count
+    }
+
+    func fileURLsAvailableToPaste() -> [URL] {
+        workspaceService.fileURLsForPasteboard()
+    }
+
+    func hasFileURLsToPaste() -> Bool {
+        !fileURLsAvailableToPaste().isEmpty
+    }
+
     func toggleHiddenFiles() async {
         includeHiddenFiles.toggle()
 

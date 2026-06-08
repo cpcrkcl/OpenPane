@@ -174,6 +174,28 @@ struct DualPaneViewModelTests {
         #expect(fileOperationService.moveDestinationURL == temporaryDirectory.destinationURL)
     }
 
+    @Test func pasteIntoPaneCopiesPasteboardFileURLsToTargetPane() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "paste.txt", contents: "paste me")
+        let workspaceService = PasteboardWorkspaceService(fileURLs: [sourceItem.url])
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: FileBrowserService(),
+            workspaceService: workspaceService
+        )
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await viewModel.pasteIntoPane(rightPane)
+
+        let pastedURL = temporaryDirectory.destinationURL.appendingPathComponent("paste.txt")
+        let pastedContents = try String(contentsOf: pastedURL, encoding: .utf8)
+        #expect(pastedContents == "paste me")
+        #expect(rightPane.items.map(\.name) == ["paste.txt"])
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.operationStatusMessage == "Pasted 1 item.")
+    }
+
     @Test func trashSelectionInActivePaneShowsErrorWhenNothingIsSelected() async {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
@@ -353,6 +375,26 @@ nonisolated private struct EmptyFileBrowserService: FileBrowserServicing {
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
         []
     }
+}
+
+@MainActor
+private final class PasteboardWorkspaceService: WorkspaceServicing, @unchecked Sendable {
+    let fileURLs: [URL]
+
+    init(fileURLs: [URL]) {
+        self.fileURLs = fileURLs
+    }
+
+    func open(url: URL) {}
+    func appsAvailableToOpen(url: URL) -> [ApplicationOption] { [] }
+    func open(url: URL, withApplication applicationURL: URL) {}
+    func chooseApplicationAndOpen(url: URL) {}
+    func revealInFinder(urls: [URL]) {}
+    func share(urls: [URL]) throws {}
+    func copyFileURLs(_ urls: [URL]) {}
+    func fileURLsForPasteboard() -> [URL] { fileURLs }
+    func copyPath(url: URL) {}
+    func copyText(_ text: String) {}
 }
 
 private final class MockFileOperationService: FileOperationServicing, @unchecked Sendable {

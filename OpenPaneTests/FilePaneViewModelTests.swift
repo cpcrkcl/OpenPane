@@ -423,6 +423,25 @@ struct FilePaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
     }
 
+    @Test func copyItemsForContextMenuCopiesFileURLs() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "first.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "second.txt")
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+        viewModel.selectedItems = [firstItem, secondItem]
+
+        let copiedItemCount = viewModel.copyItemsForContextMenu(clickedItem: firstItem)
+
+        #expect(copiedItemCount == 2)
+        #expect(Set(workspaceService.copiedFileURLs) == Set([firstItem.url, secondItem.url]))
+        #expect(viewModel.errorMessage == nil)
+    }
+
     @Test func previewSelectedItemShowsErrorWhenNothingIsSelected() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let quickLookPreviewService = MockQuickLookPreviewService()
@@ -569,9 +588,11 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
     private(set) var chooseApplicationURLs: [URL] = []
     private(set) var revealedURLs: [URL] = []
     private(set) var sharedURLs: [URL] = []
+    private(set) var copiedFileURLs: [URL] = []
     private(set) var copiedPathURLs: [URL] = []
     private(set) var copiedText: [String] = []
     var applicationOptions: [ApplicationOption] = []
+    var pasteboardFileURLs: [URL] = []
 
     func open(url: URL) {
         openedURLs.append(url)
@@ -595,6 +616,14 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
 
     func share(urls: [URL]) throws {
         sharedURLs.append(contentsOf: urls)
+    }
+
+    func copyFileURLs(_ urls: [URL]) {
+        copiedFileURLs.append(contentsOf: urls)
+    }
+
+    func fileURLsForPasteboard() -> [URL] {
+        pasteboardFileURLs
     }
 
     func copyPath(url: URL) {

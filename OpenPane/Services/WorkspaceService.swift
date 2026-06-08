@@ -53,6 +53,12 @@ nonisolated protocol WorkspaceServicing: Sendable {
     func share(urls: [URL]) throws
 
     @MainActor
+    func copyFileURLs(_ urls: [URL])
+
+    @MainActor
+    func fileURLsForPasteboard() -> [URL]
+
+    @MainActor
     func copyPath(url: URL)
 
     @MainActor
@@ -151,6 +157,35 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
         )
 
         picker.show(relativeTo: anchorRect, of: contentView, preferredEdge: .minY)
+    }
+
+    @MainActor
+    func copyFileURLs(_ urls: [URL]) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects(urls as [NSURL])
+    }
+
+    @MainActor
+    func fileURLsForPasteboard() -> [URL] {
+        let pasteboard = NSPasteboard.general
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true
+        ]
+
+        let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options) ?? []
+
+        return objects.compactMap { object in
+            if let url = object as? URL {
+                return url
+            }
+
+            if let nsURL = object as? NSURL {
+                return nsURL as URL
+            }
+
+            return nil
+        }
     }
 
     @MainActor

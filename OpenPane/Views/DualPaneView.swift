@@ -90,6 +90,11 @@ struct DualPaneView: View {
                 } onCreateFile: {
                     viewModel.setActivePane(.left)
                     prepareNewFileSheet()
+                } onPaste: {
+                    viewModel.setActivePane(.left)
+                    Task {
+                        await viewModel.pasteIntoPane(viewModel.leftPane)
+                    }
                 } onStatusMessage: { message in
                     viewModel.showStatusMessage(message)
                 }
@@ -123,6 +128,11 @@ struct DualPaneView: View {
                 } onCreateFile: {
                     viewModel.setActivePane(.right)
                     prepareNewFileSheet()
+                } onPaste: {
+                    viewModel.setActivePane(.right)
+                    Task {
+                        await viewModel.pasteIntoPane(viewModel.rightPane)
+                    }
                 } onStatusMessage: { message in
                     viewModel.showStatusMessage(message)
                 }

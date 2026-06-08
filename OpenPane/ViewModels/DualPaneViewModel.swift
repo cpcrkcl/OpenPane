@@ -183,6 +183,30 @@ final class DualPaneViewModel: ObservableObject {
         await compress(items: targetItems, in: pane)
     }
 
+    func pasteIntoPane(_ pane: FilePaneViewModel) async {
+        let fileURLs = pane.fileURLsAvailableToPaste()
+
+        guard !fileURLs.isEmpty else {
+            errorMessage = "Nothing to paste."
+            operationStatusMessage = errorMessage
+            return
+        }
+
+        await performOperation(
+            statusMessage: "Pasting \(Self.itemCountDescription(fileURLs.count))...",
+            successMessage: "Pasted \(Self.itemCountDescription(fileURLs.count)).",
+            failureMessage: "Paste failed."
+        ) {
+            let items = try fileURLs.map { try FileItem(url: $0) }
+            try await fileOperationService.copy(
+                items: items,
+                to: pane.currentURL,
+                conflictResolution: .cancel
+            )
+            await pane.refresh()
+        }
+    }
+
     func createFolderInActivePane(named name: String) async {
         let sourcePane = activePane
         let currentURL = sourcePane.currentURL
@@ -322,8 +346,12 @@ final class DualPaneViewModel: ObservableObject {
     }
 
     private static func itemCountDescription(_ items: [FileItem]) -> String {
-        let itemText = items.count == 1 ? "item" : "items"
-        return "\(items.count) \(itemText)"
+        itemCountDescription(items.count)
+    }
+
+    private static func itemCountDescription(_ count: Int) -> String {
+        let itemText = count == 1 ? "item" : "items"
+        return "\(count) \(itemText)"
     }
 
     private static func userReadableError(for error: Error) -> String {

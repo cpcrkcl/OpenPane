@@ -31,6 +31,7 @@ struct FilePaneView: View {
     var onCompress: (FileItem) -> Void = { _ in }
     var onCreateFolder: () -> Void = {}
     var onCreateFile: () -> Void = {}
+    var onPaste: () -> Void = {}
     var onStatusMessage: (String) -> Void = { _ in }
 
     @State private var isTabDropTargeted = false
@@ -542,6 +543,10 @@ struct FilePaneView: View {
                             onShare: {
                                 viewModel.shareForContextMenu(clickedItem: item)
                             },
+                            onCopyItems: {
+                                let copiedItemCount = viewModel.copyItemsForContextMenu(clickedItem: item)
+                                onStatusMessage(copyItemsStatusMessage(itemCount: copiedItemCount))
+                            },
                             onGetInfo: {
                                 infoItem = item
                             },
@@ -575,8 +580,10 @@ struct FilePaneView: View {
             .contextMenu {
                 EmptyPaneContextMenu(
                     includeHiddenFiles: viewModel.includeHiddenFiles,
+                    canPasteFiles: viewModel.hasFileURLsToPaste(),
                     onNewFolder: onCreateFolder,
                     onNewFile: onCreateFile,
+                    onPaste: onPaste,
                     onRefresh: {
                         Task {
                             await viewModel.refresh()
@@ -709,6 +716,11 @@ struct FilePaneView: View {
             return "Copied name\(suffix)."
         }
     }
+
+    private func copyItemsStatusMessage(itemCount: Int) -> String {
+        let suffix = itemCount == 1 ? "" : "s"
+        return "Copied \(itemCount) item\(suffix)."
+    }
 }
 
 private struct FilePaneRowView: View {
@@ -723,6 +735,7 @@ private struct FilePaneRowView: View {
     let onOpenWithApplication: (URL) -> Void
     let onChooseApplication: () -> Void
     let onShare: () -> Void
+    let onCopyItems: () -> Void
     let onGetInfo: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
@@ -813,6 +826,7 @@ private struct FilePaneRowView: View {
                 onOpenWithApplication: onOpenWithApplication,
                 onChooseApplication: onChooseApplication,
                 onShare: onShare,
+                onCopyItems: onCopyItems,
                 onGetInfo: onGetInfo,
                 onRename: onRename,
                 onTrash: onTrash,
@@ -836,6 +850,7 @@ private struct FileItemContextMenu: View {
     let onOpenWithApplication: (URL) -> Void
     let onChooseApplication: () -> Void
     let onShare: () -> Void
+    let onCopyItems: () -> Void
     let onGetInfo: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
@@ -892,6 +907,13 @@ private struct FileItemContextMenu: View {
             onShare()
         } label: {
             Label("Share...", systemImage: "square.and.arrow.up")
+        }
+
+        Button {
+            onPrepare()
+            onCopyItems()
+        } label: {
+            Label("Copy", systemImage: "doc.on.doc")
         }
 
         Button {
@@ -1007,8 +1029,10 @@ private struct ApplicationOptionLabel: View {
 
 private struct EmptyPaneContextMenu: View {
     let includeHiddenFiles: Bool
+    let canPasteFiles: Bool
     let onNewFolder: () -> Void
     let onNewFile: () -> Void
+    let onPaste: () -> Void
     let onRefresh: () -> Void
     let onToggleHiddenFiles: () -> Void
 
@@ -1024,6 +1048,13 @@ private struct EmptyPaneContextMenu: View {
         } label: {
             Label("New File", systemImage: "doc.badge.plus")
         }
+
+        Button {
+            onPaste()
+        } label: {
+            Label("Paste", systemImage: "doc.on.clipboard")
+        }
+        .disabled(!canPasteFiles)
 
         Divider()
 
