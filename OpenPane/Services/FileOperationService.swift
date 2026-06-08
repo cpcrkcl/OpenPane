@@ -15,6 +15,7 @@ enum FileConflictResolution: Equatable, Sendable {
 }
 
 enum FileOperationError: LocalizedError, Equatable, Sendable {
+    case noItems
     case emptyName
     case invalidName(String)
     case sourceDoesNotExist(URL)
@@ -28,6 +29,8 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .noItems:
+            return "Select one or more items."
         case .emptyName:
             return "Name cannot be empty."
         case .invalidName(let name):
@@ -71,6 +74,7 @@ nonisolated protocol FileOperationServicing: Sendable {
 
     nonisolated func trash(items: [FileItem]) async throws
     nonisolated func duplicate(items: [FileItem]) async throws
+    nonisolated func compress(items: [FileItem]) async throws -> URL
     nonisolated func rename(item: FileItem, to newName: String) async throws -> URL
     nonisolated func batchRename(
         items: [FileItem],
@@ -219,6 +223,45 @@ nonisolated struct FileOperationService: FileOperationServicing {
         }.value
     }
 
+    nonisolated func compress(items: [FileItem]) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            let archiveURL = try Self.archiveURL(for: items)
+            let arguments = [
+                "-c",
+                "-k",
+                "--sequesterRsrc",
+                "--keepParent"
+            ] + items.map(\.url.path) + [archiveURL.path]
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            process.arguments = arguments
+
+            let errorPipe = Pipe()
+            process.standardError = errorPipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                throw FileOperationError.operationFailed("compress", archiveURL, Self.userReadableReason(for: error))
+            }
+
+            guard process.terminationStatus == 0 else {
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorMessage = String(data: errorData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                throw FileOperationError.operationFailed(
+                    "compress",
+                    archiveURL,
+                    errorMessage?.isEmpty == false ? errorMessage! : "The archive could not be created."
+                )
+            }
+
+            return archiveURL
+        }.value
+    }
+
     nonisolated func rename(item: FileItem, to newName: String) async throws -> URL {
         try await Task.detached(priority: .userInitiated) {
             let trimmedName = try Self.validateName(newName)
@@ -282,6 +325,20 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 preserveExtension: preserveExtensions
             )
         }
+    }
+
+    nonisolated static func archiveURL(for items: [FileItem]) throws -> URL {
+        guard let firstItem = items.first else {
+            throw FileOperationError.noItems
+        }
+
+        try items.forEach { item in
+            try validateSourceExists(item.url)
+        }
+
+        let directoryURL = firstItem.url.deletingLastPathComponent()
+        let baseName = items.count == 1 ? firstItem.url.lastPathComponent : "Archive"
+        return uniqueArchiveURL(in: directoryURL, baseName: baseName)
     }
 
     nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL {
@@ -468,6 +525,23 @@ nonisolated struct FileOperationService: FileOperationServicing {
             }
 
             copyNumber += 1
+        }
+    }
+
+    private nonisolated static func uniqueArchiveURL(in directoryURL: URL, baseName: String) -> URL {
+        var archiveNumber = 1
+
+        while true {
+            let candidateName = archiveNumber == 1 ? baseName : "\(baseName) \(archiveNumber)"
+            let candidateURL = directoryURL
+                .appendingPathComponent(candidateName)
+                .appendingPathExtension("zip")
+
+            if !FileManager.default.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
+
+            archiveNumber += 1
         }
     }
 

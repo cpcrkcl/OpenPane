@@ -178,6 +178,11 @@ final class DualPaneViewModel: ObservableObject {
         await duplicate(items: targetItems, in: pane)
     }
 
+    func compressForContextMenu(clickedItem: FileItem, in pane: FilePaneViewModel) async {
+        let targetItems = pane.contextMenuTargetItems(clickedItem: clickedItem)
+        await compress(items: targetItems, in: pane)
+    }
+
     func createFolderInActivePane(named name: String) async {
         let sourcePane = activePane
         let currentURL = sourcePane.currentURL
@@ -262,6 +267,17 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "Duplicate failed."
         ) {
             try await fileOperationService.duplicate(items: items)
+            await pane.refresh()
+        }
+    }
+
+    private func compress(items: [FileItem], in pane: FilePaneViewModel) async {
+        await performOperation(
+            statusMessage: "Compressing \(Self.itemCountDescription(items))...",
+            successMessage: "Created archive.",
+            failureMessage: "Compress failed."
+        ) {
+            _ = try await fileOperationService.compress(items: items)
             await pane.refresh()
         }
     }

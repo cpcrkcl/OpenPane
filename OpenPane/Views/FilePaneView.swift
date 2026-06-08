@@ -28,6 +28,7 @@ struct FilePaneView: View {
     var onRenameSelected: () -> Void = {}
     var onTrashSelected: () -> Void = {}
     var onDuplicate: (FileItem) -> Void = { _ in }
+    var onCompress: (FileItem) -> Void = { _ in }
     var onCreateFolder: () -> Void = {}
     var onCreateFile: () -> Void = {}
     var onStatusMessage: (String) -> Void = { _ in }
@@ -549,6 +550,9 @@ struct FilePaneView: View {
                             onDuplicate: {
                                 onDuplicate(item)
                             },
+                            onCompress: {
+                                onCompress(item)
+                            },
                             onReveal: {
                                 viewModel.selectedItems = [item]
                                 viewModel.revealSelectedItemsInFinder()
@@ -560,7 +564,8 @@ struct FilePaneView: View {
                             onCopyText: { format in
                                 let copiedItemCount = viewModel.copyTextForContextMenu(clickedItem: item, format: format)
                                 onStatusMessage(copyStatusMessage(for: format, itemCount: copiedItemCount))
-                            }
+                            },
+                            compressItemCount: viewModel.contextMenuTargetItems(clickedItem: item).count
                         )
                     }
                 }
@@ -722,9 +727,11 @@ private struct FilePaneRowView: View {
     let onRename: () -> Void
     let onTrash: () -> Void
     let onDuplicate: () -> Void
+    let onCompress: () -> Void
     let onReveal: () -> Void
     let onPreview: () -> Void
     let onCopyText: (FileItemCopyTextFormat) -> Void
+    let compressItemCount: Int
 
     @State private var isHovered = false
 
@@ -810,9 +817,11 @@ private struct FilePaneRowView: View {
                 onRename: onRename,
                 onTrash: onTrash,
                 onDuplicate: onDuplicate,
+                onCompress: onCompress,
                 onPreview: onPreview,
                 onReveal: onReveal,
-                onCopyText: onCopyText
+                onCopyText: onCopyText,
+                compressItemCount: compressItemCount
             )
         }
     }
@@ -831,9 +840,11 @@ private struct FileItemContextMenu: View {
     let onRename: () -> Void
     let onTrash: () -> Void
     let onDuplicate: () -> Void
+    let onCompress: () -> Void
     let onPreview: () -> Void
     let onReveal: () -> Void
     let onCopyText: (FileItemCopyTextFormat) -> Void
+    let compressItemCount: Int
 
     var body: some View {
         Button {
@@ -906,6 +917,13 @@ private struct FileItemContextMenu: View {
             Label("Duplicate", systemImage: "plus.square.on.square")
         }
 
+        Button {
+            onPrepare()
+            onCompress()
+        } label: {
+            Label(compressTitle, systemImage: "archivebox")
+        }
+
         Button(role: .destructive) {
             onPrepare()
             onTrash()
@@ -960,6 +978,14 @@ private struct FileItemContextMenu: View {
 
             Label("Activates this pane", systemImage: "sidebar.leading")
         }
+    }
+
+    private var compressTitle: String {
+        if compressItemCount > 1 {
+            return "Compress \(compressItemCount) Items"
+        }
+
+        return "Compress \"\(item.displayName)\""
     }
 }
 

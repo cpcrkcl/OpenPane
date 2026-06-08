@@ -90,6 +90,48 @@ struct FileOperationServiceTests {
         #expect(nestedContents == "nested")
     }
 
+    @Test func archiveURLUsesSingleItemName() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "File.txt", contents: "zip me")
+
+        let archiveURL = try FileOperationService.archiveURL(for: [sourceFile])
+
+        #expect(archiveURL == temporaryDirectory.sourceURL.appendingPathComponent("File.txt.zip"))
+    }
+
+    @Test func archiveURLUsesArchiveNameForMultipleItems() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "First.txt", contents: "one")
+        let secondFile = try temporaryDirectory.createFile(named: "Second.txt", contents: "two")
+
+        let archiveURL = try FileOperationService.archiveURL(for: [firstFile, secondFile])
+
+        #expect(archiveURL == temporaryDirectory.sourceURL.appendingPathComponent("Archive.zip"))
+    }
+
+    @Test func archiveURLIncrementsWhenArchiveAlreadyExists() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "First.txt", contents: "one")
+        let secondFile = try temporaryDirectory.createFile(named: "Second.txt", contents: "two")
+        _ = try temporaryDirectory.createFile(named: "Archive.zip", contents: "existing")
+        _ = try temporaryDirectory.createFile(named: "Archive 2.zip", contents: "existing")
+
+        let archiveURL = try FileOperationService.archiveURL(for: [firstFile, secondFile])
+
+        #expect(archiveURL == temporaryDirectory.sourceURL.appendingPathComponent("Archive 3.zip"))
+    }
+
+    @Test func archiveURLUsesFolderName() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let folderURL = temporaryDirectory.sourceURL.appendingPathComponent("Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: false)
+        let folderItem = try FileItem(url: folderURL)
+
+        let archiveURL = try FileOperationService.archiveURL(for: [folderItem])
+
+        #expect(archiveURL == temporaryDirectory.sourceURL.appendingPathComponent("Folder.zip"))
+    }
+
     @Test func trashesItemsUsingTrashService() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "first")

@@ -79,6 +79,11 @@ struct DualPaneView: View {
                     Task {
                         await viewModel.duplicateForContextMenu(clickedItem: item, in: viewModel.leftPane)
                     }
+                } onCompress: { item in
+                    viewModel.setActivePane(.left)
+                    Task {
+                        await viewModel.compressForContextMenu(clickedItem: item, in: viewModel.leftPane)
+                    }
                 } onCreateFolder: {
                     viewModel.setActivePane(.left)
                     prepareNewFolderSheet()
@@ -106,6 +111,11 @@ struct DualPaneView: View {
                     viewModel.setActivePane(.right)
                     Task {
                         await viewModel.duplicateForContextMenu(clickedItem: item, in: viewModel.rightPane)
+                    }
+                } onCompress: { item in
+                    viewModel.setActivePane(.right)
+                    Task {
+                        await viewModel.compressForContextMenu(clickedItem: item, in: viewModel.rightPane)
                     }
                 } onCreateFolder: {
                     viewModel.setActivePane(.right)
