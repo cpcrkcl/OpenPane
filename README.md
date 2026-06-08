@@ -103,13 +103,16 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 
 ## Keyboard Shortcuts
 
+- `Command-,`: Open Settings
 - `Command-R`: Refresh active pane
 - `Command-Shift-R`: Refresh both panes
 - `Command-Up`: Go up in the active pane
+- `Command-Shift-.`: Toggle hidden files in the active pane
 - `Command-Option-C`: Copy selection to the other pane
 - `Command-Option-M`: Move selection to the other pane
 - `Command-Shift-N`: New folder
 - `Return`: Rename selected item
+- `Space`: Quick Look preview
 - `Command-Delete`: Move selection to Trash
 
 ## Roadmap

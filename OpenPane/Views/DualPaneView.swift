@@ -206,6 +206,17 @@ struct DualPaneView: View {
             .keyboardShortcut("r", modifiers: .command)
 
             Button {
+                toggleHiddenFilesInActivePane()
+            } label: {
+                Label(
+                    "Hidden",
+                    systemImage: viewModel.activePane.includeHiddenFiles ? "eye.slash" : "eye"
+                )
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+            .keyboardShortcut(".", modifiers: [.command, .shift])
+
+            Button {
                 prepareCopyToOtherPane()
             } label: {
                 Label("Copy to Other Pane", systemImage: "doc.on.doc")
@@ -294,6 +305,18 @@ struct DualPaneView: View {
 
         newFolderName = "Untitled Folder"
         activeSheet = .newFolder
+    }
+
+    private func toggleHiddenFilesInActivePane() {
+        viewModel.activePane.includeHiddenFiles.toggle()
+
+        Task {
+            if viewModel.activePane.isShowingRecursiveSearchResults {
+                await viewModel.activePane.performRecursiveSearch()
+            } else {
+                await viewModel.activePane.refresh()
+            }
+        }
     }
 
     private func sheetContainer<Content: View>(

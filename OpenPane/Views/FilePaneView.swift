@@ -8,6 +8,15 @@
 import AppKit
 import SwiftUI
 
+private enum FilePaneListMetrics {
+    static let contentPadding: CGFloat = 6
+    static let rowHorizontalPadding: CGFloat = 8
+    static let headerHorizontalPadding = contentPadding + rowHorizontalPadding
+    static let sizeColumnWidth: CGFloat = 92
+    static let modifiedColumnWidth: CGFloat = 150
+    static let kindColumnWidth: CGFloat = 128
+}
+
 struct FilePaneView: View {
     @ObservedObject var viewModel: FilePaneViewModel
     var isActive: Bool = false
@@ -400,23 +409,6 @@ struct FilePaneView: View {
             .buttonStyle(ToolbarIconButtonStyle())
 
             Button {
-                viewModel.includeHiddenFiles.toggle()
-                Task {
-                    if viewModel.isShowingRecursiveSearchResults {
-                        await viewModel.performRecursiveSearch()
-                    } else {
-                        await viewModel.refresh()
-                    }
-                }
-            } label: {
-                Label(
-                    viewModel.includeHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files",
-                    systemImage: viewModel.includeHiddenFiles ? "eye.slash" : "eye"
-                )
-            }
-            .buttonStyle(SecondaryActionButtonStyle())
-
-            Button {
                 Task {
                     await viewModel.openSelectedItem()
                 }
@@ -521,7 +513,7 @@ struct FilePaneView: View {
                         )
                     }
                 }
-                .padding(6)
+                .padding(FilePaneListMetrics.contentPadding)
             }
             .background(CatppuccinMochaTheme.base)
         }
@@ -535,17 +527,17 @@ struct FilePaneView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             sortHeader(.size)
-                .frame(width: 92, alignment: .trailing)
+                .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
 
             sortHeader(.modified)
-                .frame(width: 150, alignment: .leading)
+                .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
 
             sortHeader(.kind)
-                .frame(width: 128, alignment: .leading)
+                .frame(width: FilePaneListMetrics.kindColumnWidth, alignment: .leading)
         }
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(CatppuccinMochaTheme.mutedText)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, FilePaneListMetrics.headerHorizontalPadding)
         .padding(.vertical, 7)
         .background(CatppuccinMochaTheme.mantle)
         .overlay(alignment: .bottom) {
@@ -559,20 +551,35 @@ struct FilePaneView: View {
         Button {
             applySort(column)
         } label: {
-            HStack(spacing: 4) {
-                Text(column.rawValue)
-                    .lineLimit(1)
-
-                if activeSortColumn == column {
-                    Image(systemName: isSortAscending ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(CatppuccinMochaTheme.accentSecondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: column == .size ? .trailing : .leading)
+            sortHeaderLabel(column)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private func sortHeaderLabel(_ column: FileListColumn) -> some View {
+        HStack(spacing: 4) {
+            if column == .size {
+                sortIndicator(for: column)
+            }
+
+            Text(column.rawValue)
+                .lineLimit(1)
+
+            if column != .size {
+                sortIndicator(for: column)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: column == .size ? .trailing : .leading)
+    }
+
+    @ViewBuilder
+    private func sortIndicator(for column: FileListColumn) -> some View {
+        if activeSortColumn == column {
+            Image(systemName: isSortAscending ? "chevron.up" : "chevron.down")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(CatppuccinMochaTheme.accentSecondary)
+        }
     }
 
     private func applySort(_ column: FileListColumn) {
@@ -657,17 +664,17 @@ private struct FilePaneRowView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(item.formattedSize)
-                .frame(width: 92, alignment: .trailing)
+                .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
 
             Text(item.formattedModifiedDate)
-                .frame(width: 150, alignment: .leading)
+                .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
 
             Text(item.kindDescription)
-                .frame(width: 128, alignment: .leading)
+                .frame(width: FilePaneListMetrics.kindColumnWidth, alignment: .leading)
         }
         .font(.system(size: 12))
         .foregroundStyle(CatppuccinMochaTheme.subtext0)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, FilePaneListMetrics.rowHorizontalPadding)
         .frame(minHeight: 31)
         .background(
             rowBackground,

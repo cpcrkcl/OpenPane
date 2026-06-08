@@ -23,5 +23,9 @@ struct OpenPaneApp: App {
             MainWindowView()
         }
         .defaultSize(width: 1240, height: 760)
+
+        Settings {
+            SettingsView()
+        }
     }
 }
