@@ -1,0 +1,229 @@
+//
+//  KeyboardShortcutStore.swift
+//  OpenPane
+//
+//  Created by Christopher Rego on 6/7/26.
+//
+
+import Combine
+import SwiftUI
+
+enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
+    case refreshActive
+    case refreshBoth
+    case goUp
+    case toggleHiddenFiles
+    case copyToOtherPane
+    case moveToOtherPane
+    case newFolder
+    case rename
+    case preview
+    case moveToTrash
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .refreshActive:
+            "Refresh active pane"
+        case .refreshBoth:
+            "Refresh both panes"
+        case .goUp:
+            "Go up"
+        case .toggleHiddenFiles:
+            "Show hidden files"
+        case .copyToOtherPane:
+            "Copy to other pane"
+        case .moveToOtherPane:
+            "Move to other pane"
+        case .newFolder:
+            "New folder"
+        case .rename:
+            "Rename"
+        case .preview:
+            "Preview"
+        case .moveToTrash:
+            "Move to Trash"
+        }
+    }
+}
+
+struct OpenPaneKeyboardShortcut: Codable, Equatable, Sendable {
+    var key: ShortcutKey
+    var usesCommand: Bool
+    var usesShift: Bool
+    var usesOption: Bool
+    var usesControl: Bool
+
+    var keyEquivalent: KeyEquivalent {
+        key.keyEquivalent
+    }
+
+    var modifiers: EventModifiers {
+        var modifiers = EventModifiers()
+
+        if usesCommand {
+            modifiers.insert(.command)
+        }
+
+        if usesShift {
+            modifiers.insert(.shift)
+        }
+
+        if usesOption {
+            modifiers.insert(.option)
+        }
+
+        if usesControl {
+            modifiers.insert(.control)
+        }
+
+        return modifiers
+    }
+
+    var displayText: String {
+        "\(modifierDisplayText)\(key.displayText)"
+    }
+
+    private var modifierDisplayText: String {
+        var text = ""
+
+        if usesControl {
+            text += "⌃"
+        }
+
+        if usesOption {
+            text += "⌥"
+        }
+
+        if usesShift {
+            text += "⇧"
+        }
+
+        if usesCommand {
+            text += "⌘"
+        }
+
+        return text
+    }
+}
+
+struct ShortcutKey: Codable, Equatable, Sendable {
+    let rawValue: String
+
+    var keyEquivalent: KeyEquivalent {
+        switch rawValue {
+        case "return":
+            .return
+        case "delete":
+            .delete
+        case "upArrow":
+            .upArrow
+        case "space":
+            .space
+        default:
+            KeyEquivalent(Character(rawValue.lowercased()))
+        }
+    }
+
+    var displayText: String {
+        switch rawValue {
+        case "return":
+            "Return"
+        case "delete":
+            "Delete"
+        case "upArrow":
+            "↑"
+        case "space":
+            "Space"
+        default:
+            rawValue.uppercased()
+        }
+    }
+}
+
+@MainActor
+final class KeyboardShortcutStore: ObservableObject {
+    @Published private var shortcuts: [OpenPaneShortcutAction: OpenPaneKeyboardShortcut]
+
+    private let userDefaults: UserDefaults
+    private let userDefaultsKey = "OpenPaneKeyboardShortcuts"
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+
+        if let data = userDefaults.data(forKey: userDefaultsKey),
+           let savedShortcuts = try? JSONDecoder().decode([String: OpenPaneKeyboardShortcut].self, from: data) {
+            shortcuts = Self.defaultShortcuts.merging(savedShortcuts.compactMapKeys(OpenPaneShortcutAction.init(rawValue:))) { _, saved in
+                saved
+            }
+        } else {
+            shortcuts = Self.defaultShortcuts
+        }
+    }
+
+    func shortcut(for action: OpenPaneShortcutAction) -> OpenPaneKeyboardShortcut {
+        shortcuts[action] ?? Self.defaultShortcuts[action] ?? Self.fallbackShortcut
+    }
+
+    func setShortcut(_ shortcut: OpenPaneKeyboardShortcut, for action: OpenPaneShortcutAction) {
+        shortcuts[action] = shortcut
+        save()
+    }
+
+    func resetToDefaults() {
+        shortcuts = Self.defaultShortcuts
+        save()
+    }
+
+    private func save() {
+        let encodedShortcuts = shortcuts.reduce(into: [String: OpenPaneKeyboardShortcut]()) { result, pair in
+            result[pair.key.rawValue] = pair.value
+        }
+
+        if let data = try? JSONEncoder().encode(encodedShortcuts) {
+            userDefaults.set(data, forKey: userDefaultsKey)
+        }
+    }
+
+    private static let fallbackShortcut = OpenPaneKeyboardShortcut(
+        key: ShortcutKey(rawValue: "space"),
+        usesCommand: false,
+        usesShift: false,
+        usesOption: false,
+        usesControl: false
+    )
+
+    private static let defaultShortcuts: [OpenPaneShortcutAction: OpenPaneKeyboardShortcut] = [
+        .refreshActive: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "r"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
+        .refreshBoth: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "r"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false),
+        .goUp: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "upArrow"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
+        .toggleHiddenFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "."), usesCommand: true, usesShift: true, usesOption: false, usesControl: false),
+        .copyToOtherPane: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "c"), usesCommand: true, usesShift: false, usesOption: true, usesControl: false),
+        .moveToOtherPane: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "m"), usesCommand: true, usesShift: false, usesOption: true, usesControl: false),
+        .newFolder: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "n"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false),
+        .rename: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "return"), usesCommand: false, usesShift: false, usesOption: false, usesControl: false),
+        .preview: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "space"), usesCommand: false, usesShift: false, usesOption: false, usesControl: false),
+        .moveToTrash: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "delete"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false)
+    ]
+}
+
+private extension Dictionary {
+    func compactMapKeys<NewKey: Hashable>(_ transform: (Key) -> NewKey?) -> [NewKey: Value] {
+        reduce(into: [NewKey: Value]()) { result, pair in
+            guard let key = transform(pair.key) else {
+                return
+            }
+
+            result[key] = pair.value
+        }
+    }
+}
+
+extension View {
+    func openPaneKeyboardShortcut(_ shortcut: OpenPaneKeyboardShortcut) -> some View {
+        keyboardShortcut(shortcut.keyEquivalent, modifiers: shortcut.modifiers)
+    }
+}

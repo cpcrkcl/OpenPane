@@ -12,6 +12,7 @@ private enum FilePaneListMetrics {
     static let contentPadding: CGFloat = 6
     static let rowHorizontalPadding: CGFloat = 8
     static let headerHorizontalPadding = contentPadding + rowHorizontalPadding
+    static let columnSpacing: CGFloat = 18
     static let sizeColumnWidth: CGFloat = 92
     static let modifiedColumnWidth: CGFloat = 150
     static let kindColumnWidth: CGFloat = 128
@@ -19,10 +20,14 @@ private enum FilePaneListMetrics {
 
 struct FilePaneView: View {
     @ObservedObject var viewModel: FilePaneViewModel
+    @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
     var isActive: Bool = false
     var paneSide: PaneSide?
     var onActivate: () -> Void = {}
     var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide) -> Void = { _, _, _ in }
+    var onRenameSelected: () -> Void = {}
+    var onTrashSelected: () -> Void = {}
+    var onCreateFolder: () -> Void = {}
 
     @State private var isTabDropTargeted = false
     @State private var activeSortColumn: FileListColumn?
@@ -424,7 +429,7 @@ struct FilePaneView: View {
                 Label("Preview", systemImage: "eye")
             }
             .buttonStyle(SecondaryActionButtonStyle())
-            .keyboardShortcut(.space, modifiers: [])
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .preview))
             .disabled(viewModel.selectedItems.count != 1)
 
             Button {
@@ -494,14 +499,20 @@ struct FilePaneView: View {
                             item: item,
                             icon: fileIconService.icon(for: item),
                             isSelected: viewModel.selectedItems.contains(item),
+                            isPaneActive: isActive,
                             onSelect: {
                                 selectItem(item)
+                            },
+                            onContextSelect: {
+                                selectItemForContextMenu(item)
                             },
                             onOpen: {
                                 Task {
                                     await viewModel.open(item)
                                 }
                             },
+                            onRename: onRenameSelected,
+                            onTrash: onTrashSelected,
                             onReveal: {
                                 viewModel.selectedItems = [item]
                                 viewModel.revealSelectedItemsInFinder()
@@ -509,6 +520,9 @@ struct FilePaneView: View {
                             onPreview: {
                                 viewModel.selectedItems = [item]
                                 viewModel.previewSelectedItem()
+                            },
+                            onCopyPath: {
+                                viewModel.copyPath(of: item)
                             }
                         )
                     }
@@ -516,13 +530,40 @@ struct FilePaneView: View {
                 .padding(FilePaneListMetrics.contentPadding)
             }
             .background(CatppuccinMochaTheme.base)
+            .contextMenu {
+                EmptyPaneContextMenu(
+                    currentURL: viewModel.currentURL,
+                    includeHiddenFiles: viewModel.includeHiddenFiles,
+                    isActive: isActive,
+                    onNewFolder: onCreateFolder,
+                    onNewFile: {
+                        viewModel.showPlaceholderError("New File is not implemented yet.")
+                    },
+                    onPaste: {
+                        viewModel.showPlaceholderError("Paste is not implemented yet.")
+                    },
+                    onRefresh: {
+                        Task {
+                            await viewModel.refresh()
+                        }
+                    },
+                    onToggleHiddenFiles: {
+                        Task {
+                            await viewModel.toggleHiddenFiles()
+                        }
+                    }
+                )
+            }
+            .onRightClickInside {
+                onActivate()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CatppuccinMochaTheme.base)
     }
 
     private var fileListHeader: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: FilePaneListMetrics.columnSpacing) {
             sortHeader(.name)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -615,16 +656,26 @@ struct FilePaneView: View {
             viewModel.selectedItems = [item]
         }
     }
+
+    private func selectItemForContextMenu(_ item: FileItem) {
+        onActivate()
+        viewModel.selectForContextMenu(item)
+    }
 }
 
 private struct FilePaneRowView: View {
     let item: FileItem
     let icon: NSImage
     let isSelected: Bool
+    let isPaneActive: Bool
     let onSelect: () -> Void
+    let onContextSelect: () -> Void
     let onOpen: () -> Void
+    let onRename: () -> Void
+    let onTrash: () -> Void
     let onReveal: () -> Void
     let onPreview: () -> Void
+    let onCopyPath: () -> Void
 
     @State private var isHovered = false
 
@@ -649,7 +700,7 @@ private struct FilePaneRowView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: FilePaneListMetrics.columnSpacing) {
             HStack(spacing: 8) {
                 Image(nsImage: icon)
                     .resizable()
@@ -686,6 +737,9 @@ private struct FilePaneRowView: View {
         }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+        .onRightClickInside {
+            onContextSelect()
+        }
         .onTapGesture {
             onSelect()
         }
@@ -694,17 +748,201 @@ private struct FilePaneRowView: View {
             onOpen()
         }
         .contextMenu {
-            Button("Open") {
-                onOpen()
-            }
-
-            Button("Reveal in Finder") {
-                onReveal()
-            }
-
-            Button("Preview") {
-                onPreview()
-            }
+            FileItemContextMenu(
+                item: item,
+                isPaneActive: isPaneActive,
+                onPrepare: onContextSelect,
+                onOpen: onOpen,
+                onRename: onRename,
+                onTrash: onTrash,
+                onPreview: onPreview,
+                onReveal: onReveal,
+                onCopyPath: onCopyPath
+            )
         }
+    }
+}
+
+private struct FileItemContextMenu: View {
+    let item: FileItem
+    let isPaneActive: Bool
+    let onPrepare: () -> Void
+    let onOpen: () -> Void
+    let onRename: () -> Void
+    let onTrash: () -> Void
+    let onPreview: () -> Void
+    let onReveal: () -> Void
+    let onCopyPath: () -> Void
+
+    var body: some View {
+        Button {
+            onPrepare()
+            onOpen()
+        } label: {
+            Label("Open", systemImage: "arrow.forward")
+        }
+
+        Button {
+            onPrepare()
+            onRename()
+        } label: {
+            Label("Rename", systemImage: "pencil")
+        }
+
+        Button(role: .destructive) {
+            onPrepare()
+            onTrash()
+        } label: {
+            Label("Move to Trash", systemImage: "trash")
+        }
+
+        Divider()
+
+        Button {
+            onPrepare()
+            onPreview()
+        } label: {
+            Label("Quick Look", systemImage: "eye")
+        }
+        .disabled(item.isDirectory)
+
+        Button {
+            onPrepare()
+            onReveal()
+        } label: {
+            Label("Reveal in Finder", systemImage: "finder")
+        }
+
+        Button {
+            onPrepare()
+            onCopyPath()
+        } label: {
+            Label("Copy Path", systemImage: "doc.on.clipboard")
+        }
+
+        if !isPaneActive {
+            Divider()
+
+            Label("Activates this pane", systemImage: "sidebar.leading")
+        }
+    }
+}
+
+private struct EmptyPaneContextMenu: View {
+    let currentURL: URL
+    let includeHiddenFiles: Bool
+    let isActive: Bool
+    let onNewFolder: () -> Void
+    let onNewFile: () -> Void
+    let onPaste: () -> Void
+    let onRefresh: () -> Void
+    let onToggleHiddenFiles: () -> Void
+
+    var body: some View {
+        Button {
+            onNewFolder()
+        } label: {
+            Label("New Folder", systemImage: "folder.badge.plus")
+        }
+
+        Button {
+            onNewFile()
+        } label: {
+            Label("New File", systemImage: "doc.badge.plus")
+        }
+
+        Button {
+            onPaste()
+        } label: {
+            Label("Paste", systemImage: "doc.on.clipboard")
+        }
+
+        Divider()
+
+        Button {
+            onRefresh()
+        } label: {
+            Label("Refresh", systemImage: "arrow.clockwise")
+        }
+
+        Button {
+            onToggleHiddenFiles()
+        } label: {
+            Label(
+                includeHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files",
+                systemImage: includeHiddenFiles ? "eye.slash" : "eye"
+            )
+        }
+
+        Divider()
+
+        Label(currentURL.openPaneDisplayName, systemImage: isActive ? "checkmark.circle" : "circle")
+    }
+}
+
+private struct RightClickMonitorView: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> RightClickMonitorNSView {
+        let view = RightClickMonitorNSView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ nsView: RightClickMonitorNSView, context: Context) {
+        nsView.action = action
+    }
+
+    static func dismantleNSView(_ nsView: RightClickMonitorNSView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+}
+
+private final class RightClickMonitorNSView: NSView {
+    var action: () -> Void = {}
+    private var monitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+
+        stopMonitoring()
+
+        guard window != nil else {
+            return
+        }
+
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+            guard let self,
+                  event.window === self.window else {
+                return event
+            }
+
+            let location = self.convert(event.locationInWindow, from: nil)
+
+            if self.bounds.contains(location) {
+                self.action()
+            }
+
+            return event
+        }
+    }
+
+    func stopMonitoring() {
+        guard let monitor else {
+            return
+        }
+
+        NSEvent.removeMonitor(monitor)
+        self.monitor = nil
+    }
+
+    deinit {
+        stopMonitoring()
+    }
+}
+
+private extension View {
+    func onRightClickInside(_ action: @escaping () -> Void) -> some View {
+        background(RightClickMonitorView(action: action))
     }
 }

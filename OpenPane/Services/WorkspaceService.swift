@@ -14,6 +14,9 @@ nonisolated protocol WorkspaceServicing: Sendable {
 
     @MainActor
     func revealInFinder(urls: [URL])
+
+    @MainActor
+    func copyPath(url: URL)
 }
 
 nonisolated struct WorkspaceService: WorkspaceServicing {
@@ -27,5 +30,12 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
     @MainActor
     func revealInFinder(urls: [URL]) {
         NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+
+    @MainActor
+    func copyPath(url: URL) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.path, forType: .string)
     }
 }

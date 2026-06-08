@@ -17,15 +17,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct OpenPaneApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var keyboardShortcutStore = KeyboardShortcutStore()
 
     var body: some Scene {
         WindowGroup {
             MainWindowView()
+                .environmentObject(keyboardShortcutStore)
         }
         .defaultSize(width: 1240, height: 760)
 
         Settings {
             SettingsView()
+                .environmentObject(keyboardShortcutStore)
         }
     }
 }

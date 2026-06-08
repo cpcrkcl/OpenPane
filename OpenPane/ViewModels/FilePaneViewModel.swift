@@ -224,6 +224,33 @@ final class FilePaneViewModel: ObservableObject {
         selectedItems = []
     }
 
+    func selectForContextMenu(_ item: FileItem) {
+        guard !selectedItems.contains(item) else {
+            return
+        }
+
+        selectedItems = [item]
+    }
+
+    func showPlaceholderError(_ message: String) {
+        errorMessage = message
+    }
+
+    func copyPath(of item: FileItem) {
+        errorMessage = nil
+        workspaceService.copyPath(url: item.url)
+    }
+
+    func toggleHiddenFiles() async {
+        includeHiddenFiles.toggle()
+
+        if isShowingRecursiveSearchResults {
+            await performRecursiveSearch()
+        } else {
+            await refresh()
+        }
+    }
+
     func open(_ item: FileItem) async {
         if item.isDirectory {
             await setDirectory(item.url)

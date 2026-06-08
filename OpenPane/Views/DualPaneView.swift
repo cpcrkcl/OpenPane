@@ -9,6 +9,7 @@ import SwiftUI
 
 struct DualPaneView: View {
     @ObservedObject var viewModel: DualPaneViewModel
+    @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
 
     @State private var newFolderName = "Untitled Folder"
     @State private var renameItemName = ""
@@ -64,6 +65,12 @@ struct DualPaneView: View {
                     viewModel.setActivePane(.left)
                 } onMoveTab: { tabID, sourceSide, destinationSide in
                     viewModel.moveTab(tabID, from: sourceSide, to: destinationSide)
+                } onRenameSelected: {
+                    prepareRenameSheet()
+                } onTrashSelected: {
+                    prepareTrashConfirmation()
+                } onCreateFolder: {
+                    prepareNewFolderSheet()
                 }
                 .frame(minWidth: 320)
 
@@ -75,6 +82,12 @@ struct DualPaneView: View {
                     viewModel.setActivePane(.right)
                 } onMoveTab: { tabID, sourceSide, destinationSide in
                     viewModel.moveTab(tabID, from: sourceSide, to: destinationSide)
+                } onRenameSelected: {
+                    prepareRenameSheet()
+                } onTrashSelected: {
+                    prepareTrashConfirmation()
+                } onCreateFolder: {
+                    prepareNewFolderSheet()
                 }
                 .frame(minWidth: 320)
             }
@@ -173,7 +186,7 @@ struct DualPaneView: View {
                 Label("New Folder", systemImage: "folder.badge.plus")
             }
             .buttonStyle(SecondaryActionButtonStyle())
-            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .newFolder))
             .disabled(viewModel.isPerformingOperation)
 
             Button {
@@ -182,7 +195,7 @@ struct DualPaneView: View {
                 Label("Rename", systemImage: "pencil")
             }
             .buttonStyle(SecondaryActionButtonStyle())
-            .keyboardShortcut(.return, modifiers: [])
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .rename))
             .disabled(viewModel.isPerformingOperation)
 
             Button {
@@ -193,7 +206,7 @@ struct DualPaneView: View {
                 Label("Up", systemImage: "arrow.up")
             }
             .buttonStyle(ToolbarIconButtonStyle())
-            .keyboardShortcut(.upArrow, modifiers: .command)
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .goUp))
 
             Button {
                 Task {
@@ -203,7 +216,7 @@ struct DualPaneView: View {
                 Label("Refresh Active", systemImage: "arrow.clockwise")
             }
             .buttonStyle(ToolbarIconButtonStyle())
-            .keyboardShortcut("r", modifiers: .command)
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .refreshActive))
 
             Button {
                 toggleHiddenFilesInActivePane()
@@ -214,7 +227,7 @@ struct DualPaneView: View {
                 )
             }
             .buttonStyle(SecondaryActionButtonStyle())
-            .keyboardShortcut(".", modifiers: [.command, .shift])
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .toggleHiddenFiles))
 
             Button {
                 prepareCopyToOtherPane()
@@ -222,7 +235,7 @@ struct DualPaneView: View {
                 Label("Copy to Other Pane", systemImage: "doc.on.doc")
             }
             .buttonStyle(PrimaryActionButtonStyle())
-            .keyboardShortcut("c", modifiers: [.command, .option])
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .copyToOtherPane))
             .disabled(viewModel.isPerformingOperation)
 
             Button {
@@ -231,7 +244,7 @@ struct DualPaneView: View {
                 Label("Move to Other Pane", systemImage: "arrow.right")
             }
             .buttonStyle(PrimaryActionButtonStyle())
-            .keyboardShortcut("m", modifiers: [.command, .option])
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .moveToOtherPane))
             .disabled(viewModel.isPerformingOperation)
 
             Button {
@@ -240,7 +253,7 @@ struct DualPaneView: View {
                 Label("Move to Trash", systemImage: "trash")
             }
             .buttonStyle(DestructiveActionButtonStyle())
-            .keyboardShortcut(.delete, modifiers: .command)
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .moveToTrash))
             .disabled(viewModel.isPerformingOperation)
 
             Button {
@@ -251,7 +264,7 @@ struct DualPaneView: View {
                 Label("Refresh Both", systemImage: "arrow.clockwise")
             }
             .buttonStyle(SecondaryActionButtonStyle())
-            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .refreshBoth))
 
             Button {
                 Task {
@@ -308,14 +321,8 @@ struct DualPaneView: View {
     }
 
     private func toggleHiddenFilesInActivePane() {
-        viewModel.activePane.includeHiddenFiles.toggle()
-
         Task {
-            if viewModel.activePane.isShowingRecursiveSearchResults {
-                await viewModel.activePane.performRecursiveSearch()
-            } else {
-                await viewModel.activePane.refresh()
-            }
+            await viewModel.activePane.toggleHiddenFiles()
         }
     }
 

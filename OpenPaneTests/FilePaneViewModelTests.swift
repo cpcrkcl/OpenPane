@@ -566,6 +566,7 @@ private final class MockQuickLookPreviewService: QuickLookPreviewServicing {
 private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendable {
     private(set) var openedURLs: [URL] = []
     private(set) var revealedURLs: [URL] = []
+    private(set) var copiedPathURLs: [URL] = []
 
     func open(url: URL) {
         openedURLs.append(url)
@@ -573,6 +574,10 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
 
     func revealInFinder(urls: [URL]) {
         revealedURLs.append(contentsOf: urls)
+    }
+
+    func copyPath(url: URL) {
+        copiedPathURLs.append(url)
     }
 }
 
