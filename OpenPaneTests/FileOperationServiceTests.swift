@@ -146,6 +146,43 @@ struct FileOperationServiceTests {
         #expect(isDirectory.boolValue)
     }
 
+    @Test func createsEmptyFile() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+
+        let fileURL = try await FileOperationService().createFile(named: "Untitled.txt", in: temporaryDirectory.sourceURL)
+
+        var isDirectory: ObjCBool = true
+        #expect(FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory))
+        #expect(!isDirectory.boolValue)
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        #expect(attributes[.size] as? Int == 0)
+    }
+
+    @Test func emptyFileNameThrows() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+
+        await #expect(throws: FileOperationError.emptyName) {
+            try await FileOperationService().createFile(named: "   ", in: temporaryDirectory.sourceURL)
+        }
+    }
+
+    @Test func createFileCollisionThrowsReadableError() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        _ = try temporaryDirectory.createFile(named: "Untitled.txt", contents: "existing")
+
+        await #expect(throws: FileOperationError.destinationExists(temporaryDirectory.sourceURL.appendingPathComponent("Untitled.txt"))) {
+            try await FileOperationService().createFile(named: "Untitled.txt", in: temporaryDirectory.sourceURL)
+        }
+    }
+
+    @Test func createFileNameWithSlashThrowsReadableError() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+
+        await #expect(throws: FileOperationError.invalidName("Bad/Name.txt")) {
+            try await FileOperationService().createFile(named: "Bad/Name.txt", in: temporaryDirectory.sourceURL)
+        }
+    }
+
     @Test func copyCancelsWhenDestinationExistsByDefault() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let sourceFile = try temporaryDirectory.createFile(named: "duplicate.txt", contents: "source")

@@ -173,6 +173,20 @@ final class DualPaneViewModel: ObservableObject {
         }
     }
 
+    func createFileInActivePane(named name: String) async {
+        let sourcePane = activePane
+        let currentURL = sourcePane.currentURL
+
+        await performOperation(
+            statusMessage: "Creating file...",
+            successMessage: "Created file.",
+            failureMessage: "New file failed."
+        ) {
+            _ = try await fileOperationService.createFile(named: name, in: currentURL)
+            await sourcePane.refresh()
+        }
+    }
+
     func renameSelectedItem(to newName: String) async {
         let sourcePane = activePane
         let selectedItems = Array(sourcePane.selectedItems)

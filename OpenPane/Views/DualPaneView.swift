@@ -12,6 +12,7 @@ struct DualPaneView: View {
     @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
 
     @State private var newFolderName = "Untitled Folder"
+    @State private var newFileName = "Untitled.txt"
     @State private var renameItemName = ""
     @State private var batchRenameBaseName = "Item"
     @State private var batchRenameStartingNumber = 1
@@ -23,6 +24,7 @@ struct DualPaneView: View {
 
     private enum ActiveSheet: Identifiable {
         case newFolder
+        case newFile
         case rename
         case batchRename
 
@@ -30,6 +32,8 @@ struct DualPaneView: View {
             switch self {
             case .newFolder:
                 "newFolder"
+            case .newFile:
+                "newFile"
             case .rename:
                 "rename"
             case .batchRename:
@@ -45,6 +49,7 @@ struct DualPaneView: View {
 
     private enum SheetField: Hashable {
         case newFolderName
+        case newFileName
         case renameItemName
         case batchRenameBaseName
     }
@@ -71,6 +76,8 @@ struct DualPaneView: View {
                     prepareTrashConfirmation()
                 } onCreateFolder: {
                     prepareNewFolderSheet()
+                } onCreateFile: {
+                    prepareNewFileSheet()
                 }
                 .frame(minWidth: 320)
 
@@ -88,6 +95,8 @@ struct DualPaneView: View {
                     prepareTrashConfirmation()
                 } onCreateFolder: {
                     prepareNewFolderSheet()
+                } onCreateFile: {
+                    prepareNewFileSheet()
                 }
                 .frame(minWidth: 320)
             }
@@ -119,6 +128,8 @@ struct DualPaneView: View {
             switch sheet {
             case .newFolder:
                 newFolderSheet
+            case .newFile:
+                newFileSheet
             case .rename:
                 renameSheet
             case .batchRename:
@@ -320,6 +331,15 @@ struct DualPaneView: View {
         activeSheet = .newFolder
     }
 
+    private func prepareNewFileSheet() {
+        guard !viewModel.isPerformingOperation else {
+            return
+        }
+
+        newFileName = "Untitled.txt"
+        activeSheet = .newFile
+    }
+
     private func toggleHiddenFilesInActivePane() {
         Task {
             await viewModel.activePane.toggleHiddenFiles()
@@ -444,6 +464,41 @@ struct DualPaneView: View {
 
         Task {
             await viewModel.createFolderInActivePane(named: folderName)
+        }
+    }
+
+    private var newFileSheet: some View {
+        sheetContainer(
+            title: "New File",
+            subtitle: "Create an empty file in \(viewModel.activePane.currentURL.openPaneDisplayName).",
+            width: 380
+        ) {
+            themedTextField(
+                "File name",
+                text: $newFileName,
+                field: .newFileName,
+                onSubmit: createFileFromSheet
+            )
+
+            sheetActions(
+                confirmTitle: "Create",
+                confirmSystemImage: "doc.badge.plus",
+                isConfirmDisabled: viewModel.isPerformingOperation ||
+                    newFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                confirm: createFileFromSheet
+            )
+        }
+        .onAppear {
+            focusedSheetField = .newFileName
+        }
+    }
+
+    private func createFileFromSheet() {
+        let fileName = newFileName
+        activeSheet = nil
+
+        Task {
+            await viewModel.createFileInActivePane(named: fileName)
         }
     }
 

@@ -28,6 +28,7 @@ struct FilePaneView: View {
     var onRenameSelected: () -> Void = {}
     var onTrashSelected: () -> Void = {}
     var onCreateFolder: () -> Void = {}
+    var onCreateFile: () -> Void = {}
 
     @State private var isTabDropTargeted = false
     @State private var activeSortColumn: FileListColumn?
@@ -536,9 +537,7 @@ struct FilePaneView: View {
                     includeHiddenFiles: viewModel.includeHiddenFiles,
                     isActive: isActive,
                     onNewFolder: onCreateFolder,
-                    onNewFile: {
-                        viewModel.showPlaceholderError("New File is not implemented yet.")
-                    },
+                    onNewFile: onCreateFile,
                     onPaste: {
                         viewModel.showPlaceholderError("Paste is not implemented yet.")
                     },

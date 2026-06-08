@@ -78,6 +78,7 @@ nonisolated protocol FileOperationServicing: Sendable {
         preserveExtensions: Bool
     ) async throws -> [URL]
     nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL
+    nonisolated func createFile(named name: String, in directory: URL) async throws -> URL
 }
 
 extension FileOperationServicing {
@@ -277,6 +278,22 @@ nonisolated struct FileOperationService: FileOperationServicing {
             }
 
             return folderURL
+        }.value
+    }
+
+    nonisolated func createFile(named name: String, in directory: URL) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            let trimmedName = try Self.validateName(name)
+            try Self.validateDirectory(directory)
+
+            let fileURL = directory.appendingPathComponent(trimmedName, isDirectory: false)
+            try Self.validateDestinationDoesNotExist(fileURL)
+
+            guard FileManager.default.createFile(atPath: fileURL.path, contents: Data()) else {
+                throw FileOperationError.operationFailed("create file", fileURL, "The operation could not be completed.")
+            }
+
+            return fileURL
         }.value
     }
 

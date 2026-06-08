@@ -408,6 +408,10 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
     func createFolder(named name: String, in directory: URL) async throws -> URL {
         directory.appendingPathComponent(name, isDirectory: true)
     }
+
+    func createFile(named name: String, in directory: URL) async throws -> URL {
+        directory.appendingPathComponent(name, isDirectory: false)
+    }
 }
 
 private final class SuspendingMoveFileOperationService: FileOperationServicing, @unchecked Sendable {
@@ -474,6 +478,10 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
 
     func createFolder(named name: String, in directory: URL) async throws -> URL {
         directory.appendingPathComponent(name, isDirectory: true)
+    }
+
+    func createFile(named name: String, in directory: URL) async throws -> URL {
+        directory.appendingPathComponent(name, isDirectory: false)
     }
 
     func waitForMoveToStart() async {
