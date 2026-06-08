@@ -7,6 +7,7 @@
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum FilePaneListMetrics {
     static let contentPadding: CGFloat = 6
@@ -637,8 +638,13 @@ struct FilePaneView: View {
                             icon: fileIconService.icon(for: item),
                             isSelected: viewModel.selectedItems.contains(item),
                             isPaneActive: isActive,
+                            paneSide: paneSide,
                             onSelect: {
                                 selectItem(item)
+                            },
+                            onDragItems: {
+                                onActivate()
+                                return viewModel.itemsForDrag(startingFrom: item)
                             },
                             onContextSelect: {
                                 selectItemForContextMenu(item)
@@ -839,7 +845,9 @@ private struct FilePaneRowView: View {
     let icon: NSImage
     let isSelected: Bool
     let isPaneActive: Bool
+    let paneSide: PaneSide?
     let onSelect: () -> Void
+    let onDragItems: () -> [FileItem]
     let onContextSelect: () -> Void
     let onOpen: () -> Void
     let applicationOptions: [ApplicationOption]
@@ -927,6 +935,9 @@ private struct FilePaneRowView: View {
             onSelect()
             onOpen()
         }
+        .onDrag {
+            dragItemProvider()
+        }
         .contextMenu {
             FileItemContextMenu(
                 item: item,
@@ -949,6 +960,41 @@ private struct FilePaneRowView: View {
                 compressItemCount: compressItemCount
             )
         }
+    }
+
+    private func dragItemProvider() -> NSItemProvider {
+        let draggedItems = onDragItems()
+        let provider = NSItemProvider()
+
+        if let firstItem = draggedItems.first {
+            provider.registerFileRepresentation(
+                forTypeIdentifier: UTType.fileURL.identifier,
+                fileOptions: [],
+                visibility: .all
+            ) { completion in
+                completion(firstItem.url, true, nil)
+                return nil
+            }
+
+            provider.registerObject(firstItem.url as NSURL, visibility: .all)
+        }
+
+        let payload = FileDragPayload(
+            sourcePaneSide: paneSide,
+            fileURLs: draggedItems.map(\.url)
+        )
+
+        if let data = payload.encodedData {
+            provider.registerDataRepresentation(
+                forTypeIdentifier: FileDragPayload.typeIdentifier,
+                visibility: .all
+            ) { completion in
+                completion(data, nil)
+                return nil
+            }
+        }
+
+        return provider
     }
 }
 

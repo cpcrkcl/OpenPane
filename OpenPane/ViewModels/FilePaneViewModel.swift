@@ -318,6 +318,17 @@ final class FilePaneViewModel: ObservableObject {
         selectedItems = [item]
     }
 
+    func itemsForDrag(startingFrom item: FileItem) -> [FileItem] {
+        if selectedItems.contains(item) {
+            return selectedItems.sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        }
+
+        selectedItems = [item]
+        return [item]
+    }
+
     func showPlaceholderError(_ message: String) {
         errorMessage = message
     }

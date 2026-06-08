@@ -235,6 +235,52 @@ struct FilePaneViewModelTests {
         #expect(viewModel.filteredItems == [alphaItem, zebraItem])
     }
 
+    @Test func itemsForDragReturnsSelectedItemsWhenStartingItemIsSelected() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService()
+        )
+        viewModel.selectedItems = [secondItem, firstItem]
+
+        let dragItems = viewModel.itemsForDrag(startingFrom: secondItem)
+
+        #expect(dragItems == [firstItem, secondItem])
+        #expect(viewModel.selectedItems == [firstItem, secondItem])
+    }
+
+    @Test func itemsForDragSelectsOnlyStartingItemWhenItIsNotSelected() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService()
+        )
+        viewModel.selectedItems = [firstItem]
+
+        let dragItems = viewModel.itemsForDrag(startingFrom: secondItem)
+
+        #expect(dragItems == [secondItem])
+        #expect(viewModel.selectedItems == [secondItem])
+    }
+
+    @Test func fileDragPayloadEncodesSourcePaneAndFileURLs() throws {
+        let fileURLs = [
+            URL(filePath: "/tmp/Alpha.txt"),
+            URL(filePath: "/tmp/Beta.txt")
+        ]
+        let payload = FileDragPayload(sourcePaneSide: .left, fileURLs: fileURLs)
+
+        let data = try #require(payload.encodedData)
+        let decodedPayload = try #require(FileDragPayload.decoded(from: data))
+
+        #expect(decodedPayload.sourcePaneSide == .left)
+        #expect(decodedPayload.fileURLs == fileURLs)
+    }
+
     @Test func performRecursiveSearchShowsRecursiveResults() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
