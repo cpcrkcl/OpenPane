@@ -26,14 +26,27 @@ struct FilePaneView: View {
         }
     }
 
+    private var paneSurfaceColor: Color {
+        isActive ? CatppuccinMochaTheme.paneBackgroundElevated : CatppuccinMochaTheme.windowBackground
+    }
+
+    private var selectedCountText: String {
+        let count = viewModel.selectedItems.count
+        return count == 1 ? "1 selected" : "\(count) selected"
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 8) {
             tabBar
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+
+            paneHeader
+                .padding(.horizontal, 12)
 
             toolbar
-                .padding(12)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
 
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
@@ -51,9 +64,18 @@ struct FilePaneView: View {
                         .controlSize(.large)
                 }
             }
+            .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium))
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
         }
-        .background(CatppuccinMochaTheme.paneBackground)
+        .background(paneSurfaceColor)
         .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge))
+        .shadow(
+            color: isActive ? CatppuccinMochaTheme.accent.opacity(0.12) : Color.black.opacity(0.18),
+            radius: isActive ? 12 : 6,
+            x: 0,
+            y: isActive ? 5 : 2
+        )
         .task {
             await viewModel.loadCurrentDirectory()
         }
@@ -65,15 +87,44 @@ struct FilePaneView: View {
         )
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(isActive ? CatppuccinMochaTheme.accent : Color.clear)
+                .fill(isActive ? CatppuccinMochaTheme.accentSecondary : Color.clear)
                 .frame(height: 3)
         }
         .overlay {
             RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
                 .stroke(
-                    isActive ? CatppuccinMochaTheme.activePaneBorder : CatppuccinMochaTheme.inactivePaneBorder.opacity(0.7),
+                    isActive ? CatppuccinMochaTheme.activePaneBorder.opacity(0.95) : CatppuccinMochaTheme.inactivePaneBorder.opacity(0.55),
                     lineWidth: isActive ? CatppuccinMochaTheme.paneBorderWidth : CatppuccinMochaTheme.hairlineBorderWidth
                 )
+        }
+    }
+
+    private var paneHeader: some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(viewModel.currentURL.openPaneDisplayName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(CatppuccinMochaTheme.primaryText)
+                        .lineLimit(1)
+
+                    if !viewModel.selectedItems.isEmpty {
+                        Text(selectedCountText)
+                            .font(.caption)
+                            .foregroundStyle(CatppuccinMochaTheme.accentSecondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(
+                                CatppuccinMochaTheme.accentSecondary.opacity(0.12),
+                                in: Capsule()
+                            )
+                    }
+                }
+
+                PathBarView(path: viewModel.currentURL.path)
+            }
+
+            Spacer(minLength: 0)
         }
     }
 
@@ -263,9 +314,10 @@ struct FilePaneView: View {
                     Label("Clear Search", systemImage: "xmark.circle")
                 }
             }
-
-            PathBarView(path: viewModel.currentURL.path)
         }
+        .controlSize(.small)
+        .buttonStyle(.bordered)
+        .foregroundStyle(CatppuccinMochaTheme.primaryText)
     }
 
     private var fileTable: some View {

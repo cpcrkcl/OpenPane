@@ -71,7 +71,7 @@ struct DualPaneView: View {
                 }
                 .frame(minWidth: 320)
             }
-            .padding(10)
+            .padding(12)
             .background(CatppuccinMochaTheme.appBackground)
 
             horizontalDivider

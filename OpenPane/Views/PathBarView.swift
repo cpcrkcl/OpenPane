@@ -12,17 +12,21 @@ struct PathBarView: View {
 
     var body: some View {
         Text(path)
-            .font(.system(.body, design: .monospaced))
+            .font(.system(size: 11, design: .monospaced))
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)
-            .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+            .foregroundStyle(CatppuccinMochaTheme.mutedText)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .padding(.horizontal, 9)
             .background(
-                CatppuccinMochaTheme.paneBackgroundElevated,
-                in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                CatppuccinMochaTheme.mantle.opacity(0.78),
+                in: Capsule()
             )
+            .overlay {
+                Capsule()
+                    .stroke(CatppuccinMochaTheme.surface1.opacity(0.7), lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+            }
     }
 }
