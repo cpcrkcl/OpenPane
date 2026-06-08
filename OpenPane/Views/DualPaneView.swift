@@ -18,6 +18,7 @@ struct DualPaneView: View {
     @State private var isShowingTrashConfirmation = false
     @State private var trashConfirmationItemCount = 0
     @State private var pendingConflictOperation: PendingConflictOperation?
+    @FocusState private var focusedSheetField: SheetField?
 
     private enum ActiveSheet: Identifiable {
         case newFolder
@@ -39,6 +40,12 @@ struct DualPaneView: View {
     private enum PendingConflictOperation {
         case copy
         case move
+    }
+
+    private enum SheetField: Hashable {
+        case newFolderName
+        case renameItemName
+        case batchRenameBaseName
     }
 
     var body: some View {
@@ -80,7 +87,7 @@ struct DualPaneView: View {
         }
         .background(CatppuccinMochaTheme.windowBackground)
         .alert(
-            "File Operation Error",
+            "OpenPane Couldn’t Complete the Operation",
             isPresented: Binding {
                 viewModel.errorMessage != nil
             } set: { isPresented in
@@ -136,11 +143,11 @@ struct DualPaneView: View {
                 runPendingConflictOperation(with: .keepBoth)
             }
 
-            Button("Replace", role: .destructive) {
+            Button("Replace Existing", role: .destructive) {
                 runPendingConflictOperation(with: .replace)
             }
 
-            Button("Skip") {
+            Button("Skip Existing") {
                 runPendingConflictOperation(with: .skip)
             }
 
@@ -148,7 +155,7 @@ struct DualPaneView: View {
                 pendingConflictOperation = nil
             }
         } message: {
-            Text("One or more selected items already exist in the other pane.")
+            Text("One or more selected items already exist in the other pane. Choose how OpenPane should handle those conflicts.")
         }
     }
 
@@ -289,34 +296,116 @@ struct DualPaneView: View {
         activeSheet = .newFolder
     }
 
-    private var newFolderSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("New Folder")
-                .font(.headline)
+    private func sheetContainer<Content: View>(
+        title: String,
+        subtitle: String,
+        width: CGFloat,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(CatppuccinMochaTheme.primaryText)
 
-            TextField("Folder name", text: $newFolderName)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(createFolderFromSheet)
-
-            HStack {
-                Spacer()
-
-                Button("Cancel") {
-                    activeSheet = nil
-                }
-
-                Button("Create") {
-                    createFolderFromSheet()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(
-                    viewModel.isPerformingOperation ||
-                        newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
+                Text(subtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
             }
+
+            content()
         }
-        .padding(20)
-        .frame(width: 360)
+        .padding(22)
+        .frame(width: width)
+        .background(CatppuccinMochaTheme.mantle)
+        .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge))
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+                .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+    }
+
+    private func themedTextField(
+        _ title: String,
+        text: Binding<String>,
+        field: SheetField,
+        onSubmit: (() -> Void)? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(CatppuccinMochaTheme.mutedText)
+
+            TextField(title, text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundStyle(CatppuccinMochaTheme.primaryText)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    CatppuccinMochaTheme.surface0,
+                    in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                        .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+                }
+                .focused($focusedSheetField, equals: field)
+                .onSubmit {
+                    onSubmit?()
+                }
+        }
+    }
+
+    private func sheetActions(
+        confirmTitle: String,
+        confirmSystemImage: String,
+        isConfirmDisabled: Bool,
+        confirm: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            Spacer()
+
+            Button("Cancel") {
+                activeSheet = nil
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+
+            Button {
+                confirm()
+            } label: {
+                Label(confirmTitle, systemImage: confirmSystemImage)
+            }
+            .buttonStyle(PrimaryActionButtonStyle())
+            .keyboardShortcut(.defaultAction)
+            .disabled(isConfirmDisabled)
+        }
+    }
+
+    private var newFolderSheet: some View {
+        sheetContainer(
+            title: "New Folder",
+            subtitle: "Create a folder in \(viewModel.activePane.currentURL.openPaneDisplayName).",
+            width: 380
+        ) {
+            themedTextField(
+                "Folder name",
+                text: $newFolderName,
+                field: .newFolderName,
+                onSubmit: createFolderFromSheet
+            )
+
+            sheetActions(
+                confirmTitle: "Create",
+                confirmSystemImage: "folder.badge.plus",
+                isConfirmDisabled: viewModel.isPerformingOperation ||
+                    newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                confirm: createFolderFromSheet
+            )
+        }
+        .onAppear {
+            focusedSheetField = .newFolderName
+        }
     }
 
     private func createFolderFromSheet() {
@@ -329,33 +418,29 @@ struct DualPaneView: View {
     }
 
     private var renameSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Rename")
-                .font(.headline)
+        sheetContainer(
+            title: "Rename",
+            subtitle: "Enter a new name for the selected item.",
+            width: 380
+        ) {
+            themedTextField(
+                "Name",
+                text: $renameItemName,
+                field: .renameItemName,
+                onSubmit: renameFromSheet
+            )
 
-            TextField("Name", text: $renameItemName)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(renameFromSheet)
-
-            HStack {
-                Spacer()
-
-                Button("Cancel") {
-                    activeSheet = nil
-                }
-
-                Button("Rename") {
-                    renameFromSheet()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(
-                    viewModel.isPerformingOperation ||
-                        renameItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
-            }
+            sheetActions(
+                confirmTitle: "Rename",
+                confirmSystemImage: "pencil",
+                isConfirmDisabled: viewModel.isPerformingOperation ||
+                    renameItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                confirm: renameFromSheet
+            )
         }
-        .padding(20)
-        .frame(width: 360)
+        .onAppear {
+            focusedSheetField = .renameItemName
+        }
     }
 
     private func prepareRenameSheet() {
@@ -393,26 +478,51 @@ struct DualPaneView: View {
     }
 
     private var batchRenameSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Batch Rename")
-                .font(.headline)
-
-            TextField("Base name", text: $batchRenameBaseName)
-                .textFieldStyle(.roundedBorder)
+        sheetContainer(
+            title: "Batch Rename",
+            subtitle: "Rename selected items with a numbered pattern.",
+            width: 420
+        ) {
+            themedTextField(
+                "Base name",
+                text: $batchRenameBaseName,
+                field: .batchRenameBaseName
+            )
 
             Stepper(value: $batchRenameStartingNumber, in: 0...999_999) {
                 Text("Start at \(batchRenameStartingNumber)")
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Preview")
-                    .font(.subheadline)
-                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+            batchRenamePreview
 
+            sheetActions(
+                confirmTitle: "Rename",
+                confirmSystemImage: "pencil",
+                isConfirmDisabled: viewModel.isPerformingOperation ||
+                    batchRenameBaseName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                confirm: batchRenameFromSheet
+            )
+        }
+        .onAppear {
+            focusedSheetField = .batchRenameBaseName
+        }
+    }
+
+    private var batchRenamePreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Preview")
+                .font(.system(size: 11, weight: .semibold))
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .foregroundStyle(CatppuccinMochaTheme.mutedText)
+
+            VStack(alignment: .leading, spacing: 5) {
                 ForEach(batchRenamePreviewNames.prefix(5), id: \.self) { name in
                     Text(name)
                         .lineLimit(1)
-                        .font(.caption)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(CatppuccinMochaTheme.secondaryText)
                 }
 
                 if batchRenamePreviewNames.count > 5 {
@@ -421,26 +531,17 @@ struct DualPaneView: View {
                         .foregroundStyle(CatppuccinMochaTheme.mutedText)
                 }
             }
-
-            HStack {
-                Spacer()
-
-                Button("Cancel") {
-                    activeSheet = nil
-                }
-
-                Button("Rename") {
-                    batchRenameFromSheet()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(
-                    viewModel.isPerformingOperation ||
-                        batchRenameBaseName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(
+                CatppuccinMochaTheme.surface0.opacity(0.7),
+                in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+                    .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
             }
         }
-        .padding(20)
-        .frame(width: 380)
     }
 
     private var batchRenamePreviewNames: [String] {
