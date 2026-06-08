@@ -75,7 +75,8 @@ struct DualPaneView: View {
                 FilePaneView(
                     viewModel: viewModel.leftPane,
                     isActive: viewModel.activePaneSide == .left,
-                    paneSide: .left
+                    paneSide: .left,
+                    isPerformingOperation: viewModel.isPerformingOperation
                 ) {
                     viewModel.setActivePane(.left)
                 } onMoveTab: { tabID, sourceSide, destinationSide, destinationIndex in
@@ -120,7 +121,8 @@ struct DualPaneView: View {
                 FilePaneView(
                     viewModel: viewModel.rightPane,
                     isActive: viewModel.activePaneSide == .right,
-                    paneSide: .right
+                    paneSide: .right,
+                    isPerformingOperation: viewModel.isPerformingOperation
                 ) {
                     viewModel.setActivePane(.right)
                 } onMoveTab: { tabID, sourceSide, destinationSide, destinationIndex in

@@ -40,11 +40,18 @@ private struct FileDrop {
     let fileURLs: [URL]
 }
 
+private enum FileDropVisualState {
+    case none
+    case valid
+    case invalid
+}
+
 struct FilePaneView: View {
     @ObservedObject var viewModel: FilePaneViewModel
     @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
     var isActive: Bool = false
     var paneSide: PaneSide?
+    var isPerformingOperation = false
     var onActivate: () -> Void = {}
     var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide, Int?) -> Void = { _, _, _, _ in }
     var onRenameSelected: () -> Void = {}
@@ -148,6 +155,11 @@ struct FilePaneView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CatppuccinMochaTheme.base)
             .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium))
+            .overlay {
+                if isPerformingOperation {
+                    operationInProgressOverlay
+                }
+            }
             .padding(.horizontal, 10)
             .padding(.bottom, 10)
         }
@@ -310,6 +322,30 @@ struct FilePaneView: View {
                 CatppuccinMochaTheme.mutedText
             )
         }
+    }
+
+    private var operationInProgressOverlay: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(CatppuccinMochaTheme.accent)
+
+            Text("Operation in progress")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            CatppuccinMochaTheme.surface0.opacity(0.88),
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+                .stroke(CatppuccinMochaTheme.surface2.opacity(0.7), lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+        .shadow(color: CatppuccinMochaTheme.crust.opacity(0.45), radius: 10, y: 4)
+        .allowsHitTesting(false)
     }
 
     private var paneHeader: some View {
@@ -663,6 +699,7 @@ struct FilePaneView: View {
                             isSelected: viewModel.selectedItems.contains(item),
                             isPaneActive: isActive,
                             paneSide: paneSide,
+                            isOperationInProgress: isPerformingOperation,
                             onSelect: {
                                 selectItem(item)
                             },
@@ -733,13 +770,7 @@ struct FilePaneView: View {
             .background(CatppuccinMochaTheme.base)
             .overlay {
                 if isPaneFileDropTargeted && targetedFolderDropID == nil {
-                    RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
-                        .stroke(CatppuccinMochaTheme.accent.opacity(0.62), lineWidth: CatppuccinMochaTheme.paneBorderWidth)
-                        .background(
-                            CatppuccinMochaTheme.accent.opacity(0.08),
-                            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
-                        )
-                        .padding(3)
+                    paneDropTargetOverlay
                 }
             }
             .onDrop(
@@ -810,6 +841,54 @@ struct FilePaneView: View {
                 .fill(CatppuccinMochaTheme.surface0)
                 .frame(height: CatppuccinMochaTheme.hairlineBorderWidth)
         }
+    }
+
+    private var paneDropTargetOverlay: some View {
+        RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+            .stroke(CatppuccinMochaTheme.accent.opacity(0.68), lineWidth: CatppuccinMochaTheme.paneBorderWidth)
+            .background(
+                CatppuccinMochaTheme.accent.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+            )
+            .overlay(alignment: .center) {
+                dropHint(
+                    title: "Drop to copy here",
+                    subtitle: "Move available after drop",
+                    systemImage: "doc.on.doc",
+                    tint: CatppuccinMochaTheme.accent
+                )
+            }
+            .padding(3)
+            .allowsHitTesting(false)
+    }
+
+    private func dropHint(title: String, subtitle: String, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+                Text(subtitle)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(CatppuccinMochaTheme.mutedText)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            CatppuccinMochaTheme.surface0.opacity(0.92),
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
+                .stroke(tint.opacity(0.38), lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+        .shadow(color: CatppuccinMochaTheme.crust.opacity(0.4), radius: 10, y: 4)
     }
 
     private func sortHeader(_ option: FileSortOption) -> some View {
