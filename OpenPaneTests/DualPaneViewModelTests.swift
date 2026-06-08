@@ -330,6 +330,56 @@ struct DualPaneViewModelTests {
         #expect(viewModel.operationStatusMessage == "Copied 1 item to Target Folder.")
     }
 
+    @Test func moveDroppedFileURLsMovesIntoTargetDirectoryAndRefreshesPanes() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "move-drop.txt", contents: "move me")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = MockFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+
+        await viewModel.moveDroppedFileURLs(
+            [sourceItem.url],
+            sourcePaneSide: .left,
+            to: temporaryDirectory.destinationURL,
+            in: .right
+        )
+
+        #expect(fileOperationService.movedItems == [sourceItem])
+        #expect(fileOperationService.moveDestinationURL == temporaryDirectory.destinationURL)
+        #expect(fileOperationService.moveConflictResolution == .cancel)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.operationStatusMessage == "Moved 1 item to Destination.")
+    }
+
+    @Test func droppedFileOperationRejectsSameDirectoryDrop() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "same-place.txt", contents: "same")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = MockFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+
+        await viewModel.copyDroppedFileURLs(
+            [sourceItem.url],
+            sourcePaneSide: .left,
+            to: temporaryDirectory.sourceURL,
+            in: .left
+        )
+
+        #expect(fileOperationService.copiedItems.isEmpty)
+        #expect(viewModel.errorMessage == "Items are already in Source.")
+        #expect(viewModel.operationStatusMessage == "Items are already in Source.")
+    }
+
     @Test func trashSelectionInActivePaneShowsErrorWhenNothingIsSelected() async {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
@@ -538,6 +588,9 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
     private var protectedCopiedItems: [FileItem] = []
     private var protectedCopyDestinationURL: URL?
     private var protectedCopyConflictResolution: FileConflictResolution?
+    private var protectedMovedItems: [FileItem] = []
+    private var protectedMoveDestinationURL: URL?
+    private var protectedMoveConflictResolution: FileConflictResolution?
 
     init(error: Error? = nil) {
         self.error = error
@@ -567,6 +620,24 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
         }
     }
 
+    var movedItems: [FileItem] {
+        queue.sync {
+            protectedMovedItems
+        }
+    }
+
+    var moveDestinationURL: URL? {
+        queue.sync {
+            protectedMoveDestinationURL
+        }
+    }
+
+    var moveConflictResolution: FileConflictResolution? {
+        queue.sync {
+            protectedMoveConflictResolution
+        }
+    }
+
     func copy(
         items: [FileItem],
         to destinationDirectory: URL,
@@ -587,7 +658,17 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
         items: [FileItem],
         to destinationDirectory: URL,
         conflictResolution: FileConflictResolution
-    ) async throws {}
+    ) async throws {
+        queue.sync {
+            protectedMovedItems.append(contentsOf: items)
+            protectedMoveDestinationURL = destinationDirectory
+            protectedMoveConflictResolution = conflictResolution
+        }
+
+        if let error {
+            throw error
+        }
+    }
 
     func trash(items: [FileItem]) async throws {
         queue.sync {

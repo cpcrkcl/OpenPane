@@ -20,6 +20,7 @@ struct DualPaneView: View {
     @State private var isShowingTrashConfirmation = false
     @State private var trashConfirmationItemCount = 0
     @State private var pendingConflictOperation: PendingConflictOperation?
+    @State private var pendingFileDrop: PendingFileDrop?
     @FocusState private var focusedSheetField: SheetField?
 
     private enum ActiveSheet: Identifiable {
@@ -45,6 +46,14 @@ struct DualPaneView: View {
     private enum PendingConflictOperation {
         case copy
         case move
+    }
+
+    private struct PendingFileDrop: Identifiable {
+        let id = UUID()
+        let fileURLs: [URL]
+        let sourcePaneSide: PaneSide?
+        let targetDirectory: URL
+        let targetPaneSide: PaneSide
     }
 
     private enum SheetField: Hashable {
@@ -98,15 +107,12 @@ struct DualPaneView: View {
                 } onStatusMessage: { message in
                     viewModel.showStatusMessage(message)
                 } onDropFiles: { fileURLs, sourcePaneSide, targetDirectory in
-                    viewModel.setActivePane(.left)
-                    Task {
-                        await viewModel.copyDroppedFileURLs(
-                            fileURLs,
-                            sourcePaneSide: sourcePaneSide,
-                            to: targetDirectory,
-                            in: .left
-                        )
-                    }
+                    prepareFileDrop(
+                        fileURLs: fileURLs,
+                        sourcePaneSide: sourcePaneSide,
+                        targetDirectory: targetDirectory,
+                        targetPaneSide: .left
+                    )
                 }
                 .frame(minWidth: 320)
 
@@ -146,15 +152,12 @@ struct DualPaneView: View {
                 } onStatusMessage: { message in
                     viewModel.showStatusMessage(message)
                 } onDropFiles: { fileURLs, sourcePaneSide, targetDirectory in
-                    viewModel.setActivePane(.right)
-                    Task {
-                        await viewModel.copyDroppedFileURLs(
-                            fileURLs,
-                            sourcePaneSide: sourcePaneSide,
-                            to: targetDirectory,
-                            in: .right
-                        )
-                    }
+                    prepareFileDrop(
+                        fileURLs: fileURLs,
+                        sourcePaneSide: sourcePaneSide,
+                        targetDirectory: targetDirectory,
+                        targetPaneSide: .right
+                    )
                 }
                 .frame(minWidth: 320)
             }
@@ -238,6 +241,33 @@ struct DualPaneView: View {
             }
         } message: {
             Text("One or more selected items already exist in the other pane. Choose how OpenPane should handle those conflicts.")
+        }
+        .confirmationDialog(
+            "Drop Items",
+            isPresented: Binding {
+                pendingFileDrop != nil
+            } set: { isPresented in
+                if !isPresented {
+                    pendingFileDrop = nil
+                }
+            },
+            titleVisibility: .visible
+        ) {
+            Button("Copy Here") {
+                runPendingFileDrop(.copy)
+            }
+            .disabled(viewModel.isPerformingOperation)
+
+            Button("Move Here") {
+                runPendingFileDrop(.move)
+            }
+            .disabled(viewModel.isPerformingOperation)
+
+            Button("Cancel", role: .cancel) {
+                pendingFileDrop = nil
+            }
+        } message: {
+            Text(pendingFileDropMessage)
         }
     }
 
@@ -378,6 +408,64 @@ struct DualPaneView: View {
     private var trashConfirmationMessage: String {
         let itemText = trashConfirmationItemCount == 1 ? "item" : "items"
         return "Move \(trashConfirmationItemCount) selected \(itemText) to Trash?"
+    }
+
+    private var pendingFileDropMessage: String {
+        guard let pendingFileDrop else {
+            return ""
+        }
+
+        let itemText = pendingFileDrop.fileURLs.count == 1 ? "item" : "items"
+        return "Choose how to place \(pendingFileDrop.fileURLs.count) \(itemText) into \(pendingFileDrop.targetDirectory.openPaneDisplayName)."
+    }
+
+    private func prepareFileDrop(
+        fileURLs: [URL],
+        sourcePaneSide: PaneSide?,
+        targetDirectory: URL,
+        targetPaneSide: PaneSide
+    ) {
+        guard !viewModel.isPerformingOperation else {
+            return
+        }
+
+        viewModel.setActivePane(targetPaneSide)
+        pendingFileDrop = PendingFileDrop(
+            fileURLs: fileURLs,
+            sourcePaneSide: sourcePaneSide,
+            targetDirectory: targetDirectory,
+            targetPaneSide: targetPaneSide
+        )
+        let itemText = fileURLs.count == 1 ? "item" : "items"
+        viewModel.showStatusMessage("Ready to drop \(fileURLs.count) \(itemText) into \(targetDirectory.openPaneDisplayName).")
+    }
+
+    private func runPendingFileDrop(_ operation: FileDropOperation) {
+        guard let pendingFileDrop else {
+            return
+        }
+
+        self.pendingFileDrop = nil
+        viewModel.setActivePane(pendingFileDrop.targetPaneSide)
+
+        Task {
+            switch operation {
+            case .copy:
+                await viewModel.copyDroppedFileURLs(
+                    pendingFileDrop.fileURLs,
+                    sourcePaneSide: pendingFileDrop.sourcePaneSide,
+                    to: pendingFileDrop.targetDirectory,
+                    in: pendingFileDrop.targetPaneSide
+                )
+            case .move:
+                await viewModel.moveDroppedFileURLs(
+                    pendingFileDrop.fileURLs,
+                    sourcePaneSide: pendingFileDrop.sourcePaneSide,
+                    to: pendingFileDrop.targetDirectory,
+                    in: pendingFileDrop.targetPaneSide
+                )
+            }
+        }
     }
 
     private func prepareNewFolderSheet() {

@@ -868,7 +868,7 @@ struct FilePaneView: View {
                 if uniqueURLs.isEmpty {
                     onStatusMessage("No file URLs found to drop.")
                 } else {
-                    onStatusMessage("Copying \(itemDescription) into \(targetName)...")
+                    onStatusMessage("Ready to drop \(itemDescription) into \(targetName).")
                     onDropFiles(uniqueURLs, drop.sourcePaneSide, targetDirectory)
                 }
             }

@@ -13,6 +13,11 @@ nonisolated enum PaneSide: Codable, Equatable, Hashable, Sendable {
     case right
 }
 
+nonisolated enum FileDropOperation: Equatable, Sendable {
+    case copy
+    case move
+}
+
 @MainActor
 final class DualPaneViewModel: ObservableObject {
     @Published var leftPane: FilePaneViewModel
@@ -170,6 +175,41 @@ final class DualPaneViewModel: ObservableObject {
         in targetPaneSide: PaneSide,
         conflictResolution: FileConflictResolution = .cancel
     ) async {
+        await performDroppedFileOperation(
+            .copy,
+            fileURLs,
+            sourcePaneSide: sourcePaneSide,
+            to: targetDirectory,
+            in: targetPaneSide,
+            conflictResolution: conflictResolution
+        )
+    }
+
+    func moveDroppedFileURLs(
+        _ fileURLs: [URL],
+        sourcePaneSide: PaneSide?,
+        to targetDirectory: URL,
+        in targetPaneSide: PaneSide,
+        conflictResolution: FileConflictResolution = .cancel
+    ) async {
+        await performDroppedFileOperation(
+            .move,
+            fileURLs,
+            sourcePaneSide: sourcePaneSide,
+            to: targetDirectory,
+            in: targetPaneSide,
+            conflictResolution: conflictResolution
+        )
+    }
+
+    private func performDroppedFileOperation(
+        _ operation: FileDropOperation,
+        _ fileURLs: [URL],
+        sourcePaneSide: PaneSide?,
+        to targetDirectory: URL,
+        in targetPaneSide: PaneSide,
+        conflictResolution: FileConflictResolution
+    ) async {
         let uniqueFileURLs = Self.uniqueFileURLs(fileURLs)
 
         guard !uniqueFileURLs.isEmpty else {
@@ -178,27 +218,45 @@ final class DualPaneViewModel: ObservableObject {
             return
         }
 
+        guard !Self.containsItemAlreadyInTargetDirectory(uniqueFileURLs, targetDirectory: targetDirectory) else {
+            errorMessage = "Items are already in \(targetDirectory.openPaneDisplayName)."
+            operationStatusMessage = errorMessage
+            return
+        }
+
         let targetPane = pane(for: targetPaneSide)
         let targetName = targetDirectory.openPaneDisplayName
+        let operationVerb = operation == .copy ? "Copying" : "Moving"
+        let successVerb = operation == .copy ? "Copied" : "Moved"
+        let failureMessage = operation == .copy ? "Drop copy failed." : "Drop move failed."
 
         await performOperation(
-            statusMessage: "Copying \(Self.itemCountDescription(uniqueFileURLs.count)) to \(targetName)...",
-            successMessage: "Copied \(Self.itemCountDescription(uniqueFileURLs.count)) to \(targetName).",
-            failureMessage: "Drop copy failed."
+            statusMessage: "\(operationVerb) \(Self.itemCountDescription(uniqueFileURLs.count)) to \(targetName)...",
+            successMessage: "\(successVerb) \(Self.itemCountDescription(uniqueFileURLs.count)) to \(targetName).",
+            failureMessage: failureMessage
         ) {
             let items = try uniqueFileURLs.map { try FileItem(url: $0) }
-            try await fileOperationService.copy(
-                items: items,
-                to: targetDirectory,
-                conflictResolution: conflictResolution
-            )
+
+            switch operation {
+            case .copy:
+                try await fileOperationService.copy(
+                    items: items,
+                    to: targetDirectory,
+                    conflictResolution: conflictResolution
+                )
+            case .move:
+                try await fileOperationService.move(
+                    items: items,
+                    to: targetDirectory,
+                    conflictResolution: conflictResolution
+                )
+            }
 
             await targetPane.refresh()
 
             if let sourcePaneSide {
                 let sourcePane = pane(for: sourcePaneSide)
-                if sourcePane !== targetPane,
-                   sourcePane.currentURL == targetDirectory {
+                if operation == .move || sourcePane.currentURL == targetDirectory {
                     await sourcePane.refresh()
                 }
             }
@@ -467,6 +525,16 @@ final class DualPaneViewModel: ObservableObject {
 
             seenURLs.insert(url)
             return true
+        }
+    }
+
+    private static func containsItemAlreadyInTargetDirectory(_ urls: [URL], targetDirectory: URL) -> Bool {
+        let standardizedTargetDirectory = targetDirectory.standardizedFileURL
+
+        return urls.contains { url in
+            url
+                .deletingLastPathComponent()
+                .standardizedFileURL == standardizedTargetDirectory
         }
     }
 
