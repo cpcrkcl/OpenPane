@@ -14,6 +14,57 @@ nonisolated enum FileItemCopyTextFormat: Sendable {
     case name
 }
 
+nonisolated enum FileSortOption: String, CaseIterable, Identifiable, Sendable {
+    case name
+    case size
+    case modifiedDate
+    case kind
+
+    var id: Self {
+        self
+    }
+
+    var displayName: String {
+        switch self {
+        case .name:
+            return "Name"
+        case .size:
+            return "Size"
+        case .modifiedDate:
+            return "Modified Date"
+        case .kind:
+            return "Kind"
+        }
+    }
+
+    var columnTitle: String {
+        switch self {
+        case .modifiedDate:
+            return "Modified"
+        default:
+            return displayName
+        }
+    }
+}
+
+nonisolated enum FileSortDirection: String, CaseIterable, Identifiable, Sendable {
+    case ascending
+    case descending
+
+    var id: Self {
+        self
+    }
+
+    var displayName: String {
+        switch self {
+        case .ascending:
+            return "Ascending"
+        case .descending:
+            return "Descending"
+        }
+    }
+}
+
 @MainActor
 final class FilePaneViewModel: ObservableObject {
     @Published var currentURL: URL {
@@ -46,7 +97,9 @@ final class FilePaneViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var includeHiddenFiles: Bool
     @Published var searchText: String
-    @Published var sortOrder: [KeyPathComparator<FileItem>]
+    @Published var sortOption: FileSortOption
+    @Published var sortDirection: FileSortDirection
+    @Published var directoriesFirst: Bool
     @Published var recursiveSearchResults: [FileItem]
     @Published var isShowingRecursiveSearchResults: Bool
 
@@ -92,7 +145,9 @@ final class FilePaneViewModel: ObservableObject {
         self.errorMessage = nil
         self.includeHiddenFiles = false
         self.searchText = ""
-        self.sortOrder = []
+        self.sortOption = .name
+        self.sortDirection = .ascending
+        self.directoriesFirst = true
         self.recursiveSearchResults = []
         self.isShowingRecursiveSearchResults = false
         self.fileBrowserService = fileBrowserService
@@ -273,7 +328,15 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     func toggleHiddenFiles() async {
-        includeHiddenFiles.toggle()
+        await setIncludeHiddenFiles(!includeHiddenFiles)
+    }
+
+    func setIncludeHiddenFiles(_ includeHiddenFiles: Bool) async {
+        guard self.includeHiddenFiles != includeHiddenFiles else {
+            return
+        }
+
+        self.includeHiddenFiles = includeHiddenFiles
 
         if isShowingRecursiveSearchResults {
             await performRecursiveSearch()
@@ -375,24 +438,47 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private func sortedItems(_ items: [FileItem]) -> [FileItem] {
-        guard !sortOrder.isEmpty else {
-            return items
-        }
-
         return items.sorted { lhs, rhs in
-            for comparator in sortOrder {
-                switch comparator.compare(lhs, rhs) {
-                case .orderedAscending:
-                    return true
-                case .orderedDescending:
-                    return false
-                case .orderedSame:
-                    continue
-                }
+            if directoriesFirst,
+               lhs.isDirectory != rhs.isDirectory {
+                return lhs.isDirectory && !rhs.isDirectory
+            }
+
+            let comparison = compare(lhs, rhs, by: sortOption)
+
+            if comparison != .orderedSame {
+                return sortDirection == .ascending
+                    ? comparison == .orderedAscending
+                    : comparison == .orderedDescending
             }
 
             return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
         }
+    }
+
+    private func compare(_ lhs: FileItem, _ rhs: FileItem, by option: FileSortOption) -> ComparisonResult {
+        switch option {
+        case .name:
+            return lhs.name.localizedStandardCompare(rhs.name)
+        case .size:
+            return compare(lhs.sortSize, rhs.sortSize)
+        case .modifiedDate:
+            return compare(lhs.sortModifiedDate, rhs.sortModifiedDate)
+        case .kind:
+            return lhs.kindDescription.localizedStandardCompare(rhs.kindDescription)
+        }
+    }
+
+    private func compare<T: Comparable>(_ lhs: T, _ rhs: T) -> ComparisonResult {
+        if lhs < rhs {
+            return .orderedAscending
+        }
+
+        if lhs > rhs {
+            return .orderedDescending
+        }
+
+        return .orderedSame
     }
 
     private func applyTab(_ tab: FilePaneTab) {

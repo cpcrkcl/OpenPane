@@ -147,7 +147,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
 
-        #expect(viewModel.filteredItems == [notesItem, imageItem])
+        #expect(viewModel.filteredItems == [imageItem, notesItem])
     }
 
     @Test func filteredItemsMatchesNamesCaseInsensitively() async throws {
@@ -181,10 +181,10 @@ struct FilePaneViewModelTests {
         await viewModel.loadCurrentDirectory()
         viewModel.searchText = "   "
 
-        #expect(viewModel.filteredItems == [notesItem, imageItem])
+        #expect(viewModel.filteredItems == [imageItem, notesItem])
     }
 
-    @Test func filteredItemsSortsByNameWhenSortOrderIsSet() async throws {
+    @Test func filteredItemsSortsByNameWithDirectoriesFirstByDefault() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let zebraItem = try temporaryDirectory.createDirectoryItem(named: "Zebra")
         let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
@@ -196,12 +196,11 @@ struct FilePaneViewModelTests {
         )
 
         await viewModel.loadCurrentDirectory()
-        viewModel.sortOrder = [KeyPathComparator(\.name)]
 
-        #expect(viewModel.filteredItems == [alphaItem, zebraItem])
+        #expect(viewModel.filteredItems == [zebraItem, alphaItem])
     }
 
-    @Test func filteredItemsSortsBySizeOnly() async throws {
+    @Test func filteredItemsCanSortBySize() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let largeItem = try temporaryDirectory.createFileItem(named: "large.txt", contents: "larger contents")
         let smallItem = try temporaryDirectory.createFileItem(named: "small.txt", contents: "s")
@@ -214,9 +213,26 @@ struct FilePaneViewModelTests {
         )
 
         await viewModel.loadCurrentDirectory()
-        viewModel.sortOrder = [KeyPathComparator(\.sortSize)]
+        viewModel.sortOption = .size
 
         #expect(viewModel.filteredItems == [directoryItem, smallItem, largeItem])
+    }
+
+    @Test func filteredItemsCanDisableDirectoriesFirst() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let zebraItem = try temporaryDirectory.createDirectoryItem(named: "Zebra")
+        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [zebraItem, alphaItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.directoriesFirst = false
+
+        #expect(viewModel.filteredItems == [alphaItem, zebraItem])
     }
 
     @Test func performRecursiveSearchShowsRecursiveResults() async throws {

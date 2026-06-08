@@ -35,18 +35,10 @@ struct FilePaneView: View {
     var onStatusMessage: (String) -> Void = { _ in }
 
     @State private var isTabDropTargeted = false
-    @State private var activeSortColumn: FileListColumn?
-    @State private var isSortAscending = true
     @State private var infoItem: FileItem?
+    @State private var isShowingViewOptions = false
 
     private let fileIconService = FileIconService.shared
-
-    private enum FileListColumn: String {
-        case name = "Name"
-        case size = "Size"
-        case modified = "Modified"
-        case kind = "Kind"
-    }
 
     private enum PaneContentState {
         case loading
@@ -171,6 +163,14 @@ struct FilePaneView: View {
                 },
                 onClose: {
                     infoItem = nil
+                }
+            )
+        }
+        .sheet(isPresented: $isShowingViewOptions) {
+            FilePaneViewOptionsView(
+                viewModel: viewModel,
+                onClose: {
+                    isShowingViewOptions = false
                 }
             )
         }
@@ -584,6 +584,9 @@ struct FilePaneView: View {
                     onNewFolder: onCreateFolder,
                     onNewFile: onCreateFile,
                     onPaste: onPaste,
+                    onShowViewOptions: {
+                        isShowingViewOptions = true
+                    },
                     onRefresh: {
                         Task {
                             await viewModel.refresh()
@@ -612,7 +615,7 @@ struct FilePaneView: View {
             sortHeader(.size)
                 .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
 
-            sortHeader(.modified)
+            sortHeader(.modifiedDate)
                 .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
 
             sortHeader(.kind)
@@ -630,60 +633,47 @@ struct FilePaneView: View {
         }
     }
 
-    private func sortHeader(_ column: FileListColumn) -> some View {
+    private func sortHeader(_ option: FileSortOption) -> some View {
         Button {
-            applySort(column)
+            applySort(option)
         } label: {
-            sortHeaderLabel(column)
+            sortHeaderLabel(option)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
-    private func sortHeaderLabel(_ column: FileListColumn) -> some View {
+    private func sortHeaderLabel(_ option: FileSortOption) -> some View {
         HStack(spacing: 4) {
-            if column == .size {
-                sortIndicator(for: column)
+            if option == .size {
+                sortIndicator(for: option)
             }
 
-            Text(column.rawValue)
+            Text(option.columnTitle)
                 .lineLimit(1)
 
-            if column != .size {
-                sortIndicator(for: column)
+            if option != .size {
+                sortIndicator(for: option)
             }
         }
-        .frame(maxWidth: .infinity, alignment: column == .size ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: option == .size ? .trailing : .leading)
     }
 
     @ViewBuilder
-    private func sortIndicator(for column: FileListColumn) -> some View {
-        if activeSortColumn == column {
-            Image(systemName: isSortAscending ? "chevron.up" : "chevron.down")
+    private func sortIndicator(for option: FileSortOption) -> some View {
+        if viewModel.sortOption == option {
+            Image(systemName: viewModel.sortDirection == .ascending ? "chevron.up" : "chevron.down")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(CatppuccinMochaTheme.accentSecondary)
         }
     }
 
-    private func applySort(_ column: FileListColumn) {
-        if activeSortColumn == column {
-            isSortAscending.toggle()
+    private func applySort(_ option: FileSortOption) {
+        if viewModel.sortOption == option {
+            viewModel.sortDirection = viewModel.sortDirection == .ascending ? .descending : .ascending
         } else {
-            activeSortColumn = column
-            isSortAscending = true
-        }
-
-        let order: SortOrder = isSortAscending ? .forward : .reverse
-
-        switch column {
-        case .name:
-            viewModel.sortOrder = [KeyPathComparator(\.name, order: order)]
-        case .size:
-            viewModel.sortOrder = [KeyPathComparator(\.sortSize, order: order)]
-        case .modified:
-            viewModel.sortOrder = [KeyPathComparator(\.sortModifiedDate, order: order)]
-        case .kind:
-            viewModel.sortOrder = [KeyPathComparator(\.kindDescription, order: order)]
+            viewModel.sortOption = option
+            viewModel.sortDirection = .ascending
         }
     }
 
@@ -1033,6 +1023,7 @@ private struct EmptyPaneContextMenu: View {
     let onNewFolder: () -> Void
     let onNewFile: () -> Void
     let onPaste: () -> Void
+    let onShowViewOptions: () -> Void
     let onRefresh: () -> Void
     let onToggleHiddenFiles: () -> Void
 
@@ -1059,6 +1050,14 @@ private struct EmptyPaneContextMenu: View {
         Divider()
 
         Button {
+            onShowViewOptions()
+        } label: {
+            Label("Show View Options", systemImage: "slider.horizontal.3")
+        }
+
+        Divider()
+
+        Button {
             onRefresh()
         } label: {
             Label("Refresh", systemImage: "arrow.clockwise")
@@ -1071,6 +1070,104 @@ private struct EmptyPaneContextMenu: View {
                 includeHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files",
                 systemImage: includeHiddenFiles ? "eye.slash" : "eye"
             )
+        }
+    }
+}
+
+private struct FilePaneViewOptionsView: View {
+    @ObservedObject var viewModel: FilePaneViewModel
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("View Options")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+                Text(viewModel.currentURL.path)
+                    .font(.system(size: 12))
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+                    .lineLimit(2)
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle("Show Hidden Files", isOn: includeHiddenFilesBinding)
+                    .toggleStyle(.checkbox)
+
+                optionPicker(
+                    title: "Sort By",
+                    selection: $viewModel.sortOption,
+                    options: FileSortOption.allCases
+                ) { option in
+                    option.displayName
+                }
+
+                optionPicker(
+                    title: "Sort Direction",
+                    selection: $viewModel.sortDirection,
+                    options: FileSortDirection.allCases
+                ) { direction in
+                    direction.displayName
+                }
+
+                Toggle("Directories First", isOn: $viewModel.directoriesFirst)
+                    .toggleStyle(.checkbox)
+            }
+            .font(.system(size: 13))
+            .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+            HStack {
+                Spacer()
+
+                Button("Close") {
+                    onClose()
+                }
+                .buttonStyle(PrimaryActionButtonStyle())
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 380)
+        .background(CatppuccinMochaTheme.mantle)
+        .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge))
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+                .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+    }
+
+    private var includeHiddenFilesBinding: Binding<Bool> {
+        Binding {
+            viewModel.includeHiddenFiles
+        } set: { shouldIncludeHiddenFiles in
+            Task {
+                await viewModel.setIncludeHiddenFiles(shouldIncludeHiddenFiles)
+            }
+        }
+    }
+
+    private func optionPicker<Option: Hashable, Label: StringProtocol>(
+        title: String,
+        selection: Binding<Option>,
+        options: [Option],
+        label: @escaping (Option) -> Label
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .foregroundStyle(CatppuccinMochaTheme.mutedText)
+
+            Picker(title, selection: selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(label(option))
+                        .tag(option)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
         }
     }
 }
