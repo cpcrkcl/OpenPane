@@ -27,6 +27,10 @@ struct FilePaneViewModelTests {
         #expect(viewModel.recursiveSearchResults.isEmpty)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
         #expect(viewModel.filteredItems.isEmpty)
+        #expect(viewModel.backStack.isEmpty)
+        #expect(viewModel.forwardStack.isEmpty)
+        #expect(!viewModel.canGoBack)
+        #expect(!viewModel.canGoForward)
     }
 
     @Test func newTabCreatesTabAtCurrentDirectory() async throws {
@@ -363,6 +367,140 @@ struct FilePaneViewModelTests {
         #expect(viewModel.items == [childItem])
     }
 
+    @Test func navigatingToNewDirectoryPushesPreviousURLOntoBackStack() async {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: MockFileBrowserService()
+        )
+
+        await viewModel.setDirectory(childURL)
+
+        #expect(viewModel.currentURL == childURL)
+        #expect(viewModel.backStack == [rootURL])
+        #expect(viewModel.forwardStack.isEmpty)
+        #expect(viewModel.canGoBack)
+        #expect(!viewModel.canGoForward)
+    }
+
+    @Test func goBackMovesCurrentURLOntoForwardStack() async {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: MockFileBrowserService()
+        )
+        await viewModel.setDirectory(childURL)
+
+        await viewModel.goBack()
+
+        #expect(viewModel.currentURL == rootURL)
+        #expect(viewModel.backStack.isEmpty)
+        #expect(viewModel.forwardStack == [childURL])
+        #expect(!viewModel.canGoBack)
+        #expect(viewModel.canGoForward)
+    }
+
+    @Test func goForwardMovesCurrentURLBackOntoBackStack() async {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: MockFileBrowserService()
+        )
+        await viewModel.setDirectory(childURL)
+        await viewModel.goBack()
+
+        await viewModel.goForward()
+
+        #expect(viewModel.currentURL == childURL)
+        #expect(viewModel.backStack == [rootURL])
+        #expect(viewModel.forwardStack.isEmpty)
+    }
+
+    @Test func navigatingAfterGoingBackClearsForwardStack() async {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let firstURL = URL(filePath: "/root/first", directoryHint: .isDirectory)
+        let secondURL = URL(filePath: "/root/second", directoryHint: .isDirectory)
+        let replacementURL = URL(filePath: "/root/replacement", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: MockFileBrowserService()
+        )
+        await viewModel.setDirectory(firstURL)
+        await viewModel.setDirectory(secondURL)
+        await viewModel.goBack()
+
+        await viewModel.setDirectory(replacementURL)
+
+        #expect(viewModel.currentURL == replacementURL)
+        #expect(viewModel.backStack == [rootURL, firstURL])
+        #expect(viewModel.forwardStack.isEmpty)
+    }
+
+    @Test func refreshDoesNotChangeNavigationHistory() async {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: MockFileBrowserService()
+        )
+        await viewModel.setDirectory(childURL)
+        let backStack = viewModel.backStack
+        let forwardStack = viewModel.forwardStack
+
+        await viewModel.refresh()
+
+        #expect(viewModel.currentURL == childURL)
+        #expect(viewModel.backStack == backStack)
+        #expect(viewModel.forwardStack == forwardStack)
+    }
+
+    @Test func refreshPreservesSelectionForItemsStillInFolder() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let keptItem = try temporaryDirectory.createFileItem(named: "keep.txt")
+        let removedItem = try temporaryDirectory.createFileItem(named: "remove.txt")
+        let addedItem = try temporaryDirectory.createFileItem(named: "add.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [keptItem, removedItem]
+        ])
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.selectedItems = [keptItem, removedItem]
+        fileBrowserService.setItems([keptItem, addedItem], for: temporaryDirectory.url)
+
+        await viewModel.refresh()
+
+        #expect(viewModel.items == [keptItem, addedItem])
+        #expect(viewModel.selectedItems == [keptItem])
+    }
+
+    @Test func failedNavigationDoesNotChangeURLItemsOrHistory() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let existingItem = try temporaryDirectory.createFileItem(named: "existing.txt")
+        let destinationURL = temporaryDirectory.url.appendingPathComponent("Missing", isDirectory: true)
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(
+                itemsByURL: [temporaryDirectory.url: [existingItem]],
+                errorByURL: [destinationURL: FileBrowserError.directoryNotFound(destinationURL)]
+            )
+        )
+        await viewModel.loadCurrentDirectory()
+
+        await viewModel.setDirectory(destinationURL)
+
+        #expect(viewModel.currentURL == temporaryDirectory.url)
+        #expect(viewModel.items == [existingItem])
+        #expect(viewModel.backStack.isEmpty)
+        #expect(viewModel.forwardStack.isEmpty)
+        #expect(viewModel.errorMessage == "Missing could not be found.")
+    }
+
     @Test func openDirectoryNavigatesIntoDirectory() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let directoryItem = try temporaryDirectory.createDirectoryItem(named: "Documents")
@@ -632,6 +770,126 @@ struct FilePaneViewModelTests {
         #expect(viewModel.isLoading == false)
         #expect(viewModel.errorMessage == "You do not have permission to open protected.")
     }
+
+    @Test func directoryMonitorChangeRefreshesCurrentDirectory() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let initialItem = try temporaryDirectory.createFileItem(named: "initial.txt")
+        let addedItem = try temporaryDirectory.createFileItem(named: "added.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [initialItem]
+        ])
+        let directoryMonitorService = MockDirectoryMonitorService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService,
+            directoryMonitorService: directoryMonitorService,
+            directoryRefreshDebounceNanoseconds: 10_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        fileBrowserService.setItems([initialItem, addedItem], for: temporaryDirectory.url)
+
+        directoryMonitorService.emitChange(for: temporaryDirectory.url)
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        #expect(viewModel.items == [initialItem, addedItem])
+        #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
+    }
+
+    @Test func directoryMonitorRapidChangesCoalesceIntoOneRefresh() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let initialItem = try temporaryDirectory.createFileItem(named: "initial.txt")
+        let addedItem = try temporaryDirectory.createFileItem(named: "added.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [initialItem]
+        ])
+        let directoryMonitorService = MockDirectoryMonitorService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService,
+            directoryMonitorService: directoryMonitorService,
+            directoryRefreshDebounceNanoseconds: 20_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        fileBrowserService.setItems([initialItem, addedItem], for: temporaryDirectory.url)
+
+        directoryMonitorService.emitChange(for: temporaryDirectory.url)
+        directoryMonitorService.emitChange(for: temporaryDirectory.url)
+        directoryMonitorService.emitChange(for: temporaryDirectory.url)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(viewModel.items == [initialItem, addedItem])
+        #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
+    }
+
+    @Test func directoryChangeRestartsDirectoryMonitor() async throws {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)
+        let directoryMonitorService = MockDirectoryMonitorService()
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: MockFileBrowserService(),
+            directoryMonitorService: directoryMonitorService
+        )
+        let initialToken = try #require(directoryMonitorService.tokens.first)
+
+        await viewModel.setDirectory(childURL)
+
+        #expect(directoryMonitorService.monitoredURLs == [rootURL, childURL])
+        #expect(initialToken.isCancelled)
+        #expect(directoryMonitorService.tokens.last?.isCancelled == false)
+    }
+
+    @Test func tabSwitchRestartsDirectoryMonitorForActiveTabDirectory() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let directoryMonitorService = MockDirectoryMonitorService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [childDirectory],
+                childDirectory.url: []
+            ]),
+            directoryMonitorService: directoryMonitorService
+        )
+        let firstTabID = viewModel.activeTabID
+
+        await viewModel.newTab()
+        await viewModel.setDirectory(childDirectory.url)
+        await viewModel.switchToTab(firstTabID)
+
+        let previousTokensCancelled = directoryMonitorService.tokens
+            .dropLast()
+            .allSatisfy { $0.isCancelled }
+
+        #expect(directoryMonitorService.monitoredURLs.last == temporaryDirectory.url)
+        #expect(previousTokensCancelled)
+        #expect(directoryMonitorService.tokens.last?.isCancelled == false)
+    }
+
+    @Test func directoryMonitorMissingFolderClearsStaleItemsAndShowsError() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let staleItem = try temporaryDirectory.createFileItem(named: "stale.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [staleItem]
+        ])
+        let directoryMonitorService = MockDirectoryMonitorService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService,
+            directoryMonitorService: directoryMonitorService,
+            directoryRefreshDebounceNanoseconds: 10_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.selectedItems = [staleItem]
+        fileBrowserService.setError(FileBrowserError.directoryNotFound(temporaryDirectory.url), for: temporaryDirectory.url)
+
+        directoryMonitorService.emitChange(for: temporaryDirectory.url)
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        #expect(viewModel.items.isEmpty)
+        #expect(viewModel.selectedItems.isEmpty)
+        #expect(viewModel.errorMessage == "\(temporaryDirectory.url.openPaneDisplayName) could not be found.")
+    }
 }
 
 @MainActor
@@ -712,6 +970,122 @@ nonisolated private struct MockFileBrowserService: FileBrowserServicing {
         }
 
         return itemsByURL[url] ?? []
+    }
+}
+
+nonisolated private final class MutableMockFileBrowserService: FileBrowserServicing, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.openpane.tests.mutable-file-browser")
+    private var itemsByURL: [URL: [FileItem]]
+    private var errorByURL: [URL: any Error & Sendable]
+    private var loadCountsByURL: [URL: Int]
+
+    init(
+        itemsByURL: [URL: [FileItem]] = [:],
+        errorByURL: [URL: any Error & Sendable] = [:]
+    ) {
+        self.itemsByURL = itemsByURL
+        self.errorByURL = errorByURL
+        self.loadCountsByURL = [:]
+    }
+
+    nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
+        let response = queue.sync { () -> (items: [FileItem], error: (any Error & Sendable)?) in
+            loadCountsByURL[url, default: 0] += 1
+            return (itemsByURL[url] ?? [], errorByURL[url])
+        }
+
+        if let error = response.error {
+            throw error
+        }
+
+        return response.items
+    }
+
+    nonisolated func setItems(_ items: [FileItem], for url: URL) {
+        queue.sync {
+            itemsByURL[url] = items
+            errorByURL[url] = nil
+        }
+    }
+
+    nonisolated func setError(_ error: any Error & Sendable, for url: URL) {
+        queue.sync {
+            errorByURL[url] = error
+        }
+    }
+
+    nonisolated func loadCount(for url: URL) -> Int {
+        queue.sync {
+            loadCountsByURL[url, default: 0]
+        }
+    }
+}
+
+nonisolated private final class MockDirectoryMonitorService: DirectoryMonitorServicing, @unchecked Sendable {
+    private struct Registration {
+        let url: URL
+        let onChange: @Sendable () -> Void
+        let token: MockDirectoryMonitorToken
+    }
+
+    private let queue = DispatchQueue(label: "com.openpane.tests.directory-monitor")
+    private var registrations: [Registration] = []
+
+    nonisolated var monitoredURLs: [URL] {
+        queue.sync {
+            registrations.map(\.url)
+        }
+    }
+
+    nonisolated var tokens: [MockDirectoryMonitorToken] {
+        queue.sync {
+            registrations.map(\.token)
+        }
+    }
+
+    nonisolated func monitorDirectory(
+        at url: URL,
+        onChange: @escaping @Sendable () -> Void
+    ) -> any DirectoryMonitorToken {
+        let token = MockDirectoryMonitorToken()
+
+        queue.sync {
+            registrations.append(Registration(url: url, onChange: onChange, token: token))
+        }
+
+        return token
+    }
+
+    nonisolated func emitChange(for url: URL? = nil) {
+        let callbacks = queue.sync {
+            registrations
+                .filter { registration in
+                    !registration.token.isCancelled &&
+                        (url == nil || registration.url == url)
+                }
+                .map(\.onChange)
+        }
+
+        callbacks.forEach { callback in
+            callback()
+        }
+    }
+}
+
+nonisolated private final class MockDirectoryMonitorToken: DirectoryMonitorToken, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.openpane.tests.directory-monitor-token")
+    private var isCancelledStorage = false
+
+    nonisolated var isCancelled: Bool {
+        queue.sync {
+            isCancelledStorage
+        }
+    }
+
+    nonisolated func cancel() {
+        queue.sync {
+            isCancelledStorage = true
+        }
     }
 }
 

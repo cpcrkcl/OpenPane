@@ -127,8 +127,28 @@ nonisolated struct FileOperationService: FileOperationServicing {
         let destinationURL: URL
     }
 
+    private struct StagedRenamePlan: Sendable {
+        let plan: RenamePlan
+        let temporaryURL: URL
+    }
+
     nonisolated init(trashService: any TrashServicing = FileManagerTrashService()) {
         self.trashService = trashService
+    }
+
+    private nonisolated static func runUserInitiated<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try Task.checkCancellation()
+        let task = Task.detached(priority: .userInitiated) {
+            try operation()
+        }
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     nonisolated func copy(
@@ -138,14 +158,17 @@ nonisolated struct FileOperationService: FileOperationServicing {
     ) async throws {
         let trashService = trashService
 
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
+            try Task.checkCancellation()
             let plans = try Self.transferPlans(
                 for: items,
                 to: destinationDirectory,
                 conflictResolution: conflictResolution
             )
 
-            for plan in plans {
+            for (index, plan) in plans.enumerated() {
+                try Task.checkCancellation()
+
                 if plan.shouldReplaceExistingItem {
                     do {
                         try trashService.trashItem(at: plan.destinationURL)
@@ -157,10 +180,19 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 do {
                     try FileManager.default.copyItem(at: plan.item.url, to: plan.destinationURL)
                 } catch {
-                    throw FileOperationError.operationFailed("copy", plan.item.url, Self.userReadableReason(for: error))
+                    throw FileOperationError.operationFailed(
+                        "copy",
+                        plan.item.url,
+                        Self.partialFailureReason(
+                            for: error,
+                            completedCount: index,
+                            totalCount: plans.count,
+                            completedVerb: "copied"
+                        )
+                    )
                 }
             }
-        }.value
+        }
     }
 
     nonisolated func move(
@@ -170,14 +202,17 @@ nonisolated struct FileOperationService: FileOperationServicing {
     ) async throws {
         let trashService = trashService
 
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
+            try Task.checkCancellation()
             let plans = try Self.transferPlans(
                 for: items,
                 to: destinationDirectory,
                 conflictResolution: conflictResolution
             )
 
-            for plan in plans {
+            for (index, plan) in plans.enumerated() {
+                try Task.checkCancellation()
+
                 if plan.shouldReplaceExistingItem {
                     do {
                         try trashService.trashItem(at: plan.destinationURL)
@@ -189,48 +224,71 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 do {
                     try FileManager.default.moveItem(at: plan.item.url, to: plan.destinationURL)
                 } catch {
-                    throw FileOperationError.operationFailed("move", plan.item.url, Self.userReadableReason(for: error))
+                    throw FileOperationError.operationFailed(
+                        "move",
+                        plan.item.url,
+                        Self.partialFailureReason(
+                            for: error,
+                            completedCount: index,
+                            totalCount: plans.count,
+                            completedVerb: "moved"
+                        )
+                    )
                 }
             }
-        }.value
+        }
     }
 
     nonisolated func trash(items: [FileItem]) async throws {
         let trashService = trashService
 
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
             for item in items {
+                try Task.checkCancellation()
+
                 do {
                     try trashService.trashItem(at: item.url)
                 } catch {
                     throw FileOperationError.trashFailed(item.url, Self.userReadableReason(for: error))
                 }
             }
-        }.value
+        }
     }
 
     nonisolated func duplicate(items: [FileItem]) async throws {
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
             var reservedURLs: Set<URL> = []
             let plans = try items.map { item in
+                try Task.checkCancellation()
                 try Self.validateSourceExists(item.url)
                 let duplicateURL = Self.uniqueCopyURL(for: item.url, reservedURLs: reservedURLs)
                 reservedURLs.insert(duplicateURL)
                 return TransferPlan(item: item, destinationURL: duplicateURL, shouldReplaceExistingItem: false)
             }
 
-            for plan in plans {
+            for (index, plan) in plans.enumerated() {
+                try Task.checkCancellation()
+
                 do {
                     try FileManager.default.copyItem(at: plan.item.url, to: plan.destinationURL)
                 } catch {
-                    throw FileOperationError.operationFailed("duplicate", plan.item.url, Self.userReadableReason(for: error))
+                    throw FileOperationError.operationFailed(
+                        "duplicate",
+                        plan.item.url,
+                        Self.partialFailureReason(
+                            for: error,
+                            completedCount: index,
+                            totalCount: plans.count,
+                            completedVerb: "duplicated"
+                        )
+                    )
                 }
             }
-        }.value
+        }
     }
 
     nonisolated func compress(items: [FileItem]) async throws -> URL {
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
             let archiveURL = try Self.archiveURL(for: items)
             let arguments = [
                 "-c",
@@ -265,11 +323,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
             }
 
             return archiveURL
-        }.value
+        }
     }
 
     nonisolated func rename(item: FileItem, to newName: String) async throws -> URL {
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
+            try Task.checkCancellation()
             let trimmedName = try Self.validateName(newName)
             try Self.validateSourceExists(item.url)
 
@@ -277,7 +336,17 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 .deletingLastPathComponent()
                 .appendingPathComponent(trimmedName, isDirectory: item.isDirectory)
 
-            try Self.validateDestinationDoesNotExist(destinationURL)
+            guard destinationURL.standardizedFileURL != item.url.standardizedFileURL else {
+                return item.url
+            }
+
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                guard Self.urlsReferToSameFile(item.url, destinationURL) else {
+                    throw FileOperationError.destinationExists(destinationURL)
+                }
+
+                return try Self.renameViaTemporaryURL(item: item, to: destinationURL)
+            }
 
             do {
                 try FileManager.default.moveItem(at: item.url, to: destinationURL)
@@ -286,7 +355,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
             }
 
             return destinationURL
-        }.value
+        }
     }
 
     nonisolated func batchRename(
@@ -295,7 +364,8 @@ nonisolated struct FileOperationService: FileOperationServicing {
         startingNumber: Int,
         preserveExtensions: Bool = true
     ) async throws -> [URL] {
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
+            try Task.checkCancellation()
             let plans = try Self.batchRenamePlans(
                 for: items,
                 baseName: baseName,
@@ -303,16 +373,10 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 preserveExtensions: preserveExtensions
             )
 
-            for plan in plans {
-                do {
-                    try FileManager.default.moveItem(at: plan.item.url, to: plan.destinationURL)
-                } catch {
-                    throw FileOperationError.operationFailed("rename", plan.item.url, Self.userReadableReason(for: error))
-                }
-            }
+            try Self.performBatchRename(plans)
 
             return plans.map(\.destinationURL)
-        }.value
+        }
     }
 
     nonisolated static func batchRenamePreviewNames(
@@ -339,6 +403,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
         }
 
         try items.forEach { item in
+            try Task.checkCancellation()
             try validateSourceExists(item.url)
         }
 
@@ -360,7 +425,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
     }
 
     nonisolated func createFolder(named name: String, in directory: URL) async throws -> URL {
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
             let trimmedName = try Self.validateName(name)
             try Self.validateDirectory(directory)
 
@@ -374,11 +439,11 @@ nonisolated struct FileOperationService: FileOperationServicing {
             }
 
             return folderURL
-        }.value
+        }
     }
 
     nonisolated func createFile(named name: String, in directory: URL) async throws -> URL {
-        try await Task.detached(priority: .userInitiated) {
+        try await Self.runUserInitiated {
             let trimmedName = try Self.validateName(name)
             try Self.validateDirectory(directory)
 
@@ -390,7 +455,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
             }
 
             return fileURL
-        }.value
+        }
     }
 
     private nonisolated static func validateName(_ name: String) throws -> String {
@@ -420,6 +485,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
         var destinationURLs: Set<URL> = []
 
         return try items.compactMap { item in
+            try Task.checkCancellation()
             try validateSourceExists(item.url)
             try validateTransferSafety(for: item, to: destinationDirectory)
             let destinationURL = destinationDirectory.appendingPathComponent(item.name, isDirectory: item.isDirectory)
@@ -467,15 +533,16 @@ nonisolated struct FileOperationService: FileOperationServicing {
             startingNumber: startingNumber,
             preserveExtensions: preserveExtensions
         )
-        var destinationURLs: Set<URL> = []
-        var sourceURLs = Set(items.map { $0.url.standardizedFileURL })
+        var destinationURLKeys: Set<String> = []
+        let sourceURLs = Set(items.map { $0.url.standardizedFileURL })
         let sortedItems = sortedForBatchRename(items)
 
-        guard Set(previewNames).count == previewNames.count else {
+        guard Set(previewNames.map { $0.lowercased() }).count == previewNames.count else {
             throw FileOperationError.duplicateDestinationNames
         }
 
         return try zip(sortedItems, previewNames).map { item, newName in
+            try Task.checkCancellation()
             _ = try validateName(newName)
             try validateSourceExists(item.url)
 
@@ -483,20 +550,169 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 .deletingLastPathComponent()
                 .appendingPathComponent(newName, isDirectory: item.isDirectory)
             let standardizedDestinationURL = destinationURL.standardizedFileURL
+            let destinationURLKey = standardizedDestinationURL.path.lowercased()
 
-            guard destinationURLs.insert(standardizedDestinationURL).inserted else {
+            guard destinationURLKeys.insert(destinationURLKey).inserted else {
                 throw FileOperationError.duplicateDestinationNames
             }
 
             if standardizedDestinationURL != item.url.standardizedFileURL,
                FileManager.default.fileExists(atPath: destinationURL.path),
-               !sourceURLs.contains(standardizedDestinationURL) {
+               !sourceURLs.contains(standardizedDestinationURL),
+               !items.contains(where: { urlsReferToSameFile($0.url, destinationURL) }) {
                 throw FileOperationError.destinationExists(destinationURL)
             }
 
-            sourceURLs.remove(item.url.standardizedFileURL)
             return RenamePlan(item: item, destinationURL: destinationURL)
         }
+    }
+
+    private nonisolated static func performBatchRename(_ plans: [RenamePlan]) throws {
+        let activePlans = plans.filter {
+            $0.item.url.standardizedFileURL != $0.destinationURL.standardizedFileURL
+        }
+
+        guard !activePlans.isEmpty else {
+            return
+        }
+
+        let stagedPlans = try temporaryRenamePlans(for: activePlans)
+        var movedToTemporaryURLs: [StagedRenamePlan] = []
+
+        do {
+            for stagedPlan in stagedPlans {
+                try Task.checkCancellation()
+                try FileManager.default.moveItem(at: stagedPlan.plan.item.url, to: stagedPlan.temporaryURL)
+                movedToTemporaryURLs.append(stagedPlan)
+            }
+        } catch is CancellationError {
+            restoreTemporaryRenames(movedToTemporaryURLs)
+            throw CancellationError()
+        } catch {
+            restoreTemporaryRenames(movedToTemporaryURLs)
+            let failedURL = stagedPlans
+                .first { !FileManager.default.fileExists(atPath: $0.temporaryURL.path) }
+                .map(\.plan.item.url) ?? activePlans.first?.item.url ?? plans.first?.item.url
+            throw FileOperationError.operationFailed(
+                "rename",
+                failedURL ?? URL(filePath: "/"),
+                Self.userReadableReason(for: error)
+            )
+        }
+
+        var completedFinalRenames: [StagedRenamePlan] = []
+
+        do {
+            for stagedPlan in stagedPlans {
+                try Task.checkCancellation()
+                try FileManager.default.moveItem(at: stagedPlan.temporaryURL, to: stagedPlan.plan.destinationURL)
+                completedFinalRenames.append(stagedPlan)
+            }
+        } catch is CancellationError {
+            rollbackBatchRename(
+                completedFinalRenames: completedFinalRenames,
+                stagedPlans: stagedPlans
+            )
+            throw CancellationError()
+        } catch {
+            rollbackBatchRename(
+                completedFinalRenames: completedFinalRenames,
+                stagedPlans: stagedPlans
+            )
+            let failedPlan = stagedPlans.first {
+                FileManager.default.fileExists(atPath: $0.temporaryURL.path)
+            }?.plan ?? activePlans.first ?? plans.first
+            guard let failedPlan else {
+                return
+            }
+
+            throw FileOperationError.operationFailed(
+                "rename",
+                failedPlan.item.url,
+                "\(Self.userReadableReason(for: error)) The batch rename was rolled back where possible."
+            )
+        }
+    }
+
+    private nonisolated static func temporaryRenamePlans(for plans: [RenamePlan]) throws -> [StagedRenamePlan] {
+        var reservedTemporaryURLs: Set<URL> = []
+
+        return try plans.map { plan in
+            try Task.checkCancellation()
+            let temporaryURL = uniqueTemporaryRenameURL(
+                in: plan.item.url.deletingLastPathComponent(),
+                isDirectory: plan.item.isDirectory,
+                reservedURLs: reservedTemporaryURLs
+            )
+            reservedTemporaryURLs.insert(temporaryURL.standardizedFileURL)
+
+            return StagedRenamePlan(plan: plan, temporaryURL: temporaryURL)
+        }
+    }
+
+    private nonisolated static func renameViaTemporaryURL(item: FileItem, to destinationURL: URL) throws -> URL {
+        let temporaryURL = uniqueTemporaryRenameURL(
+            in: item.url.deletingLastPathComponent(),
+            isDirectory: item.isDirectory,
+            reservedURLs: []
+        )
+
+        do {
+            try FileManager.default.moveItem(at: item.url, to: temporaryURL)
+        } catch {
+            throw FileOperationError.operationFailed("rename", item.url, Self.userReadableReason(for: error))
+        }
+
+        do {
+            try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        } catch {
+            do {
+                try FileManager.default.moveItem(at: temporaryURL, to: item.url)
+            } catch {
+                throw FileOperationError.operationFailed(
+                    "rename",
+                    item.url,
+                    "\(Self.userReadableReason(for: error)) The item remains at \(temporaryURL.lastPathComponent)."
+                )
+            }
+
+            throw FileOperationError.operationFailed("rename", item.url, Self.userReadableReason(for: error))
+        }
+
+        return destinationURL
+    }
+
+    private nonisolated static func restoreTemporaryRenames(_ stagedPlans: [StagedRenamePlan]) {
+        for stagedPlan in stagedPlans.reversed() {
+            guard FileManager.default.fileExists(atPath: stagedPlan.temporaryURL.path),
+                  !FileManager.default.fileExists(atPath: stagedPlan.plan.item.url.path) else {
+                continue
+            }
+
+            try? FileManager.default.moveItem(at: stagedPlan.temporaryURL, to: stagedPlan.plan.item.url)
+        }
+    }
+
+    private nonisolated static func rollbackBatchRename(
+        completedFinalRenames: [StagedRenamePlan],
+        stagedPlans: [StagedRenamePlan]
+    ) {
+        for stagedPlan in completedFinalRenames.reversed() {
+            guard FileManager.default.fileExists(atPath: stagedPlan.plan.destinationURL.path),
+                  !FileManager.default.fileExists(atPath: stagedPlan.plan.item.url.path) else {
+                continue
+            }
+
+            try? FileManager.default.moveItem(
+                at: stagedPlan.plan.destinationURL,
+                to: stagedPlan.plan.item.url
+            )
+        }
+
+        let remainingTemporaryRenames = stagedPlans.filter {
+            FileManager.default.fileExists(atPath: $0.temporaryURL.path)
+        }
+        restoreTemporaryRenames(remainingTemporaryRenames)
     }
 
     private nonisolated static func sortedForBatchRename(_ items: [FileItem]) -> [FileItem] {
@@ -553,14 +769,31 @@ nonisolated struct FileOperationService: FileOperationServicing {
         while true {
             let candidateName = archiveNumber == 1 ? baseName : "\(baseName) \(archiveNumber)"
             let candidateURL = directoryURL
-                .appendingPathComponent(candidateName)
-                .appendingPathExtension("zip")
+                .appendingPathComponent("\(candidateName).zip", isDirectory: false)
 
             if !FileManager.default.fileExists(atPath: candidateURL.path) {
                 return candidateURL
             }
 
             archiveNumber += 1
+        }
+    }
+
+    private nonisolated static func uniqueTemporaryRenameURL(
+        in directoryURL: URL,
+        isDirectory: Bool,
+        reservedURLs: Set<URL>
+    ) -> URL {
+        while true {
+            let candidateURL = directoryURL.appendingPathComponent(
+                ".openpane-rename-\(UUID().uuidString).tmp",
+                isDirectory: isDirectory
+            )
+
+            if !reservedURLs.contains(candidateURL.standardizedFileURL),
+               !FileManager.default.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
         }
     }
 
@@ -612,6 +845,40 @@ nonisolated struct FileOperationService: FileOperationServicing {
         guard !FileManager.default.fileExists(atPath: url.path) else {
             throw FileOperationError.destinationExists(url)
         }
+    }
+
+    private nonisolated static func urlsReferToSameFile(_ lhs: URL, _ rhs: URL) -> Bool {
+        do {
+            let lhsValues = try lhs.resourceValues(forKeys: [.fileResourceIdentifierKey, .volumeIdentifierKey])
+            let rhsValues = try rhs.resourceValues(forKeys: [.fileResourceIdentifierKey, .volumeIdentifierKey])
+
+            if let lhsFileIdentifier = lhsValues.fileResourceIdentifier as? NSObject,
+               let rhsFileIdentifier = rhsValues.fileResourceIdentifier as? NSObject,
+               let lhsVolumeIdentifier = lhsValues.volumeIdentifier as? NSObject,
+               let rhsVolumeIdentifier = rhsValues.volumeIdentifier as? NSObject {
+                return lhsFileIdentifier.isEqual(rhsFileIdentifier) && lhsVolumeIdentifier.isEqual(rhsVolumeIdentifier)
+            }
+        } catch {
+            return false
+        }
+
+        return lhs.resolvingSymlinksInPath().standardizedFileURL == rhs.resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    private nonisolated static func partialFailureReason(
+        for error: Error,
+        completedCount: Int,
+        totalCount: Int,
+        completedVerb: String
+    ) -> String {
+        let baseReason = Self.userReadableReason(for: error)
+
+        guard completedCount > 0 else {
+            return baseReason
+        }
+
+        let itemText = completedCount == 1 ? "item was" : "items were"
+        return "\(baseReason) \(completedCount) of \(totalCount) \(itemText) already \(completedVerb) before this failed."
     }
 
     private nonisolated static func userReadableReason(for error: Error) -> String {

@@ -33,6 +33,29 @@ struct DualPaneViewModelTests {
         #expect(viewModel.inactivePane === leftPane)
     }
 
+    @Test func backAndForwardNavigationRouteToActivePane() async {
+        let leftURL = URL(filePath: "/left", directoryHint: .isDirectory)
+        let leftChildURL = URL(filePath: "/left/child", directoryHint: .isDirectory)
+        let rightURL = URL(filePath: "/right", directoryHint: .isDirectory)
+        let rightChildURL = URL(filePath: "/right/child", directoryHint: .isDirectory)
+        let leftPane = FilePaneViewModel(currentURL: leftURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: rightURL, fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        await leftPane.setDirectory(leftChildURL)
+        await rightPane.setDirectory(rightChildURL)
+        viewModel.setActivePane(.right)
+
+        await viewModel.goBackInActivePane()
+
+        #expect(leftPane.currentURL == leftChildURL)
+        #expect(rightPane.currentURL == rightURL)
+
+        await viewModel.goForwardInActivePane()
+
+        #expect(leftPane.currentURL == leftChildURL)
+        #expect(rightPane.currentURL == rightChildURL)
+    }
+
     @Test func swapPaneLocationsExchangesCurrentURLs() async {
         let leftURL = URL(filePath: "/left")
         let rightURL = URL(filePath: "/right")

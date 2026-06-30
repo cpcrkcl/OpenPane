@@ -21,6 +21,8 @@ struct DualPaneView: View {
     @State private var trashConfirmationItemCount = 0
     @State private var pendingConflictOperation: PendingConflictOperation?
     @State private var pendingFileDrop: PendingFileDrop?
+    @State private var leftPaneWidth: CGFloat?
+    @State private var splitDragStartLeftPaneWidth: CGFloat?
     @FocusState private var focusedSheetField: SheetField?
 
     private enum ActiveSheet: Identifiable {
@@ -71,99 +73,7 @@ struct DualPaneView: View {
 
             horizontalDivider
 
-            HSplitView {
-                FilePaneView(
-                    viewModel: viewModel.leftPane,
-                    isActive: viewModel.activePaneSide == .left,
-                    paneSide: .left,
-                    isPerformingOperation: viewModel.isPerformingOperation
-                ) {
-                    viewModel.setActivePane(.left)
-                } onMoveTab: { tabID, sourceSide, destinationSide, destinationIndex in
-                    viewModel.moveTab(tabID: tabID, from: sourceSide, to: destinationSide, at: destinationIndex)
-                } onRenameSelected: {
-                    prepareRenameSheet()
-                } onTrashSelected: {
-                    prepareTrashConfirmation()
-                } onDuplicate: { item in
-                    viewModel.setActivePane(.left)
-                    Task {
-                        await viewModel.duplicateForContextMenu(clickedItem: item, in: viewModel.leftPane)
-                    }
-                } onCompress: { item in
-                    viewModel.setActivePane(.left)
-                    Task {
-                        await viewModel.compressForContextMenu(clickedItem: item, in: viewModel.leftPane)
-                    }
-                } onCreateFolder: {
-                    viewModel.setActivePane(.left)
-                    prepareNewFolderSheet()
-                } onCreateFile: {
-                    viewModel.setActivePane(.left)
-                    prepareNewFileSheet()
-                } onPaste: {
-                    viewModel.setActivePane(.left)
-                    Task {
-                        await viewModel.pasteIntoPane(viewModel.leftPane)
-                    }
-                } onStatusMessage: { message in
-                    viewModel.showStatusMessage(message)
-                } onDropFiles: { fileURLs, sourcePaneSide, targetDirectory in
-                    prepareFileDrop(
-                        fileURLs: fileURLs,
-                        sourcePaneSide: sourcePaneSide,
-                        targetDirectory: targetDirectory,
-                        targetPaneSide: .left
-                    )
-                }
-                .frame(minWidth: 320)
-
-                FilePaneView(
-                    viewModel: viewModel.rightPane,
-                    isActive: viewModel.activePaneSide == .right,
-                    paneSide: .right,
-                    isPerformingOperation: viewModel.isPerformingOperation
-                ) {
-                    viewModel.setActivePane(.right)
-                } onMoveTab: { tabID, sourceSide, destinationSide, destinationIndex in
-                    viewModel.moveTab(tabID: tabID, from: sourceSide, to: destinationSide, at: destinationIndex)
-                } onRenameSelected: {
-                    prepareRenameSheet()
-                } onTrashSelected: {
-                    prepareTrashConfirmation()
-                } onDuplicate: { item in
-                    viewModel.setActivePane(.right)
-                    Task {
-                        await viewModel.duplicateForContextMenu(clickedItem: item, in: viewModel.rightPane)
-                    }
-                } onCompress: { item in
-                    viewModel.setActivePane(.right)
-                    Task {
-                        await viewModel.compressForContextMenu(clickedItem: item, in: viewModel.rightPane)
-                    }
-                } onCreateFolder: {
-                    viewModel.setActivePane(.right)
-                    prepareNewFolderSheet()
-                } onCreateFile: {
-                    viewModel.setActivePane(.right)
-                    prepareNewFileSheet()
-                } onPaste: {
-                    viewModel.setActivePane(.right)
-                    Task {
-                        await viewModel.pasteIntoPane(viewModel.rightPane)
-                    }
-                } onStatusMessage: { message in
-                    viewModel.showStatusMessage(message)
-                } onDropFiles: { fileURLs, sourcePaneSide, targetDirectory in
-                    prepareFileDrop(
-                        fileURLs: fileURLs,
-                        sourcePaneSide: sourcePaneSide,
-                        targetDirectory: targetDirectory,
-                        targetPaneSide: .right
-                    )
-                }
-                .frame(minWidth: 320)
-            }
+            paneSplit
             .padding(12)
             .background(CatppuccinMochaTheme.appBackground)
 
@@ -280,7 +190,148 @@ struct DualPaneView: View {
             .frame(height: CatppuccinMochaTheme.hairlineBorderWidth)
     }
 
+    private var paneSplit: some View {
+        GeometryReader { geometry in
+            let layout = PaneSplitLayout.resolved(
+                totalWidth: geometry.size.width,
+                proposedLeftWidth: leftPaneWidth
+            )
+
+            HStack(spacing: 0) {
+                filePane(for: .left)
+                    .frame(width: layout.leftWidth)
+                    .clipped()
+
+                splitDivider(
+                    totalWidth: geometry.size.width,
+                    currentLeftWidth: layout.leftWidth
+                )
+                .frame(width: layout.dividerWidth)
+
+                filePane(for: .right)
+                    .frame(width: layout.rightWidth)
+                    .clipped()
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+            .onAppear {
+                leftPaneWidth = layout.leftWidth
+            }
+            .onChange(of: geometry.size.width) { _, newWidth in
+                leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
+                    leftPaneWidth ?? layout.leftWidth,
+                    totalWidth: newWidth
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func filePane(for side: PaneSide) -> some View {
+        let pane = viewModel.pane(for: side)
+
+        FilePaneView(
+            viewModel: pane,
+            isActive: viewModel.activePaneSide == side,
+            paneSide: side,
+            isPerformingOperation: viewModel.isPerformingOperation
+        ) {
+            viewModel.setActivePane(side)
+        } onMoveTab: { tabID, sourceSide, destinationSide, destinationIndex in
+            viewModel.moveTab(tabID: tabID, from: sourceSide, to: destinationSide, at: destinationIndex)
+        } onRenameSelected: {
+            prepareRenameSheet()
+        } onTrashSelected: {
+            prepareTrashConfirmation()
+        } onDuplicate: { item in
+            viewModel.setActivePane(side)
+            Task {
+                await viewModel.duplicateForContextMenu(clickedItem: item, in: pane)
+            }
+        } onCompress: { item in
+            viewModel.setActivePane(side)
+            Task {
+                await viewModel.compressForContextMenu(clickedItem: item, in: pane)
+            }
+        } onCreateFolder: {
+            viewModel.setActivePane(side)
+            prepareNewFolderSheet()
+        } onCreateFile: {
+            viewModel.setActivePane(side)
+            prepareNewFileSheet()
+        } onPaste: {
+            viewModel.setActivePane(side)
+            Task {
+                await viewModel.pasteIntoPane(pane)
+            }
+        } onStatusMessage: { message in
+            viewModel.showStatusMessage(message)
+        } onDropFiles: { fileURLs, sourcePaneSide, targetDirectory in
+            prepareFileDrop(
+                fileURLs: fileURLs,
+                sourcePaneSide: sourcePaneSide,
+                targetDirectory: targetDirectory,
+                targetPaneSide: side
+            )
+        }
+    }
+
+    private func splitDivider(totalWidth: CGFloat, currentLeftWidth: CGFloat) -> some View {
+        Rectangle()
+            .fill(Color.clear)
+            .overlay {
+                Capsule()
+                    .fill(CatppuccinMochaTheme.surface1.opacity(0.95))
+                    .frame(width: CatppuccinMochaTheme.hairlineBorderWidth)
+                    .padding(.vertical, 12)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if splitDragStartLeftPaneWidth == nil {
+                            splitDragStartLeftPaneWidth = currentLeftWidth
+                        }
+
+                        let proposedLeftWidth = (splitDragStartLeftPaneWidth ?? currentLeftWidth) + value.translation.width
+                        leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
+                            proposedLeftWidth,
+                            totalWidth: totalWidth
+                        )
+                    }
+                    .onEnded { _ in
+                        splitDragStartLeftPaneWidth = nil
+                    }
+            )
+            .help("Drag to resize panes")
+    }
+
     private var toolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                toolbarActions
+
+                Spacer(minLength: 8)
+
+                activePaneLabel
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    toolbarActions
+                    activePaneLabel
+                }
+                .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .foregroundStyle(CatppuccinMochaTheme.primaryText)
+        .controlSize(.small)
+        .padding(.horizontal, 2)
+        .background(CatppuccinMochaTheme.toolbarBackground)
+    }
+
+    @ViewBuilder
+    private var toolbarActions: some View {
         HStack(spacing: 8) {
             Button {
                 prepareNewFolderSheet()
@@ -299,6 +350,28 @@ struct DualPaneView: View {
             .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .rename))
             .disabled(viewModel.isPerformingOperation)
+
+            Button {
+                Task {
+                    await viewModel.goBackInActivePane()
+                }
+            } label: {
+                Label("Back", systemImage: "chevron.left")
+            }
+            .buttonStyle(ToolbarIconButtonStyle())
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .goBack))
+            .disabled(!viewModel.activePane.canGoBack)
+
+            Button {
+                Task {
+                    await viewModel.goForwardInActivePane()
+                }
+            } label: {
+                Label("Forward", systemImage: "chevron.right")
+            }
+            .buttonStyle(ToolbarIconButtonStyle())
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .goForward))
+            .disabled(!viewModel.activePane.canGoForward)
 
             Button {
                 Task {
@@ -376,16 +449,14 @@ struct DualPaneView: View {
                 Label("Swap Panes", systemImage: "arrow.left.arrow.right")
             }
             .buttonStyle(SecondaryActionButtonStyle())
-
-            Spacer()
-
-            Text(viewModel.activePaneSide == .left ? "Left pane active" : "Right pane active")
-                .foregroundStyle(CatppuccinMochaTheme.secondaryText)
         }
-        .foregroundStyle(CatppuccinMochaTheme.primaryText)
-        .controlSize(.small)
-        .padding(.horizontal, 2)
-        .background(CatppuccinMochaTheme.toolbarBackground)
+    }
+
+    private var activePaneLabel: some View {
+        Text(viewModel.activePaneSide == .left ? "Left pane active" : "Right pane active")
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .foregroundStyle(CatppuccinMochaTheme.secondaryText)
     }
 
     private var statusBar: some View {

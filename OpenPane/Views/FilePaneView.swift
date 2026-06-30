@@ -17,6 +17,27 @@ private enum FilePaneListMetrics {
     static let sizeColumnWidth: CGFloat = 92
     static let modifiedColumnWidth: CGFloat = 150
     static let kindColumnWidth: CGFloat = 128
+    static let showSizeMinimumWidth: CGFloat = 360
+    static let showModifiedDateMinimumWidth: CGFloat = 500
+    static let showKindMinimumWidth: CGFloat = 620
+}
+
+private struct FilePaneColumnVisibility: Equatable {
+    let showsSize: Bool
+    let showsModifiedDate: Bool
+    let showsKind: Bool
+
+    init(width: CGFloat) {
+        showsSize = width >= FilePaneListMetrics.showSizeMinimumWidth
+        showsModifiedDate = width >= FilePaneListMetrics.showModifiedDateMinimumWidth
+        showsKind = width >= FilePaneListMetrics.showKindMinimumWidth
+    }
+}
+
+private enum FilePaneTabMetrics {
+    static let stripHeight: CGFloat = 38
+    static let tabHeight: CGFloat = 32
+    static let appendDropTargetHeight: CGFloat = 30
 }
 
 private let fileURLPasteboardTypeIdentifier = NSPasteboard.PasteboardType.fileURL.rawValue
@@ -394,7 +415,12 @@ struct FilePaneView: View {
 
             tabAppendDropTarget
         }
-        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: FilePaneTabMetrics.stripHeight,
+            maxHeight: FilePaneTabMetrics.stripHeight,
+            alignment: .leading
+        )
         .contentShape(Rectangle())
         .padding(3)
         .background(
@@ -417,7 +443,11 @@ struct FilePaneView: View {
     private var tabAppendDropTarget: some View {
         Rectangle()
             .fill(Color.clear)
-            .frame(maxWidth: .infinity, minHeight: 30)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: FilePaneTabMetrics.appendDropTargetHeight,
+                maxHeight: FilePaneTabMetrics.appendDropTargetHeight
+            )
             .contentShape(Rectangle())
             .background(
                 isTabAppendDropTargeted
@@ -494,6 +524,7 @@ struct FilePaneView: View {
         }
         .padding(.trailing, 2)
         .padding(2)
+        .frame(height: FilePaneTabMetrics.tabHeight)
         .background(
             targetedTabID == tab.id
                 ? CatppuccinMochaTheme.surface2.opacity(0.36)
@@ -592,6 +623,19 @@ struct FilePaneView: View {
     }
 
     private var toolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            toolbarControlRow
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                toolbarControlRow
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .controlSize(.small)
+        .foregroundStyle(CatppuccinMochaTheme.primaryText)
+    }
+
+    private var toolbarControlRow: some View {
         HStack(spacing: 8) {
             Button {
                 Task {
@@ -639,6 +683,7 @@ struct FilePaneView: View {
             .disabled(viewModel.selectedItems.isEmpty)
 
             searchField
+                .layoutPriority(1)
 
             Button {
                 Task {
@@ -659,8 +704,6 @@ struct FilePaneView: View {
                 .buttonStyle(SecondaryActionButtonStyle())
             }
         }
-        .controlSize(.small)
-        .foregroundStyle(CatppuccinMochaTheme.primaryText)
     }
 
     private var searchField: some View {
@@ -675,7 +718,7 @@ struct FilePaneView: View {
                 .foregroundStyle(CatppuccinMochaTheme.primaryText)
         }
         .padding(.horizontal, 9)
-        .frame(width: 180, height: 28)
+        .frame(minWidth: 120, idealWidth: 180, maxWidth: 220, minHeight: 28, maxHeight: 28)
         .background(
             CatppuccinMochaTheme.surface0.opacity(0.78),
             in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
@@ -687,149 +730,163 @@ struct FilePaneView: View {
     }
 
     private var fileTable: some View {
-        VStack(spacing: 0) {
-            fileListHeader
+        GeometryReader { geometry in
+            let columnVisibility = FilePaneColumnVisibility(width: geometry.size.width)
 
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(viewModel.filteredItems) { item in
-                        FilePaneRowView(
-                            item: item,
-                            icon: fileIconService.icon(for: item),
-                            isSelected: viewModel.selectedItems.contains(item),
-                            isPaneActive: isActive,
-                            paneSide: paneSide,
-                            isOperationInProgress: isPerformingOperation,
-                            onSelect: {
-                                selectItem(item)
-                            },
-                            onDragItems: {
-                                onActivate()
-                                return viewModel.itemsForDrag(startingFrom: item)
-                            },
-                            onContextSelect: {
-                                selectItemForContextMenu(item)
-                            },
-                            onOpen: {
-                                Task {
-                                    await viewModel.open(item)
-                                }
-                            },
-                            applicationOptions: viewModel.applicationsAvailableToOpen(item),
-                            onOpenWithApplication: { applicationURL in
-                                viewModel.open(item, withApplication: applicationURL)
-                            },
-                            onChooseApplication: {
-                                viewModel.chooseApplicationToOpen(item)
-                            },
-                            onShare: {
-                                viewModel.shareForContextMenu(clickedItem: item)
-                            },
-                            onCopyItems: {
-                                let copiedItemCount = viewModel.copyItemsForContextMenu(clickedItem: item)
-                                onStatusMessage(copyItemsStatusMessage(itemCount: copiedItemCount))
-                            },
-                            onGetInfo: {
-                                infoItem = item
-                            },
-                            onRename: onRenameSelected,
-                            onTrash: onTrashSelected,
-                            onDuplicate: {
-                                onDuplicate(item)
-                            },
-                            onCompress: {
-                                onCompress(item)
-                            },
-                            onReveal: {
-                                viewModel.revealForContextMenu(clickedItem: item)
-                            },
-                            onPreview: {
-                                viewModel.selectedItems = [item]
-                                viewModel.previewSelectedItem()
-                            },
-                            onCopyText: { format in
-                                let copiedItemCount = viewModel.copyTextForContextMenu(clickedItem: item, format: format)
-                                onStatusMessage(copyStatusMessage(for: format, itemCount: copiedItemCount))
-                            },
-                            onDropFiles: { providers, targetDirectory in
-                                handleFileDrop(providers, targetDirectory: targetDirectory)
-                            },
-                            onFileDropTargetedChange: { isTargeted in
-                                if isTargeted {
-                                    targetedFolderDropID = item.id
-                                } else if targetedFolderDropID == item.id {
-                                    targetedFolderDropID = nil
-                                }
-                            },
-                            compressItemCount: viewModel.contextMenuTargetItems(clickedItem: item).count
-                        )
+            VStack(spacing: 0) {
+                fileListHeader(columnVisibility: columnVisibility)
+
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(viewModel.filteredItems) { item in
+                            FilePaneRowView(
+                                item: item,
+                                icon: fileIconService.icon(for: item),
+                                columnVisibility: columnVisibility,
+                                isSelected: viewModel.selectedItems.contains(item),
+                                isPaneActive: isActive,
+                                paneSide: paneSide,
+                                isOperationInProgress: isPerformingOperation,
+                                onSelect: {
+                                    selectItem(item)
+                                },
+                                onDragItems: {
+                                    onActivate()
+                                    return viewModel.itemsForDrag(startingFrom: item)
+                                },
+                                onContextSelect: {
+                                    selectItemForContextMenu(item)
+                                },
+                                onOpen: {
+                                    Task {
+                                        await viewModel.open(item)
+                                    }
+                                },
+                                applicationOptions: viewModel.applicationsAvailableToOpen(item),
+                                onOpenWithApplication: { applicationURL in
+                                    viewModel.open(item, withApplication: applicationURL)
+                                },
+                                onChooseApplication: {
+                                    viewModel.chooseApplicationToOpen(item)
+                                },
+                                onShare: {
+                                    viewModel.shareForContextMenu(clickedItem: item)
+                                },
+                                onCopyItems: {
+                                    let copiedItemCount = viewModel.copyItemsForContextMenu(clickedItem: item)
+                                    onStatusMessage(copyItemsStatusMessage(itemCount: copiedItemCount))
+                                },
+                                onGetInfo: {
+                                    infoItem = item
+                                },
+                                onRename: onRenameSelected,
+                                onTrash: onTrashSelected,
+                                onDuplicate: {
+                                    onDuplicate(item)
+                                },
+                                onCompress: {
+                                    onCompress(item)
+                                },
+                                onReveal: {
+                                    viewModel.revealForContextMenu(clickedItem: item)
+                                },
+                                onPreview: {
+                                    viewModel.selectedItems = [item]
+                                    viewModel.previewSelectedItem()
+                                },
+                                onCopyText: { format in
+                                    let copiedItemCount = viewModel.copyTextForContextMenu(clickedItem: item, format: format)
+                                    onStatusMessage(copyStatusMessage(for: format, itemCount: copiedItemCount))
+                                },
+                                onDropFiles: { providers, targetDirectory in
+                                    handleFileDrop(providers, targetDirectory: targetDirectory)
+                                },
+                                onFileDropTargetedChange: { isTargeted in
+                                    if isTargeted {
+                                        targetedFolderDropID = item.id
+                                    } else if targetedFolderDropID == item.id {
+                                        targetedFolderDropID = nil
+                                    }
+                                },
+                                compressItemCount: viewModel.contextMenuTargetItems(clickedItem: item).count
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(FilePaneListMetrics.contentPadding)
+                }
+                .background(CatppuccinMochaTheme.base)
+                .overlay {
+                    if isPaneFileDropTargeted && targetedFolderDropID == nil {
+                        paneDropTargetOverlay
                     }
                 }
-                .padding(FilePaneListMetrics.contentPadding)
-            }
-            .background(CatppuccinMochaTheme.base)
-            .overlay {
-                if isPaneFileDropTargeted && targetedFolderDropID == nil {
-                    paneDropTargetOverlay
-                }
-            }
-            .onDrop(
-                of: fileDropTypeIdentifiers,
-                isTargeted: $isPaneFileDropTargeted,
-                perform: { providers in
-                    handleFileDrop(providers, targetDirectory: viewModel.currentURL)
-                }
-            )
-            .contextMenu {
-                EmptyPaneContextMenu(
-                    includeHiddenFiles: viewModel.includeHiddenFiles,
-                    canPasteFiles: viewModel.hasFileURLsToPaste(),
-                    onNewFolder: onCreateFolder,
-                    onNewFile: onCreateFile,
-                    onPaste: onPaste,
-                    onShowViewOptions: {
-                        isShowingViewOptions = true
-                    },
-                    onCopyCurrentFolderPath: {
-                        viewModel.copyCurrentFolderPath()
-                        onStatusMessage("Copied current folder path.")
-                    },
-                    onRevealCurrentFolder: {
-                        viewModel.revealCurrentFolderInFinder()
-                    },
-                    onRefresh: {
-                        Task {
-                            await viewModel.refresh()
-                        }
-                    },
-                    onToggleHiddenFiles: {
-                        Task {
-                            await viewModel.toggleHiddenFiles()
-                        }
+                .onDrop(
+                    of: fileDropTypeIdentifiers,
+                    isTargeted: $isPaneFileDropTargeted,
+                    perform: { providers in
+                        handleFileDrop(providers, targetDirectory: viewModel.currentURL)
                     }
                 )
+                .contextMenu {
+                    EmptyPaneContextMenu(
+                        includeHiddenFiles: viewModel.includeHiddenFiles,
+                        canPasteFiles: viewModel.hasFileURLsToPaste(),
+                        onNewFolder: onCreateFolder,
+                        onNewFile: onCreateFile,
+                        onPaste: onPaste,
+                        onShowViewOptions: {
+                            isShowingViewOptions = true
+                        },
+                        onCopyCurrentFolderPath: {
+                            viewModel.copyCurrentFolderPath()
+                            onStatusMessage("Copied current folder path.")
+                        },
+                        onRevealCurrentFolder: {
+                            viewModel.revealCurrentFolderInFinder()
+                        },
+                        onRefresh: {
+                            Task {
+                                await viewModel.refresh()
+                            }
+                        },
+                        onToggleHiddenFiles: {
+                            Task {
+                                await viewModel.toggleHiddenFiles()
+                            }
+                        }
+                    )
+                }
+                .onRightClickInside {
+                    onActivate()
+                }
             }
-            .onRightClickInside {
-                onActivate()
-            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CatppuccinMochaTheme.base)
     }
 
-    private var fileListHeader: some View {
+    private func fileListHeader(columnVisibility: FilePaneColumnVisibility) -> some View {
         HStack(spacing: FilePaneListMetrics.columnSpacing) {
             sortHeader(.name)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
 
-            sortHeader(.size)
-                .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
+            if columnVisibility.showsSize {
+                sortHeader(.size)
+                    .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
+            }
 
-            sortHeader(.modifiedDate)
-                .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
+            if columnVisibility.showsModifiedDate {
+                sortHeader(.modifiedDate)
+                    .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
+            }
 
-            sortHeader(.kind)
-                .frame(width: FilePaneListMetrics.kindColumnWidth, alignment: .leading)
+            if columnVisibility.showsKind {
+                sortHeader(.kind)
+                    .frame(width: FilePaneListMetrics.kindColumnWidth, alignment: .leading)
+            }
         }
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(CatppuccinMochaTheme.mutedText)
@@ -1135,6 +1192,7 @@ struct FilePaneView: View {
 private struct FilePaneRowView: View {
     let item: FileItem
     let icon: NSImage
+    let columnVisibility: FilePaneColumnVisibility
     let isSelected: Bool
     let isPaneActive: Bool
     let paneSide: PaneSide?
@@ -1251,26 +1309,42 @@ private struct FilePaneRowView: View {
                     .resizable()
                     .frame(width: 17, height: 17)
                     .opacity(item.isDirectory ? 1 : 0.92)
+                    .layoutPriority(1)
 
                 Text(item.displayName)
                     .font(.system(size: 13, weight: item.isDirectory ? .medium : .regular))
                     .foregroundStyle(nameColor)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+            .clipped()
 
-            Text(item.formattedSize)
-                .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
+            if columnVisibility.showsSize {
+                Text(item.formattedSize)
+                    .lineLimit(1)
+                    .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
+            }
 
-            Text(item.formattedModifiedDate)
-                .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
+            if columnVisibility.showsModifiedDate {
+                Text(item.formattedModifiedDate)
+                    .lineLimit(1)
+                    .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
+            }
 
-            Text(item.kindDescription)
-                .frame(width: FilePaneListMetrics.kindColumnWidth, alignment: .leading)
+            if columnVisibility.showsKind {
+                Text(item.kindDescription)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: FilePaneListMetrics.kindColumnWidth, alignment: .leading)
+            }
         }
         .font(.system(size: 12))
         .foregroundStyle(CatppuccinMochaTheme.subtext0)
         .padding(.horizontal, FilePaneListMetrics.rowHorizontalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(minHeight: 31)
         .opacity(isOperationInProgress ? 0.68 : 1)
         .background(
@@ -1290,7 +1364,7 @@ private struct FilePaneRowView: View {
             }
         }
         .overlay(alignment: .trailing) {
-            if isFileDropTargeted {
+            if isFileDropTargeted && columnVisibility.showsSize {
                 HStack(spacing: 5) {
                     Image(systemName: dropHintSystemImage)
                         .font(.system(size: 10, weight: .semibold))

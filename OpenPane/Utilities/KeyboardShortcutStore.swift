@@ -9,6 +9,8 @@ import Combine
 import SwiftUI
 
 enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
+    case goBack
+    case goForward
     case refreshActive
     case refreshBoth
     case goUp
@@ -26,6 +28,10 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
+        case .goBack:
+            "Back"
+        case .goForward:
+            "Forward"
         case .refreshActive:
             "Refresh active pane"
         case .refreshBoth:
@@ -111,7 +117,34 @@ struct OpenPaneKeyboardShortcut: Codable, Equatable, Sendable {
 }
 
 struct ShortcutKey: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case rawValue
+    }
+
+    private static let fallbackRawValue = "space"
+    private static let specialRawValues: Set<String> = [
+        "return",
+        "delete",
+        "upArrow",
+        "space"
+    ]
+
     let rawValue: String
+
+    init(rawValue: String) {
+        self.rawValue = Self.validatedRawValue(rawValue) ?? Self.fallbackRawValue
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedRawValue = try container.decodeIfPresent(String.self, forKey: .rawValue) ?? Self.fallbackRawValue
+        self.init(rawValue: decodedRawValue)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(rawValue, forKey: .rawValue)
+    }
 
     var keyEquivalent: KeyEquivalent {
         switch rawValue {
@@ -124,7 +157,11 @@ struct ShortcutKey: Codable, Equatable, Sendable {
         case "space":
             .space
         default:
-            KeyEquivalent(Character(rawValue.lowercased()))
+            if let character = Self.singleCharacter(from: rawValue) {
+                KeyEquivalent(character)
+            } else {
+                .space
+            }
         }
     }
 
@@ -141,6 +178,34 @@ struct ShortcutKey: Codable, Equatable, Sendable {
         default:
             rawValue.uppercased()
         }
+    }
+
+    private static func validatedRawValue(_ rawValue: String) -> String? {
+        let trimmedRawValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedRawValue.isEmpty else {
+            return nil
+        }
+
+        if specialRawValues.contains(trimmedRawValue) {
+            return trimmedRawValue
+        }
+
+        let lowercasedRawValue = trimmedRawValue.lowercased()
+        guard singleCharacter(from: lowercasedRawValue) != nil else {
+            return nil
+        }
+
+        return lowercasedRawValue
+    }
+
+    private static func singleCharacter(from rawValue: String) -> Character? {
+        let characters = Array(rawValue)
+        guard characters.count == 1 else {
+            return nil
+        }
+
+        return characters[0]
     }
 }
 
@@ -197,6 +262,8 @@ final class KeyboardShortcutStore: ObservableObject {
     )
 
     private static let defaultShortcuts: [OpenPaneShortcutAction: OpenPaneKeyboardShortcut] = [
+        .goBack: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "["), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
+        .goForward: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "]"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .refreshActive: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "r"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .refreshBoth: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "r"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false),
         .goUp: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "upArrow"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),

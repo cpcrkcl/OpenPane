@@ -102,11 +102,28 @@ final class FilePaneViewModel: ObservableObject {
     @Published var directoriesFirst: Bool
     @Published var recursiveSearchResults: [FileItem]
     @Published var isShowingRecursiveSearchResults: Bool
+    @Published private(set) var backStack: [URL]
+    @Published private(set) var forwardStack: [URL]
 
     private let fileBrowserService: any FileBrowserServicing
     private let fileSearchService: any FileSearchServicing
     private let workspaceService: any WorkspaceServicing
     private let quickLookPreviewService: any QuickLookPreviewServicing
+    private let directoryMonitorService: any DirectoryMonitorServicing
+    private let directoryRefreshDebounceNanoseconds: UInt64
+    private var directoryMonitorToken: (any DirectoryMonitorToken)?
+    private var directoryMonitorRefreshTask: Task<Void, Never>?
+    private var hasPendingDirectoryMonitorRefresh = false
+
+    private nonisolated static let defaultDirectoryRefreshDebounceNanoseconds: UInt64 = 250_000_000
+
+    var canGoBack: Bool {
+        !backStack.isEmpty
+    }
+
+    var canGoForward: Bool {
+        !forwardStack.isEmpty
+    }
 
     var filteredItems: [FileItem] {
         let filteredItems: [FileItem]
@@ -133,7 +150,9 @@ final class FilePaneViewModel: ObservableObject {
         fileBrowserService: any FileBrowserServicing = FileBrowserService(),
         fileSearchService: any FileSearchServicing = FileSearchService(),
         workspaceService: any WorkspaceServicing = WorkspaceService(),
-        quickLookPreviewService: (any QuickLookPreviewServicing)? = nil
+        quickLookPreviewService: (any QuickLookPreviewServicing)? = nil,
+        directoryMonitorService: any DirectoryMonitorServicing = DirectoryMonitoringService(),
+        directoryRefreshDebounceNanoseconds: UInt64 = FilePaneViewModel.defaultDirectoryRefreshDebounceNanoseconds
     ) {
         self.currentURL = currentURL
         self.items = []
@@ -150,27 +169,47 @@ final class FilePaneViewModel: ObservableObject {
         self.directoriesFirst = true
         self.recursiveSearchResults = []
         self.isShowingRecursiveSearchResults = false
+        self.backStack = []
+        self.forwardStack = []
         self.fileBrowserService = fileBrowserService
         self.fileSearchService = fileSearchService
         self.workspaceService = workspaceService
         self.quickLookPreviewService = quickLookPreviewService ?? QuickLookPreviewService.shared
+        self.directoryMonitorService = directoryMonitorService
+        self.directoryRefreshDebounceNanoseconds = directoryRefreshDebounceNanoseconds
+        restartDirectoryMonitor()
+    }
+
+    deinit {
+        directoryMonitorToken?.cancel()
+        directoryMonitorRefreshTask?.cancel()
     }
 
     func loadCurrentDirectory() async {
+        guard !isLoading else {
+            hasPendingDirectoryMonitorRefresh = true
+            return
+        }
+
+        let selectedURLs = Set(selectedItems.map { $0.url.standardizedFileURL })
         isLoading = true
         errorMessage = nil
-        clearRecursiveSearch()
+        clearRecursiveSearch(clearSelection: false)
         defer {
             isLoading = false
+            schedulePendingDirectoryMonitorRefreshIfNeeded()
         }
 
         do {
-            items = try await fileBrowserService.contentsOfDirectory(
+            let loadedItems = try await fileBrowserService.contentsOfDirectory(
                 at: currentURL,
                 includeHiddenFiles: includeHiddenFiles
             )
+            items = loadedItems
+            selectedItems = Set(loadedItems.filter { selectedURLs.contains($0.url.standardizedFileURL) })
         } catch {
             items = []
+            selectedItems = []
             errorMessage = Self.userReadableError(for: error, at: currentURL)
         }
     }
@@ -305,9 +344,16 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     func clearRecursiveSearch() {
+        clearRecursiveSearch(clearSelection: true)
+    }
+
+    private func clearRecursiveSearch(clearSelection: Bool) {
         recursiveSearchResults = []
         isShowingRecursiveSearchResults = false
-        selectedItems = []
+
+        if clearSelection {
+            selectedItems = []
+        }
     }
 
     func selectForContextMenu(_ item: FileItem) {
@@ -482,10 +528,69 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     func setDirectory(_ url: URL) async {
+        guard url != currentURL else {
+            await refresh()
+            return
+        }
+
+        guard let newItems = await itemsForNavigation(to: url) else {
+            return
+        }
+
+        backStack.append(currentURL)
+        forwardStack.removeAll()
+        applyNavigation(to: url, items: newItems)
+    }
+
+    func goBack() async {
+        guard let destinationURL = backStack.last,
+              let newItems = await itemsForNavigation(to: destinationURL) else {
+            return
+        }
+
+        backStack.removeLast()
+        forwardStack.append(currentURL)
+        applyNavigation(to: destinationURL, items: newItems)
+    }
+
+    func goForward() async {
+        guard let destinationURL = forwardStack.last,
+              let newItems = await itemsForNavigation(to: destinationURL) else {
+            return
+        }
+
+        forwardStack.removeLast()
+        backStack.append(currentURL)
+        applyNavigation(to: destinationURL, items: newItems)
+    }
+
+    private func itemsForNavigation(to url: URL) async -> [FileItem]? {
+        guard !isLoading else {
+            return nil
+        }
+
+        isLoading = true
+        errorMessage = nil
+        defer {
+            isLoading = false
+        }
+
+        do {
+            return try await fileBrowserService.contentsOfDirectory(
+                at: url,
+                includeHiddenFiles: includeHiddenFiles
+            )
+        } catch {
+            errorMessage = Self.userReadableError(for: error, at: url)
+            return nil
+        }
+    }
+
+    private func applyNavigation(to url: URL, items newItems: [FileItem]) {
         currentURL = url
-        selectedItems = []
+        items = newItems
         clearRecursiveSearch()
-        await loadCurrentDirectory()
+        restartDirectoryMonitor()
     }
 
     private func sortedItems(_ items: [FileItem]) -> [FileItem] {
@@ -540,6 +645,57 @@ final class FilePaneViewModel: ObservableObject {
         currentURL = tab.currentURL
         items = tab.items
         selectedItems = tab.selectedItems
+        restartDirectoryMonitor()
+    }
+
+    private func restartDirectoryMonitor() {
+        directoryMonitorRefreshTask?.cancel()
+        directoryMonitorToken?.cancel()
+        hasPendingDirectoryMonitorRefresh = false
+
+        let url = currentURL
+        directoryMonitorToken = directoryMonitorService.monitorDirectory(at: url) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleDirectoryMonitorRefresh()
+            }
+        }
+    }
+
+    private func scheduleDirectoryMonitorRefresh() {
+        directoryMonitorRefreshTask?.cancel()
+
+        let debounceNanoseconds = directoryRefreshDebounceNanoseconds
+        directoryMonitorRefreshTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: debounceNanoseconds)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await self?.performDirectoryMonitorRefresh()
+        }
+    }
+
+    private func performDirectoryMonitorRefresh() async {
+        guard !isLoading else {
+            hasPendingDirectoryMonitorRefresh = true
+            return
+        }
+
+        await loadCurrentDirectory()
+    }
+
+    private func schedulePendingDirectoryMonitorRefreshIfNeeded() {
+        guard hasPendingDirectoryMonitorRefresh else {
+            return
+        }
+
+        hasPendingDirectoryMonitorRefresh = false
+        scheduleDirectoryMonitorRefresh()
     }
 
     private func saveActiveTabState() {

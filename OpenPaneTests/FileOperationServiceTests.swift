@@ -169,6 +169,46 @@ struct FileOperationServiceTests {
         #expect(renamedContents == "rename me")
     }
 
+    @Test func renameToSameNameIsNoOp() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "same.txt", contents: "same")
+
+        let renamedURL = try await FileOperationService().rename(item: sourceFile, to: "same.txt")
+
+        #expect(renamedURL == sourceFile.url)
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+        let contents = try String(contentsOf: sourceFile.url, encoding: .utf8)
+        #expect(contents == "same")
+    }
+
+    @Test func caseOnlyRenamePreservesContents() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "note.txt", contents: "rename case")
+
+        let renamedURL = try await FileOperationService().rename(item: sourceFile, to: "Note.txt")
+
+        #expect(renamedURL == temporaryDirectory.sourceURL.appendingPathComponent("Note.txt"))
+        let renamedContents = try String(contentsOf: renamedURL, encoding: .utf8)
+        let directoryNames = try FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.sourceURL.path)
+        #expect(renamedContents == "rename case")
+        #expect(directoryNames.contains("Note.txt"))
+    }
+
+    @Test func renameToDifferentExistingItemThrowsAndLeavesFilesUntouched() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "old.txt", contents: "source")
+        let existingFile = try temporaryDirectory.createFile(named: "existing.txt", contents: "existing")
+
+        await #expect(throws: FileOperationError.destinationExists(existingFile.url)) {
+            try await FileOperationService().rename(item: sourceFile, to: "existing.txt")
+        }
+
+        let sourceContents = try String(contentsOf: sourceFile.url, encoding: .utf8)
+        let existingContents = try String(contentsOf: existingFile.url, encoding: .utf8)
+        #expect(sourceContents == "source")
+        #expect(existingContents == "existing")
+    }
+
     @Test func batchRenamePreviewNamesUseBaseNameAndStartingNumber() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let firstFile = try temporaryDirectory.createFile(named: "a.jpg", contents: "a")
@@ -215,6 +255,27 @@ struct FileOperationServiceTests {
         #expect(Set(renamedURLs.map(\.lastPathComponent)) == Set(["Photo 1", "Photo 2"]))
     }
 
+    @Test func batchRenameHandlesRenameChainThroughTemporaryNames() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "Photo 1.jpg", contents: "one")
+        let secondFile = try temporaryDirectory.createFile(named: "Photo 2.jpg", contents: "two")
+
+        let renamedURLs = try await FileOperationService().batchRename(
+            items: [firstFile, secondFile],
+            baseName: "Photo",
+            startingNumber: 2,
+            preserveExtensions: true
+        )
+
+        let photo2URL = temporaryDirectory.sourceURL.appendingPathComponent("Photo 2.jpg")
+        let photo3URL = temporaryDirectory.sourceURL.appendingPathComponent("Photo 3.jpg")
+        let photo2Contents = try String(contentsOf: photo2URL, encoding: .utf8)
+        let photo3Contents = try String(contentsOf: photo3URL, encoding: .utf8)
+        #expect(Set(renamedURLs) == Set([photo2URL, photo3URL]))
+        #expect(photo2Contents == "one")
+        #expect(photo3Contents == "two")
+    }
+
     @Test func batchRenameDetectsExistingDestinationBeforeRenaming() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let firstFile = try temporaryDirectory.createFile(named: "IMG_1.jpg", contents: "one")
@@ -232,6 +293,32 @@ struct FileOperationServiceTests {
 
         #expect(FileManager.default.fileExists(atPath: firstFile.url.path))
         #expect(FileManager.default.fileExists(atPath: secondFile.url.path))
+    }
+
+    @Test func batchRenameExternalDestinationCollisionLeavesAllOriginalsUntouched() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "Photo 1.jpg", contents: "one")
+        let secondFile = try temporaryDirectory.createFile(named: "Photo 2.jpg", contents: "two")
+        _ = try temporaryDirectory.createFile(named: "Photo 3.jpg", contents: "external")
+
+        await #expect(throws: FileOperationError.destinationExists(temporaryDirectory.sourceURL.appendingPathComponent("Photo 3.jpg"))) {
+            try await FileOperationService().batchRename(
+                items: [firstFile, secondFile],
+                baseName: "Photo",
+                startingNumber: 2,
+                preserveExtensions: true
+            )
+        }
+
+        let firstContents = try String(contentsOf: firstFile.url, encoding: .utf8)
+        let secondContents = try String(contentsOf: secondFile.url, encoding: .utf8)
+        let externalContents = try String(
+            contentsOf: temporaryDirectory.sourceURL.appendingPathComponent("Photo 3.jpg"),
+            encoding: .utf8
+        )
+        #expect(firstContents == "one")
+        #expect(secondContents == "two")
+        #expect(externalContents == "external")
     }
 
     @Test func createsFolder() async throws {

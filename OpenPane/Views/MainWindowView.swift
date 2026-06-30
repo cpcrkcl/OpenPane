@@ -21,10 +21,23 @@ struct MainWindowView: View {
                 sidebarDivider
 
                 mainContentSurface
+                    .layoutPriority(1)
             }
         }
         .padding(14)
         .background(CatppuccinMochaTheme.appBackground)
+        .background {
+            MouseNavigationEventView {
+                Task {
+                    await dualPaneViewModel.goBackInActivePane()
+                }
+            } onForward: {
+                Task {
+                    await dualPaneViewModel.goForwardInActivePane()
+                }
+            }
+            .frame(width: 0, height: 0)
+        }
         .preferredColorScheme(.dark)
         .frame(minWidth: 1000, minHeight: 650)
     }

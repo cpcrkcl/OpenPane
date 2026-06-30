@@ -40,7 +40,15 @@ final class QuickLookPreviewService: NSObject, QuickLookPreviewServicing, QLPrev
 
     nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
         MainActor.assumeIsolated {
-            previewURLs[index] as NSURL
+            Self.previewItem(from: previewURLs, at: index)
         }
+    }
+
+    nonisolated static func previewItem(from previewURLs: [URL], at index: Int) -> QLPreviewItem? {
+        guard previewURLs.indices.contains(index) else {
+            return nil
+        }
+
+        return previewURLs[index] as NSURL
     }
 }

@@ -28,6 +28,7 @@ final class DualPaneViewModel: ObservableObject {
     @Published var operationStatusMessage: String?
 
     private let fileOperationService: any FileOperationServicing
+    private var paneObservationCancellables: Set<AnyCancellable> = []
 
     var activePane: FilePaneViewModel {
         activePaneSide == .left ? leftPane : rightPane
@@ -57,6 +58,7 @@ final class DualPaneViewModel: ObservableObject {
         self.isPerformingOperation = false
         self.operationStatusMessage = nil
         self.fileOperationService = fileOperationService
+        observePaneChanges()
     }
 
     func setActivePane(_ side: PaneSide) {
@@ -74,6 +76,16 @@ final class DualPaneViewModel: ObservableObject {
     func refreshBoth() async {
         await leftPane.refresh()
         await rightPane.refresh()
+    }
+
+    func goBackInActivePane() async {
+        let pane = activePane
+        await pane.goBack()
+    }
+
+    func goForwardInActivePane() async {
+        let pane = activePane
+        await pane.goForward()
     }
 
     func swapPaneLocations() async {
@@ -164,7 +176,7 @@ final class DualPaneViewModel: ObservableObject {
                 to: destinationURL,
                 conflictResolution: conflictResolution
             )
-            await destinationPane.refresh()
+            await refreshPanes(showingAnyOf: [destinationURL])
         }
     }
 
@@ -277,14 +289,14 @@ final class DualPaneViewModel: ObservableObject {
             successMessage: "Moved \(Self.itemCountDescription(selectedItems)) to \(destinationURL.openPaneDisplayName).",
             failureMessage: "Move failed."
         ) {
+            let sourceURL = sourcePane.currentURL
             try await fileOperationService.move(
                 items: selectedItems,
                 to: destinationURL,
                 conflictResolution: conflictResolution
             )
             sourcePane.selectedItems = []
-            await sourcePane.refresh()
-            await destinationPane.refresh()
+            await refreshPanes(showingAnyOf: [sourceURL, destinationURL])
         }
     }
 
@@ -300,9 +312,10 @@ final class DualPaneViewModel: ObservableObject {
             successMessage: "Moved \(Self.itemCountDescription(selectedItems)) to Trash.",
             failureMessage: "Move to Trash failed."
         ) {
+            let sourceURL = sourcePane.currentURL
             try await fileOperationService.trash(items: selectedItems)
             sourcePane.selectedItems = []
-            await sourcePane.refresh()
+            await refreshPanes(showingAnyOf: [sourceURL])
         }
     }
 
@@ -346,7 +359,7 @@ final class DualPaneViewModel: ObservableObject {
                 to: pane.currentURL,
                 conflictResolution: .cancel
             )
-            await pane.refresh()
+            await refreshPanes(showingAnyOf: [pane.currentURL])
         }
     }
 
@@ -360,7 +373,7 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "New folder failed."
         ) {
             _ = try await fileOperationService.createFolder(named: name, in: currentURL)
-            await sourcePane.refresh()
+            await refreshPanes(showingAnyOf: [currentURL])
         }
     }
 
@@ -374,7 +387,7 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "New file failed."
         ) {
             _ = try await fileOperationService.createFile(named: name, in: currentURL)
-            await sourcePane.refresh()
+            await refreshPanes(showingAnyOf: [currentURL])
         }
     }
 
@@ -395,9 +408,10 @@ final class DualPaneViewModel: ObservableObject {
             successMessage: "Renamed \(selectedItem.name).",
             failureMessage: "Rename failed."
         ) {
+            let sourceURL = sourcePane.currentURL
             _ = try await fileOperationService.rename(item: selectedItem, to: newName)
             sourcePane.selectedItems = []
-            await sourcePane.refresh()
+            await refreshPanes(showingAnyOf: [sourceURL])
         }
     }
 
@@ -416,6 +430,7 @@ final class DualPaneViewModel: ObservableObject {
             successMessage: "Renamed \(Self.itemCountDescription(selectedItems)).",
             failureMessage: "Batch rename failed."
         ) {
+            let sourceURL = sourcePane.currentURL
             _ = try await fileOperationService.batchRename(
                 items: selectedItems,
                 baseName: baseName,
@@ -423,7 +438,7 @@ final class DualPaneViewModel: ObservableObject {
                 preserveExtensions: true
             )
             sourcePane.selectedItems = []
-            await sourcePane.refresh()
+            await refreshPanes(showingAnyOf: [sourceURL])
         }
     }
 
@@ -434,7 +449,7 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "Duplicate failed."
         ) {
             try await fileOperationService.duplicate(items: items)
-            await pane.refresh()
+            await refreshPanes(showingAnyOf: [pane.currentURL])
         }
     }
 
@@ -445,7 +460,7 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "Compress failed."
         ) {
             _ = try await fileOperationService.compress(items: items)
-            await pane.refresh()
+            await refreshPanes(showingAnyOf: [pane.currentURL])
         }
     }
 
@@ -486,6 +501,23 @@ final class DualPaneViewModel: ObservableObject {
         }
 
         return selectedItems
+    }
+
+    private func refreshPanes(showingAnyOf directoryURLs: [URL]) async {
+        let affectedDirectories = Set(directoryURLs.map(\.standardizedFileURL))
+        var refreshedPaneIDs: Set<ObjectIdentifier> = []
+
+        for pane in [leftPane, rightPane] {
+            let paneID = ObjectIdentifier(pane)
+
+            guard !refreshedPaneIDs.contains(paneID),
+                  affectedDirectories.contains(pane.currentURL.standardizedFileURL) else {
+                continue
+            }
+
+            refreshedPaneIDs.insert(paneID)
+            await pane.refresh()
+        }
     }
 
     private func showTabMoveError(tabID: FilePaneTab.ID, from sourceSide: PaneSide, to destinationSide: PaneSide) {
@@ -547,6 +579,22 @@ final class DualPaneViewModel: ObservableObject {
         case .right:
             return "right"
         }
+    }
+
+    private func observePaneChanges() {
+        paneObservationCancellables.removeAll()
+
+        leftPane.objectWillChange
+            .sink { [weak self] in
+                self?.objectWillChange.send()
+            }
+            .store(in: &paneObservationCancellables)
+
+        rightPane.objectWillChange
+            .sink { [weak self] in
+                self?.objectWillChange.send()
+            }
+            .store(in: &paneObservationCancellables)
     }
 
     private static func userReadableError(for error: Error) -> String {
