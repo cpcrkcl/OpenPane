@@ -18,6 +18,61 @@ nonisolated enum FileDropOperation: Equatable, Sendable {
     case move
 }
 
+nonisolated struct FileOperationState: Equatable, Sendable {
+    let isRunning: Bool
+    let label: String
+    let completedItemCount: Int
+    let totalItemCount: Int
+    let isCancellable: Bool
+
+    static let idle = FileOperationState(
+        isRunning: false,
+        label: "",
+        completedItemCount: 0,
+        totalItemCount: 0,
+        isCancellable: false
+    )
+
+    static func running(
+        label: String,
+        totalItemCount: Int,
+        isCancellable: Bool = true
+    ) -> FileOperationState {
+        FileOperationState(
+            isRunning: true,
+            label: label,
+            completedItemCount: 0,
+            totalItemCount: max(0, totalItemCount),
+            isCancellable: isCancellable
+        )
+    }
+
+    func updatingProgress(_ progress: FileOperationProgress) -> FileOperationState {
+        FileOperationState(
+            isRunning: isRunning,
+            label: label,
+            completedItemCount: progress.completedItemCount,
+            totalItemCount: progress.totalItemCount,
+            isCancellable: isCancellable
+        )
+    }
+}
+
+private final class OperationProgressSink: @unchecked Sendable {
+    @MainActor private weak var viewModel: DualPaneViewModel?
+
+    @MainActor
+    init(viewModel: DualPaneViewModel) {
+        self.viewModel = viewModel
+    }
+
+    nonisolated func report(_ progress: FileOperationProgress) {
+        Task { @MainActor [weak self] in
+            self?.viewModel?.applyOperationProgress(progress)
+        }
+    }
+}
+
 @MainActor
 final class DualPaneViewModel: ObservableObject {
     @Published var leftPane: FilePaneViewModel
@@ -26,9 +81,12 @@ final class DualPaneViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isPerformingOperation: Bool
     @Published var operationStatusMessage: String?
+    @Published var splitLeftPaneFraction: Double?
+    @Published private(set) var operationState: FileOperationState
 
     private let fileOperationService: any FileOperationServicing
     private var paneObservationCancellables: Set<AnyCancellable> = []
+    private var currentOperationTask: Task<Void, Error>?
 
     var activePane: FilePaneViewModel {
         activePaneSide == .left ? leftPane : rightPane
@@ -57,6 +115,8 @@ final class DualPaneViewModel: ObservableObject {
         self.errorMessage = nil
         self.isPerformingOperation = false
         self.operationStatusMessage = nil
+        self.splitLeftPaneFraction = nil
+        self.operationState = .idle
         self.fileOperationService = fileOperationService
         observePaneChanges()
     }
@@ -67,6 +127,20 @@ final class DualPaneViewModel: ObservableObject {
 
     func showStatusMessage(_ message: String) {
         operationStatusMessage = message
+    }
+
+    func navigateActivePane(to url: URL) async {
+        await activePane.setDirectory(url)
+    }
+
+    func cancelCurrentOperation() {
+        guard operationState.isRunning,
+              operationState.isCancellable else {
+            return
+        }
+
+        operationStatusMessage = "Cancelling operation..."
+        currentOperationTask?.cancel()
     }
 
     func pane(for side: PaneSide) -> FilePaneViewModel {
@@ -94,6 +168,52 @@ final class DualPaneViewModel: ObservableObject {
 
         await leftPane.setDirectory(rightURL)
         await rightPane.setDirectory(leftURL)
+    }
+
+    func sessionState() -> SessionState {
+        SessionState(
+            leftPane: leftPane.sessionState(),
+            rightPane: rightPane.sessionState(),
+            activePaneSide: activePaneSide,
+            splitLeftPaneFraction: splitLeftPaneFraction
+        )
+    }
+
+    static func restoring(
+        _ sessionState: SessionState?,
+        fallbackURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fileManager: FileManager = .default,
+        fileOperationService: any FileOperationServicing = FileOperationService()
+    ) -> DualPaneViewModel {
+        guard let sessionState else {
+            return DualPaneViewModel(
+                leftPane: FilePaneViewModel(currentURL: fallbackURL),
+                rightPane: FilePaneViewModel(currentURL: defaultRightPaneURL),
+                fileOperationService: fileOperationService
+            )
+        }
+
+        let leftPane = FilePaneViewModel(currentURL: fallbackURL)
+        let rightPane = FilePaneViewModel(currentURL: fallbackURL)
+        leftPane.applySessionState(
+            sessionState.leftPane,
+            fallbackURL: fallbackURL,
+            fileManager: fileManager
+        )
+        rightPane.applySessionState(
+            sessionState.rightPane,
+            fallbackURL: fallbackURL,
+            fileManager: fileManager
+        )
+
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            activePaneSide: sessionState.activePaneSide,
+            fileOperationService: fileOperationService
+        )
+        viewModel.splitLeftPaneFraction = sessionState.splitLeftPaneFraction
+        return viewModel
     }
 
     func moveTab(_ tabID: FilePaneTab.ID, from sourceSide: PaneSide, to destinationSide: PaneSide) {
@@ -169,15 +289,17 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Copying \(Self.itemCountDescription(selectedItems)) to \(destinationURL.openPaneDisplayName)...",
             successMessage: "Copied \(Self.itemCountDescription(selectedItems)) to \(destinationURL.openPaneDisplayName).",
-            failureMessage: "Copy failed."
-        ) {
+            failureMessage: "Copy failed.",
+            totalItemCount: selectedItems.count,
+            operationWithProgress: { [self] progressHandler in
             try await fileOperationService.copy(
                 items: selectedItems,
                 to: destinationURL,
-                conflictResolution: conflictResolution
+                conflictResolution: conflictResolution,
+                progressHandler: progressHandler
             )
             await refreshPanes(showingAnyOf: [destinationURL])
-        }
+        })
     }
 
     func copyDroppedFileURLs(
@@ -245,8 +367,9 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "\(operationVerb) \(Self.itemCountDescription(uniqueFileURLs.count)) to \(targetName)...",
             successMessage: "\(successVerb) \(Self.itemCountDescription(uniqueFileURLs.count)) to \(targetName).",
-            failureMessage: failureMessage
-        ) {
+            failureMessage: failureMessage,
+            totalItemCount: uniqueFileURLs.count,
+            operationWithProgress: { [self] progressHandler in
             let items = try uniqueFileURLs.map { try FileItem(url: $0) }
 
             switch operation {
@@ -254,25 +377,29 @@ final class DualPaneViewModel: ObservableObject {
                 try await fileOperationService.copy(
                     items: items,
                     to: targetDirectory,
-                    conflictResolution: conflictResolution
+                    conflictResolution: conflictResolution,
+                    progressHandler: progressHandler
                 )
             case .move:
                 try await fileOperationService.move(
                     items: items,
                     to: targetDirectory,
-                    conflictResolution: conflictResolution
+                    conflictResolution: conflictResolution,
+                    progressHandler: progressHandler
                 )
             }
 
+            targetPane.markTabsDirty(showingAnyOf: [targetDirectory])
             await targetPane.refresh()
 
             if let sourcePaneSide {
                 let sourcePane = pane(for: sourcePaneSide)
+                sourcePane.markTabsDirty(showingAnyOf: uniqueFileURLs.map { $0.deletingLastPathComponent() })
                 if operation == .move || sourcePane.currentURL == targetDirectory {
                     await sourcePane.refresh()
                 }
             }
-        }
+        })
     }
 
     func moveSelectionToOtherPane(conflictResolution: FileConflictResolution = .cancel) async {
@@ -287,17 +414,19 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Moving \(Self.itemCountDescription(selectedItems)) to \(destinationURL.openPaneDisplayName)...",
             successMessage: "Moved \(Self.itemCountDescription(selectedItems)) to \(destinationURL.openPaneDisplayName).",
-            failureMessage: "Move failed."
-        ) {
+            failureMessage: "Move failed.",
+            totalItemCount: selectedItems.count,
+            operationWithProgress: { [self] progressHandler in
             let sourceURL = sourcePane.currentURL
             try await fileOperationService.move(
                 items: selectedItems,
                 to: destinationURL,
-                conflictResolution: conflictResolution
+                conflictResolution: conflictResolution,
+                progressHandler: progressHandler
             )
             sourcePane.selectedItems = []
             await refreshPanes(showingAnyOf: [sourceURL, destinationURL])
-        }
+        })
     }
 
     func trashSelectionInActivePane() async {
@@ -310,13 +439,14 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Moving \(Self.itemCountDescription(selectedItems)) to Trash...",
             successMessage: "Moved \(Self.itemCountDescription(selectedItems)) to Trash.",
-            failureMessage: "Move to Trash failed."
-        ) {
+            failureMessage: "Move to Trash failed.",
+            totalItemCount: selectedItems.count,
+            operationWithProgress: { [self] progressHandler in
             let sourceURL = sourcePane.currentURL
-            try await fileOperationService.trash(items: selectedItems)
+            try await fileOperationService.trash(items: selectedItems, progressHandler: progressHandler)
             sourcePane.selectedItems = []
             await refreshPanes(showingAnyOf: [sourceURL])
-        }
+        })
     }
 
     func duplicateSelectionInActivePane() async {
@@ -351,16 +481,18 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Pasting \(Self.itemCountDescription(fileURLs.count))...",
             successMessage: "Pasted \(Self.itemCountDescription(fileURLs.count)).",
-            failureMessage: "Paste failed."
-        ) {
+            failureMessage: "Paste failed.",
+            totalItemCount: fileURLs.count,
+            operationWithProgress: { [self] progressHandler in
             let items = try fileURLs.map { try FileItem(url: $0) }
             try await fileOperationService.copy(
                 items: items,
                 to: pane.currentURL,
-                conflictResolution: .cancel
+                conflictResolution: .cancel,
+                progressHandler: progressHandler
             )
             await refreshPanes(showingAnyOf: [pane.currentURL])
-        }
+        })
     }
 
     func createFolderInActivePane(named name: String) async {
@@ -370,8 +502,9 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Creating folder...",
             successMessage: "Created folder.",
-            failureMessage: "New folder failed."
-        ) {
+            failureMessage: "New folder failed.",
+            totalItemCount: 1
+        ) { [self] in
             _ = try await fileOperationService.createFolder(named: name, in: currentURL)
             await refreshPanes(showingAnyOf: [currentURL])
         }
@@ -384,8 +517,9 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Creating file...",
             successMessage: "Created file.",
-            failureMessage: "New file failed."
-        ) {
+            failureMessage: "New file failed.",
+            totalItemCount: 1
+        ) { [self] in
             _ = try await fileOperationService.createFile(named: name, in: currentURL)
             await refreshPanes(showingAnyOf: [currentURL])
         }
@@ -406,8 +540,9 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Renaming \(selectedItem.name)...",
             successMessage: "Renamed \(selectedItem.name).",
-            failureMessage: "Rename failed."
-        ) {
+            failureMessage: "Rename failed.",
+            totalItemCount: 1
+        ) { [self] in
             let sourceURL = sourcePane.currentURL
             _ = try await fileOperationService.rename(item: selectedItem, to: newName)
             sourcePane.selectedItems = []
@@ -428,8 +563,9 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Renaming \(Self.itemCountDescription(selectedItems))...",
             successMessage: "Renamed \(Self.itemCountDescription(selectedItems)).",
-            failureMessage: "Batch rename failed."
-        ) {
+            failureMessage: "Batch rename failed.",
+            totalItemCount: selectedItems.count
+        ) { [self] in
             let sourceURL = sourcePane.currentURL
             _ = try await fileOperationService.batchRename(
                 items: selectedItems,
@@ -446,49 +582,105 @@ final class DualPaneViewModel: ObservableObject {
         await performOperation(
             statusMessage: "Duplicating \(Self.itemCountDescription(items))...",
             successMessage: "Duplicated \(Self.itemCountDescription(items)).",
-            failureMessage: "Duplicate failed."
-        ) {
-            try await fileOperationService.duplicate(items: items)
+            failureMessage: "Duplicate failed.",
+            totalItemCount: items.count,
+            operationWithProgress: { [self] progressHandler in
+            try await fileOperationService.duplicate(items: items, progressHandler: progressHandler)
             await refreshPanes(showingAnyOf: [pane.currentURL])
-        }
+        })
     }
 
     private func compress(items: [FileItem], in pane: FilePaneViewModel) async {
         await performOperation(
             statusMessage: "Compressing \(Self.itemCountDescription(items))...",
             successMessage: "Created archive.",
-            failureMessage: "Compress failed."
-        ) {
-            _ = try await fileOperationService.compress(items: items)
+            failureMessage: "Compress failed.",
+            totalItemCount: items.count,
+            operationWithProgress: { [self] progressHandler in
+            _ = try await fileOperationService.compress(items: items, progressHandler: progressHandler)
             await refreshPanes(showingAnyOf: [pane.currentURL])
-        }
+        })
     }
 
     private func performOperation(
         statusMessage: String,
         successMessage: String,
         failureMessage: String,
-        operation: () async throws -> Void
+        totalItemCount: Int,
+        isCancellable: Bool = true,
+        operation: @escaping () async throws -> Void
+    ) async {
+        await performOperation(
+            statusMessage: statusMessage,
+            successMessage: successMessage,
+            failureMessage: failureMessage,
+            totalItemCount: totalItemCount,
+            isCancellable: isCancellable,
+            operationWithProgress: { _ in
+                try await operation()
+            }
+        )
+    }
+
+    private func performOperation(
+        statusMessage: String,
+        successMessage: String,
+        failureMessage: String,
+        totalItemCount: Int,
+        isCancellable: Bool = true,
+        operationWithProgress operation: @escaping (@escaping FileOperationProgressHandler) async throws -> Void
     ) async {
         guard !isPerformingOperation else {
             return
         }
 
+        let progressSink = OperationProgressSink(viewModel: self)
+        let progressHandler: FileOperationProgressHandler = { [progressSink] progress in
+            progressSink.report(progress)
+        }
+
         isPerformingOperation = true
+        operationState = .running(
+            label: statusMessage,
+            totalItemCount: totalItemCount,
+            isCancellable: isCancellable
+        )
         operationStatusMessage = statusMessage
         errorMessage = nil
+        let operationTask = Task { @MainActor in
+            try await operation(progressHandler)
+        }
+        currentOperationTask = operationTask
 
         defer {
+            currentOperationTask = nil
+            operationState = .idle
             isPerformingOperation = false
         }
 
         do {
-            try await operation()
+            try await operationTask.value
             operationStatusMessage = successMessage
+        } catch is CancellationError {
+            operationStatusMessage = "Operation cancelled."
+            errorMessage = nil
         } catch {
             operationStatusMessage = failureMessage
             errorMessage = Self.userReadableError(for: error)
         }
+    }
+
+    fileprivate func applyOperationProgress(_ progress: FileOperationProgress) {
+        guard operationState.isRunning else {
+            return
+        }
+
+        guard operationState.completedItemCount != progress.completedItemCount ||
+              operationState.totalItemCount != progress.totalItemCount else {
+            return
+        }
+
+        operationState = operationState.updatingProgress(progress)
     }
 
     private func selectedItemsForOperation(in pane: FilePaneViewModel, verb: String) -> [FileItem]? {
@@ -506,6 +698,10 @@ final class DualPaneViewModel: ObservableObject {
     private func refreshPanes(showingAnyOf directoryURLs: [URL]) async {
         let affectedDirectories = Set(directoryURLs.map(\.standardizedFileURL))
         var refreshedPaneIDs: Set<ObjectIdentifier> = []
+
+        for pane in [leftPane, rightPane] {
+            pane.markTabsDirty(showingAnyOf: directoryURLs)
+        }
 
         for pane in [leftPane, rightPane] {
             let paneID = ObjectIdentifier(pane)
@@ -551,7 +747,9 @@ final class DualPaneViewModel: ObservableObject {
         var seenURLs: Set<URL> = []
 
         return urls.filter { url in
-            let standardizedURL = url.standardizedFileURL
+            let standardizedURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
 
             guard !seenURLs.contains(standardizedURL) else {
                 return false

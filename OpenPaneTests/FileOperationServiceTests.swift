@@ -22,6 +22,28 @@ struct FileOperationServiceTests {
         #expect(copiedContents == "copy me")
     }
 
+    @Test func copyReportsProgressAsItemsComplete() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "one")
+        let secondFile = try temporaryDirectory.createFile(named: "second.txt", contents: "two")
+        let progressRecorder = ProgressRecorder()
+
+        try await FileOperationService().copy(
+            items: [firstFile, secondFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .cancel,
+            progressHandler: { progress in
+                progressRecorder.append(progress)
+            }
+        )
+
+        #expect(progressRecorder.progresses == [
+            FileOperationProgress(completedItemCount: 0, totalItemCount: 2),
+            FileOperationProgress(completedItemCount: 1, totalItemCount: 2),
+            FileOperationProgress(completedItemCount: 2, totalItemCount: 2)
+        ])
+    }
+
     @Test func movesFileToDestinationDirectory() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let sourceFile = try temporaryDirectory.createFile(named: "move.txt", contents: "move me")
@@ -486,11 +508,11 @@ struct FileOperationServiceTests {
         #expect(otherContents == "other")
     }
 
-    @Test func copyReplaceTrashesExistingDestinationAndCopiesSource() async throws {
+    @Test func copyReplaceStagesThenReplacesDestinationWithoutUsingTrash() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let sourceFile = try temporaryDirectory.createFile(named: "replace.txt", contents: "source")
-        let existingFile = try temporaryDirectory.createDestinationFile(named: "replace.txt", contents: "existing")
-        let trashService = RemovingTrashService()
+        _ = try temporaryDirectory.createDestinationFile(named: "replace.txt", contents: "existing")
+        let trashService = MockTrashService()
 
         try await FileOperationService(trashService: trashService).copy(
             items: [sourceFile],
@@ -503,7 +525,197 @@ struct FileOperationServiceTests {
             encoding: .utf8
         )
         #expect(replacedContents == "source")
-        #expect(trashService.trashedURLs == [existingFile.url])
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+        #expect(trashService.trashedURLs.isEmpty)
+        #expect(try temporaryDirectory.replacementStagingURLs().isEmpty)
+    }
+
+    @Test func moveReplaceStagesThenReplacesDestinationAndRemovesSource() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "replace.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "replace.txt", contents: "existing")
+
+        try await FileOperationService().move(
+            items: [sourceFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .replace
+        )
+
+        let replacedContents = try String(
+            contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("replace.txt"),
+            encoding: .utf8
+        )
+        #expect(replacedContents == "source")
+        #expect(!FileManager.default.fileExists(atPath: sourceFile.url.path))
+        #expect(try temporaryDirectory.replacementStagingURLs().isEmpty)
+    }
+
+    @Test func copyReplaceStagingFailureLeavesSourceAndDestinationIntact() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "replace.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "replace.txt", contents: "existing")
+        let fileSystem = FailingFileSystem(failCopyToReplacementStaging: true)
+
+        do {
+            try await FileOperationService(fileSystem: fileSystem).copy(
+                items: [sourceFile],
+                to: temporaryDirectory.destinationURL,
+                conflictResolution: .replace
+            )
+            Issue.record("Expected copy replace to fail")
+        } catch {
+            let sourceContents = try String(contentsOf: sourceFile.url, encoding: .utf8)
+            let destinationContents = try String(
+                contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("replace.txt"),
+                encoding: .utf8
+            )
+            #expect(sourceContents == "source")
+            #expect(destinationContents == "existing")
+            #expect(try temporaryDirectory.replacementStagingURLs().isEmpty)
+        }
+    }
+
+    @Test func copyReplaceFinalReplacementFailureCleansStagingAndLeavesDestination() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "replace.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "replace.txt", contents: "existing")
+        let fileSystem = FailingFileSystem(failReplacement: true)
+
+        do {
+            try await FileOperationService(fileSystem: fileSystem).copy(
+                items: [sourceFile],
+                to: temporaryDirectory.destinationURL,
+                conflictResolution: .replace
+            )
+            Issue.record("Expected copy replace to fail")
+        } catch {
+            let sourceContents = try String(contentsOf: sourceFile.url, encoding: .utf8)
+            let destinationContents = try String(
+                contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("replace.txt"),
+                encoding: .utf8
+            )
+            #expect(sourceContents == "source")
+            #expect(destinationContents == "existing")
+            #expect(try temporaryDirectory.replacementStagingURLs().isEmpty)
+        }
+    }
+
+    @Test func moveReplaceStagingFailureLeavesSourceAndDestinationIntact() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "replace.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "replace.txt", contents: "existing")
+        let fileSystem = FailingFileSystem(failCopyToReplacementStaging: true)
+
+        do {
+            try await FileOperationService(fileSystem: fileSystem).move(
+                items: [sourceFile],
+                to: temporaryDirectory.destinationURL,
+                conflictResolution: .replace
+            )
+            Issue.record("Expected move replace to fail")
+        } catch {
+            let sourceContents = try String(contentsOf: sourceFile.url, encoding: .utf8)
+            let destinationContents = try String(
+                contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("replace.txt"),
+                encoding: .utf8
+            )
+            #expect(sourceContents == "source")
+            #expect(destinationContents == "existing")
+            #expect(try temporaryDirectory.replacementStagingURLs().isEmpty)
+        }
+    }
+
+    @Test func moveReplaceSourceCleanupFailureReportsPartialReplacementState() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "replace.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "replace.txt", contents: "existing")
+        let fileSystem = FailingFileSystem(failRemoveSourceNamed: sourceFile.url.lastPathComponent)
+
+        do {
+            try await FileOperationService(fileSystem: fileSystem).move(
+                items: [sourceFile],
+                to: temporaryDirectory.destinationURL,
+                conflictResolution: .replace
+            )
+            Issue.record("Expected move replace cleanup to fail")
+        } catch {
+            let sourceContents = try String(contentsOf: sourceFile.url, encoding: .utf8)
+            let destinationContents = try String(
+                contentsOf: temporaryDirectory.destinationURL.appendingPathComponent("replace.txt"),
+                encoding: .utf8
+            )
+            #expect(sourceContents == "source")
+            #expect(destinationContents == "source")
+            #expect(try temporaryDirectory.replacementStagingURLs().isEmpty)
+            #expect(
+                (error as? LocalizedError)?.errorDescription?
+                    .contains("Destination was replaced, but the original item could not be removed") == true
+            )
+        }
+    }
+
+    @Test func selectedItemsWithCaseVariantNamesArePreflightedAsDuplicateDestinations() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFolderURL = try temporaryDirectory.createSourceDirectory(named: "First")
+        let secondFolderURL = try temporaryDirectory.createSourceDirectory(named: "Second")
+        let firstFile = try temporaryDirectory.createFile(in: firstFolderURL, named: "Report.txt", contents: "first")
+        let secondFile = try temporaryDirectory.createFile(in: secondFolderURL, named: "report.txt", contents: "second")
+
+        await #expect(throws: FileOperationError.operationCancelled(temporaryDirectory.destinationURL.appendingPathComponent("report.txt"))) {
+            try await FileOperationService().copy(items: [firstFile, secondFile], to: temporaryDirectory.destinationURL)
+        }
+
+        #expect(try temporaryDirectory.destinationNames().isEmpty)
+    }
+
+    @Test func keepBothReservationAvoidsCaseVariantCopyNames() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFolderURL = try temporaryDirectory.createSourceDirectory(named: "First")
+        let secondFolderURL = try temporaryDirectory.createSourceDirectory(named: "Second")
+        let firstFile = try temporaryDirectory.createFile(in: firstFolderURL, named: "Report.txt", contents: "first")
+        let secondFile = try temporaryDirectory.createFile(in: secondFolderURL, named: "report.txt", contents: "second")
+        _ = try temporaryDirectory.createDestinationFile(named: "Report.txt", contents: "existing")
+
+        try await FileOperationService().copy(
+            items: [firstFile, secondFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .keepBoth
+        )
+
+        #expect(try Set(temporaryDirectory.destinationNames()) == Set([
+            "Report.txt",
+            "Report copy.txt",
+            "report copy 2.txt"
+        ]))
+    }
+
+    @Test func validateTransferRejectsFolderIntoSymlinkedDescendant() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let folderURL = try temporaryDirectory.createSourceDirectory(named: "Folder")
+        let childURL = folderURL.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: false)
+        let symlinkURL = temporaryDirectory.rootURL.appendingPathComponent("LinkToChild", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: childURL)
+        let folderItem = try FileItem(url: folderURL)
+
+        #expect(throws: FileOperationError.cannotPlaceFolderInsideItself(folderURL)) {
+            try FileOperationService.validateTransfer(items: [folderItem], to: symlinkURL)
+        }
+    }
+
+    @Test func transferConflictPredictionMatchesServiceForSimpleCaseAndEmptyDestinations() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "collision.txt", contents: "source")
+        _ = try temporaryDirectory.createDestinationFile(named: "collision.txt", contents: "existing")
+
+        #expect(FileOperationService.hasPotentialTransferConflict(items: [sourceFile], to: temporaryDirectory.destinationURL))
+        await #expect(throws: FileOperationError.operationCancelled(temporaryDirectory.destinationURL.appendingPathComponent("collision.txt"))) {
+            try await FileOperationService().copy(items: [sourceFile], to: temporaryDirectory.destinationURL)
+        }
+
+        let clearDestinationURL = temporaryDirectory.rootURL.appendingPathComponent("Clear", isDirectory: true)
+        try FileManager.default.createDirectory(at: clearDestinationURL, withIntermediateDirectories: false)
+        #expect(!FileOperationService.hasPotentialTransferConflict(items: [sourceFile], to: clearDestinationURL))
     }
 
     @Test func copyPreflightsAllDestinationsBeforeCopying() async throws {
@@ -624,6 +836,113 @@ private final class RemovingTrashService: TrashServicing, @unchecked Sendable {
     }
 }
 
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var protectedProgresses: [FileOperationProgress] = []
+
+    var progresses: [FileOperationProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return protectedProgresses
+    }
+
+    func append(_ progress: FileOperationProgress) {
+        lock.lock()
+        protectedProgresses.append(progress)
+        lock.unlock()
+    }
+}
+
+private final class FailingFileSystem: FileSystemOperating, @unchecked Sendable {
+    private let failCopyToReplacementStaging: Bool
+    private let failReplacement: Bool
+    private let failRemoveSourceNamed: String?
+
+    init(
+        failCopyToReplacementStaging: Bool = false,
+        failReplacement: Bool = false,
+        failRemoveSourceNamed: String? = nil
+    ) {
+        self.failCopyToReplacementStaging = failCopyToReplacementStaging
+        self.failReplacement = failReplacement
+        self.failRemoveSourceNamed = failRemoveSourceNamed
+    }
+
+    func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
+        if failCopyToReplacementStaging && destinationURL.lastPathComponent.hasPrefix(".openpane-replace-") {
+            throw NSError(
+                domain: "OpenPaneTests",
+                code: 10,
+                userInfo: [NSLocalizedDescriptionKey: "Simulated staging copy failure"]
+            )
+        }
+
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    func moveItem(at sourceURL: URL, to destinationURL: URL) throws {
+        try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+    }
+
+    func removeItem(at url: URL) throws {
+        if failRemoveSourceNamed == url.lastPathComponent {
+            throw NSError(
+                domain: "OpenPaneTests",
+                code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "Simulated source cleanup failure"]
+            )
+        }
+
+        try FileManager.default.removeItem(at: url)
+    }
+
+    func replaceItem(at originalURL: URL, withItemAt replacementURL: URL) throws {
+        if failReplacement {
+            throw NSError(
+                domain: "OpenPaneTests",
+                code: 11,
+                userInfo: [NSLocalizedDescriptionKey: "Simulated replacement failure"]
+            )
+        }
+
+        _ = try FileManager.default.replaceItemAt(
+            originalURL,
+            withItemAt: replacementURL,
+            backupItemName: nil,
+            options: []
+        )
+    }
+
+    func fileExists(at url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
+    }
+
+    func fileExists(at url: URL, isDirectory: inout ObjCBool) -> Bool {
+        FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+    }
+
+    func isWritableFile(at url: URL) -> Bool {
+        FileManager.default.isWritableFile(atPath: url.path)
+    }
+
+    func contentsOfDirectory(at url: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: []
+        )
+    }
+
+    func createDirectory(at url: URL) throws {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+    }
+
+    func createFile(at url: URL) -> Bool {
+        FileManager.default.createFile(atPath: url.path, contents: Data())
+    }
+}
+
 private struct OperationTestTemporaryDirectory {
     let rootURL: URL
     let sourceURL: URL
@@ -648,10 +967,31 @@ private struct OperationTestTemporaryDirectory {
         try createFile(at: destinationURL.appendingPathComponent(name), contents: contents)
     }
 
+    func createFile(in directoryURL: URL, named name: String, contents: String) throws -> FileItem {
+        try createFile(at: directoryURL.appendingPathComponent(name), contents: contents)
+    }
+
     func createSourceDirectory(named name: String) throws -> URL {
         let url = sourceURL.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url
+    }
+
+    func destinationNames() throws -> [String] {
+        try FileManager.default.contentsOfDirectory(
+            at: destinationURL,
+            includingPropertiesForKeys: nil
+        )
+        .map(\.lastPathComponent)
+        .sorted()
+    }
+
+    func replacementStagingURLs() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: destinationURL,
+            includingPropertiesForKeys: nil
+        )
+        .filter { $0.lastPathComponent.hasPrefix(".openpane-replace-") }
     }
 
     private func createFile(at url: URL, contents: String) throws -> FileItem {

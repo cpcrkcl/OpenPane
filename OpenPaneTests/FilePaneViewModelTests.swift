@@ -87,6 +87,93 @@ struct FilePaneViewModelTests {
         #expect(viewModel.selectedItems == [childItem])
     }
 
+    @Test func dirtyBackgroundTabReloadsWhenActivatedAndClearsDirtyFlag() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let rootItem = try temporaryDirectory.createFileItem(named: "root.txt")
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let staleChildItem = try temporaryDirectory.createFileItem(named: "Child/stale.txt")
+        let freshChildItem = try temporaryDirectory.createFileItem(named: "Child/fresh.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [rootItem, childDirectory],
+            childDirectory.url: [staleChildItem]
+        ])
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService
+        )
+        await viewModel.loadCurrentDirectory()
+        let rootTabID = viewModel.activeTabID
+        await viewModel.newTab()
+        await viewModel.setDirectory(childDirectory.url)
+        let childTabID = viewModel.activeTabID
+        await viewModel.switchToTab(rootTabID)
+        fileBrowserService.setItems([freshChildItem], for: childDirectory.url)
+
+        viewModel.markTabsDirty(showingAnyOf: [childDirectory.url])
+        await viewModel.switchToTab(childTabID)
+
+        #expect(viewModel.items == [freshChildItem])
+        #expect(viewModel.tabs.first { $0.id == childTabID }?.isDirty == false)
+        #expect(fileBrowserService.loadCount(for: childDirectory.url) == 2)
+    }
+
+    @Test func cleanBackgroundTabUsesCachedContentsWhenActivated() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let rootItem = try temporaryDirectory.createFileItem(named: "root.txt")
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let staleChildItem = try temporaryDirectory.createFileItem(named: "Child/stale.txt")
+        let freshChildItem = try temporaryDirectory.createFileItem(named: "Child/fresh.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [rootItem, childDirectory],
+            childDirectory.url: [staleChildItem]
+        ])
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService
+        )
+        await viewModel.loadCurrentDirectory()
+        let rootTabID = viewModel.activeTabID
+        await viewModel.newTab()
+        await viewModel.setDirectory(childDirectory.url)
+        let childTabID = viewModel.activeTabID
+        await viewModel.switchToTab(rootTabID)
+        fileBrowserService.setItems([freshChildItem], for: childDirectory.url)
+
+        await viewModel.switchToTab(childTabID)
+
+        #expect(viewModel.items == [staleChildItem])
+        #expect(fileBrowserService.loadCount(for: childDirectory.url) == 1)
+    }
+
+    @Test func failedDirtyTabReloadKeepsTabDirty() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let rootItem = try temporaryDirectory.createFileItem(named: "root.txt")
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let staleChildItem = try temporaryDirectory.createFileItem(named: "Child/stale.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [rootItem, childDirectory],
+            childDirectory.url: [staleChildItem]
+        ])
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService
+        )
+        await viewModel.loadCurrentDirectory()
+        let rootTabID = viewModel.activeTabID
+        await viewModel.newTab()
+        await viewModel.setDirectory(childDirectory.url)
+        let childTabID = viewModel.activeTabID
+        await viewModel.switchToTab(rootTabID)
+        fileBrowserService.setError(FileBrowserError.directoryNotFound(childDirectory.url), for: childDirectory.url)
+
+        viewModel.markTabsDirty(showingAnyOf: [childDirectory.url])
+        await viewModel.switchToTab(childTabID)
+
+        #expect(viewModel.items.isEmpty)
+        #expect(viewModel.tabs.first { $0.id == childTabID }?.isDirty == true)
+        #expect(viewModel.errorMessage == "Child could not be found.")
+    }
+
     @Test func closeActiveTabSwitchesToRemainingTab() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let fileItem = try temporaryDirectory.createFileItem(named: "notes.txt")
@@ -135,6 +222,68 @@ struct FilePaneViewModelTests {
 
         #expect(viewModel.items == [fileItem])
         #expect(viewModel.isLoading == false)
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func staleLoadResultIsDiscardedAfterTabSwitch() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let rootItem = try temporaryDirectory.createFileItem(named: "root.txt")
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let childItem = try temporaryDirectory.createFileItem(named: "Child/child.txt")
+        let fileBrowserService = DelayedMockFileBrowserService(
+            itemsByURL: [
+                temporaryDirectory.url: [rootItem],
+                childDirectory.url: [childItem]
+            ],
+            delayNanosecondsByURL: [
+                temporaryDirectory.url: 80_000_000
+            ]
+        )
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService
+        )
+
+        let loadTask = Task {
+            await viewModel.loadCurrentDirectory()
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        viewModel.receiveTab(FilePaneTab(currentURL: childDirectory.url, items: [childItem]))
+
+        await loadTask.value
+
+        #expect(viewModel.currentURL == childDirectory.url)
+        #expect(viewModel.items == [childItem])
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func staleLoadErrorIsDiscardedAfterTabSwitch() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let childItem = try temporaryDirectory.createFileItem(named: "Child/child.txt")
+        let fileBrowserService = DelayedMockFileBrowserService(
+            errorByURL: [
+                temporaryDirectory.url: FileBrowserError.directoryNotFound(temporaryDirectory.url)
+            ],
+            delayNanosecondsByURL: [
+                temporaryDirectory.url: 80_000_000
+            ]
+        )
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService
+        )
+
+        let loadTask = Task {
+            await viewModel.loadCurrentDirectory()
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        viewModel.receiveTab(FilePaneTab(currentURL: childDirectory.url, items: [childItem]))
+
+        await loadTask.value
+
+        #expect(viewModel.currentURL == childDirectory.url)
+        #expect(viewModel.items == [childItem])
         #expect(viewModel.errorMessage == nil)
     }
 
@@ -239,6 +388,112 @@ struct FilePaneViewModelTests {
         #expect(viewModel.filteredItems == [alphaItem, zebraItem])
     }
 
+    @Test func visibleItemsUpdatesWhenSearchTextChanges() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let notesItem = try temporaryDirectory.createFileItem(named: "Project Notes.txt")
+        let imageItem = try temporaryDirectory.createFileItem(named: "Image.png")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [notesItem, imageItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+
+        #expect(viewModel.visibleItems == [notesItem])
+    }
+
+    @Test func visibleItemsUpdatesWhenSortOptionChanges() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let largeItem = try temporaryDirectory.createFileItem(named: "large.txt", contents: "larger contents")
+        let smallItem = try temporaryDirectory.createFileItem(named: "small.txt", contents: "s")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [largeItem, smallItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.sortOption = .size
+
+        #expect(viewModel.visibleItems == [smallItem, largeItem])
+    }
+
+    @Test func visibleItemsUpdatesWhenDirectoriesFirstChanges() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let zebraItem = try temporaryDirectory.createDirectoryItem(named: "Zebra")
+        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [zebraItem, alphaItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.directoriesFirst = false
+
+        #expect(viewModel.visibleItems == [alphaItem, zebraItem])
+    }
+
+    @Test func visibleItemsUpdatesWhenSortDirectionChanges() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let betaItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [alphaItem, betaItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.sortDirection = .descending
+
+        #expect(viewModel.visibleItems == [betaItem, alphaItem])
+    }
+
+    @Test func visibleItemsUpdatesWhenRecursiveSearchResultsBecomeActive() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let localItem = try temporaryDirectory.createFileItem(named: "Local.txt")
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Result.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [localItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        viewModel.recursiveSearchResults = [searchResult]
+        viewModel.isShowingRecursiveSearchResults = true
+
+        #expect(viewModel.visibleItems == [searchResult])
+    }
+
+    @Test func selectionChangesDoNotRecomputeVisibleItems() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [firstItem, secondItem]
+            ])
+        )
+
+        await viewModel.loadCurrentDirectory()
+        let recomputeCount = viewModel.visibleItemsRecomputeCount
+
+        viewModel.selectedItems = [secondItem]
+
+        #expect(viewModel.visibleItems == [firstItem, secondItem])
+        #expect(viewModel.visibleItemsRecomputeCount == recomputeCount)
+    }
+
     @Test func itemsForDragReturnsSelectedItemsWhenStartingItemIsSelected() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let firstItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
@@ -325,6 +580,35 @@ struct FilePaneViewModelTests {
         await viewModel.performRecursiveSearch()
 
         viewModel.clearRecursiveSearch()
+
+        #expect(viewModel.recursiveSearchResults.isEmpty)
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+        #expect(viewModel.filteredItems == [localItem])
+    }
+
+    @Test func staleRecursiveSearchResultIsDiscardedAfterClearingSearch() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let localItem = try temporaryDirectory.createFileItem(named: "Local Notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [localItem]
+            ]),
+            fileSearchService: DelayedMockFileSearchService(
+                results: [searchResult],
+                delayNanoseconds: 50_000_000
+            )
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+
+        let searchTask = Task {
+            await viewModel.performRecursiveSearch()
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        viewModel.clearRecursiveSearch()
+        await searchTask.value
 
         #expect(viewModel.recursiveSearchResults.isEmpty)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
@@ -588,6 +872,95 @@ struct FilePaneViewModelTests {
 
         #expect(workspaceService.openedURLs == [fileItem.url])
         #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func openSelectedItemSurfacesWorkspaceOpenFailure() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fileItem = try temporaryDirectory.createFileItem(named: "notes.txt")
+        let workspaceService = MockWorkspaceService()
+        workspaceService.openResult = false
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+        viewModel.selectedItems = [fileItem]
+
+        await viewModel.openSelectedItem()
+
+        #expect(workspaceService.openedURLs == [fileItem.url])
+        #expect(viewModel.errorMessage == "Could not open notes.txt.")
+    }
+
+    @Test func openWithApplicationSurfacesWorkspaceError() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fileItem = try temporaryDirectory.createFileItem(named: "notes.txt")
+        let applicationURL = URL(filePath: "/Applications/TextEdit.app")
+        let workspaceService = MockWorkspaceService()
+        workspaceService.openWithApplicationError = WorkspaceError.openWithApplicationFailed(
+            fileItem.url,
+            applicationURL,
+            "Permission denied."
+        )
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+
+        await viewModel.open(fileItem, withApplication: applicationURL)
+
+        #expect(workspaceService.openedWithApplicationRequests.map(\.url) == [fileItem.url])
+        #expect(viewModel.errorMessage == "Could not open notes.txt with TextEdit: Permission denied.")
+    }
+
+    @Test func applicationsAvailableToOpenCachesOptionsByFileType() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "first.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "second.txt")
+        let workspaceService = MockWorkspaceService()
+        let textEditOption = ApplicationOption(
+            name: "TextEdit",
+            url: URL(filePath: "/Applications/TextEdit.app"),
+            icon: nil
+        )
+        workspaceService.applicationOptions = [textEditOption]
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+
+        let firstOptions = viewModel.applicationsAvailableToOpen(firstItem)
+        let secondOptions = viewModel.applicationsAvailableToOpen(secondItem)
+
+        #expect(firstOptions.map(\.url) == [textEditOption.url])
+        #expect(secondOptions.map(\.url) == [textEditOption.url])
+        #expect(workspaceService.appsAvailableURLs == [firstItem.url])
+        #expect(FilePaneViewModel.openWithCacheKey(for: firstItem) == FilePaneViewModel.openWithCacheKey(for: secondItem))
+    }
+
+    @Test func applicationsAvailableToOpenSkipsWorkspaceLookupForDirectories() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let directoryItem = try temporaryDirectory.createDirectoryItem(named: "Folder")
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService
+        )
+
+        let options = viewModel.applicationsAvailableToOpen(directoryItem)
+
+        #expect(options.isEmpty)
+        #expect(workspaceService.appsAvailableURLs.isEmpty)
+    }
+
+    @Test func openWithCacheKeySupportsFilesWithoutExtensions() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fileItem = try temporaryDirectory.createFileItem(named: "Makefile")
+
+        #expect(!FilePaneViewModel.openWithCacheKey(for: fileItem).isEmpty)
     }
 
     @Test func revealSelectedItemsInFinderShowsErrorWhenNothingIsSelected() async throws {
@@ -911,19 +1284,28 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
     private(set) var copiedFileURLs: [URL] = []
     private(set) var copiedPathURLs: [URL] = []
     private(set) var copiedText: [String] = []
+    private(set) var appsAvailableURLs: [URL] = []
     var applicationOptions: [ApplicationOption] = []
     var pasteboardFileURLs: [URL] = []
+    var openResult = true
+    var openWithApplicationError: Error?
 
-    func open(url: URL) {
+    func open(url: URL) -> Bool {
         openedURLs.append(url)
+        return openResult
     }
 
     func appsAvailableToOpen(url: URL) -> [ApplicationOption] {
-        applicationOptions
+        appsAvailableURLs.append(url)
+        return applicationOptions
     }
 
-    func open(url: URL, withApplication applicationURL: URL) {
+    func open(url: URL, withApplication applicationURL: URL) async throws {
         openedWithApplicationRequests.append((url, applicationURL))
+
+        if let openWithApplicationError {
+            throw openWithApplicationError
+        }
     }
 
     func chooseApplicationAndOpen(url: URL) {
@@ -967,6 +1349,24 @@ nonisolated private struct MockFileBrowserService: FileBrowserServicing {
 
         if errorURLs.contains(url) {
             throw CocoaError(.fileReadNoSuchFile)
+        }
+
+        return itemsByURL[url] ?? []
+    }
+}
+
+nonisolated private struct DelayedMockFileBrowserService: FileBrowserServicing {
+    var itemsByURL: [URL: [FileItem]] = [:]
+    var errorByURL: [URL: any Error & Sendable] = [:]
+    var delayNanosecondsByURL: [URL: UInt64] = [:]
+
+    nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
+        if let delayNanoseconds = delayNanosecondsByURL[url] {
+            try await Task.sleep(nanoseconds: delayNanoseconds)
+        }
+
+        if let error = errorByURL[url] {
+            throw error
         }
 
         return itemsByURL[url] ?? []
@@ -1103,6 +1503,21 @@ nonisolated private struct MockFileSearchService: FileSearchServicing {
             throw error
         }
 
+        return Array(results.prefix(limit))
+    }
+}
+
+nonisolated private struct DelayedMockFileSearchService: FileSearchServicing {
+    var results: [FileItem]
+    var delayNanoseconds: UInt64
+
+    nonisolated func search(
+        root: URL,
+        query: String,
+        includeHiddenFiles: Bool,
+        limit: Int
+    ) async throws -> [FileItem] {
+        try await Task.sleep(nanoseconds: delayNanoseconds)
         return Array(results.prefix(limit))
     }
 }

@@ -22,6 +22,8 @@ struct ApplicationOption: Identifiable {
 enum WorkspaceError: LocalizedError {
     case noShareItems
     case sharingUnavailable
+    case openFailed(URL)
+    case openWithApplicationFailed(URL, URL, String)
 
     var errorDescription: String? {
         switch self {
@@ -29,19 +31,29 @@ enum WorkspaceError: LocalizedError {
             return "Select one or more items to share."
         case .sharingUnavailable:
             return "Sharing is not available right now."
+        case .openFailed(let url):
+            return "Could not open \(url.openPaneDisplayName)."
+        case .openWithApplicationFailed(let url, let applicationURL, let reason):
+            return "Could not open \(url.openPaneDisplayName) with \(Self.applicationName(for: applicationURL)): \(reason)"
         }
+    }
+
+    private static func applicationName(for url: URL) -> String {
+        let name = url.deletingPathExtension().lastPathComponent
+        return name.isEmpty ? url.openPaneDisplayName : name
     }
 }
 
 nonisolated protocol WorkspaceServicing: Sendable {
     @MainActor
-    func open(url: URL)
+    @discardableResult
+    func open(url: URL) -> Bool
 
     @MainActor
     func appsAvailableToOpen(url: URL) -> [ApplicationOption]
 
     @MainActor
-    func open(url: URL, withApplication applicationURL: URL)
+    func open(url: URL, withApplication applicationURL: URL) async throws
 
     @MainActor
     func chooseApplicationAndOpen(url: URL)
@@ -69,7 +81,8 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
     nonisolated init() {}
 
     @MainActor
-    func open(url: URL) {
+    @discardableResult
+    func open(url: URL) -> Bool {
         NSWorkspace.shared.open(url)
     }
 
@@ -84,8 +97,9 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
                 urls.append(applicationURL)
             }
             .map { applicationURL in
-                let icon = NSWorkspace.shared.icon(forFile: applicationURL.path)
-                icon.size = NSSize(width: 16, height: 16)
+                let icon = Self.resizedIconCopy(
+                    NSWorkspace.shared.icon(forFile: applicationURL.path)
+                )
 
                 return ApplicationOption(
                     name: Self.applicationName(for: applicationURL),
@@ -99,16 +113,26 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
     }
 
     @MainActor
-    func open(url: URL, withApplication applicationURL: URL) {
+    func open(url: URL, withApplication applicationURL: URL) async throws {
         let configuration = NSWorkspace.OpenConfiguration()
 
-        NSWorkspace.shared.open(
-            [url],
-            withApplicationAt: applicationURL,
-            configuration: configuration
-        ) { _, error in
-            if let error {
-                NSLog("OpenPane could not open %@ with %@: %@", url.path, applicationURL.path, error.localizedDescription)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            NSWorkspace.shared.open(
+                [url],
+                withApplicationAt: applicationURL,
+                configuration: configuration
+            ) { _, error in
+                if let error {
+                    continuation.resume(
+                        throwing: WorkspaceError.openWithApplicationFailed(
+                            url,
+                            applicationURL,
+                            error.localizedDescription
+                        )
+                    )
+                } else {
+                    continuation.resume()
+                }
             }
         }
     }
@@ -130,7 +154,9 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
             return
         }
 
-        open(url: url, withApplication: applicationURL)
+        Task {
+            try? await open(url: url, withApplication: applicationURL)
+        }
     }
 
     @MainActor
@@ -209,5 +235,11 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
         }
 
         return url.deletingPathExtension().lastPathComponent
+    }
+
+    private static func resizedIconCopy(_ image: NSImage) -> NSImage {
+        let copiedImage = (image.copy() as? NSImage) ?? image
+        copiedImage.size = NSSize(width: 16, height: 16)
+        return copiedImage
     }
 }

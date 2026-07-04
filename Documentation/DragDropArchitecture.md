@@ -34,11 +34,11 @@ Current limitations to keep separate from file drag/drop:
 
 ## File Drag and Drop
 
-File row drag/drop is not implemented yet.
+File row drag/drop is implemented.
 
-The safest place to start file drags is the row construction in `FilePaneView`, likely attached to each `FilePaneRowView`. Drag selection should mirror context-menu behavior: if the dragged item is already selected, operate on the full selected set; otherwise operate on the clicked item only.
+`FilePaneRowView` starts file drags from rows. Drag selection mirrors context-menu behavior: if the dragged item is already selected, the drag operates on the full selected set; otherwise it operates on the dragged item only.
 
-The safest first drop target is the pane's file-list/background container, with the destination set to that pane's `currentURL`. Folder-row drops can be added later because they need more hit testing and destination validation.
+The pane's file-list/background container accepts file drops with the destination set to that pane's `currentURL`. Folder rows are also drop targets for directory items; regular file rows reject drops so a drag never looks like it might overwrite that file.
 
 Recommended file drag payloads:
 
@@ -50,10 +50,10 @@ The safest place to orchestrate dropped file operations is `DualPaneViewModel`, 
 ## Recommended Implementation Order
 
 1. Keep the existing tab drag/drop state path and improve only the drop affordance if needed.
-2. Add file row drag sources with the same target-selection rules used by context menus.
-3. Add pane/background drop targets that copy dropped file URLs into the target pane's current directory.
+2. Keep file row drag sources aligned with the same target-selection rules used by context menus.
+3. Keep pane/background and folder-row drop targets routed through `DualPaneViewModel`.
 4. Route all filesystem work through `DualPaneViewModel` and `FileOperationService`.
-5. Add move-with-modifier, folder-row drops, and Finder-style conflict prompting as follow-up work.
+5. Add move-with-modifier refinements as follow-up work.
 
 ## Risks to Watch
 

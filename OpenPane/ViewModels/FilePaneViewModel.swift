@@ -14,7 +14,7 @@ nonisolated enum FileItemCopyTextFormat: Sendable {
     case name
 }
 
-nonisolated enum FileSortOption: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum FileSortOption: String, CaseIterable, Codable, Identifiable, Sendable {
     case name
     case size
     case modifiedDate
@@ -47,7 +47,7 @@ nonisolated enum FileSortOption: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-nonisolated enum FileSortDirection: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum FileSortDirection: String, CaseIterable, Codable, Identifiable, Sendable {
     case ascending
     case descending
 
@@ -80,6 +80,7 @@ final class FilePaneViewModel: ObservableObject {
             updateActiveTab { tab in
                 tab.items = items
             }
+            recomputeVisibleItems()
         }
     }
 
@@ -96,24 +97,59 @@ final class FilePaneViewModel: ObservableObject {
     @Published var isLoading: Bool
     @Published var errorMessage: String?
     @Published var includeHiddenFiles: Bool
-    @Published var searchText: String
-    @Published var sortOption: FileSortOption
-    @Published var sortDirection: FileSortDirection
-    @Published var directoriesFirst: Bool
-    @Published var recursiveSearchResults: [FileItem]
-    @Published var isShowingRecursiveSearchResults: Bool
+    @Published var searchText: String {
+        didSet {
+            recomputeVisibleItems()
+        }
+    }
+    @Published var sortOption: FileSortOption {
+        didSet {
+            recomputeVisibleItems()
+        }
+    }
+    @Published var sortDirection: FileSortDirection {
+        didSet {
+            recomputeVisibleItems()
+        }
+    }
+    @Published var directoriesFirst: Bool {
+        didSet {
+            recomputeVisibleItems()
+        }
+    }
+    @Published var recursiveSearchResults: [FileItem] {
+        didSet {
+            recomputeVisibleItems()
+        }
+    }
+    @Published var isShowingRecursiveSearchResults: Bool {
+        didSet {
+            recomputeVisibleItems()
+        }
+    }
     @Published private(set) var backStack: [URL]
     @Published private(set) var forwardStack: [URL]
+    @Published private(set) var visibleItems: [FileItem]
+    @Published private(set) var calculatedFolderSizes: [URL: FolderSizeResult]
+    @Published private(set) var calculatingFolderSizeURLs: Set<URL>
 
     private let fileBrowserService: any FileBrowserServicing
     private let fileSearchService: any FileSearchServicing
     private let workspaceService: any WorkspaceServicing
     private let quickLookPreviewService: any QuickLookPreviewServicing
     private let directoryMonitorService: any DirectoryMonitorServicing
+    private let folderSizeService: any FolderSizeServicing
     private let directoryRefreshDebounceNanoseconds: UInt64
     private var directoryMonitorToken: (any DirectoryMonitorToken)?
     private var directoryMonitorRefreshTask: Task<Void, Never>?
+    private var folderSizeTasksByURL: [URL: Task<Void, Never>] = [:]
     private var hasPendingDirectoryMonitorRefresh = false
+    private var requestGeneration = 0
+    private var applicationOptionsByTypeKey: [String: [ApplicationOption]] = [:]
+
+    #if DEBUG
+    private(set) var visibleItemsRecomputeCount = 0
+    #endif
 
     private nonisolated static let defaultDirectoryRefreshDebounceNanoseconds: UInt64 = 250_000_000
 
@@ -126,23 +162,7 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     var filteredItems: [FileItem] {
-        let filteredItems: [FileItem]
-
-        if isShowingRecursiveSearchResults {
-            filteredItems = recursiveSearchResults
-        } else {
-            let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if trimmedSearchText.isEmpty {
-                filteredItems = items
-            } else {
-                filteredItems = items.filter { item in
-                    item.name.localizedCaseInsensitiveContains(trimmedSearchText)
-                }
-            }
-        }
-
-        return sortedItems(filteredItems)
+        visibleItems
     }
 
     init(
@@ -151,7 +171,8 @@ final class FilePaneViewModel: ObservableObject {
         fileSearchService: any FileSearchServicing = FileSearchService(),
         workspaceService: any WorkspaceServicing = WorkspaceService(),
         quickLookPreviewService: (any QuickLookPreviewServicing)? = nil,
-        directoryMonitorService: any DirectoryMonitorServicing = DirectoryMonitoringService(),
+        directoryMonitorService: (any DirectoryMonitorServicing)? = nil,
+        folderSizeService: any FolderSizeServicing = FolderSizeService(),
         directoryRefreshDebounceNanoseconds: UInt64 = FilePaneViewModel.defaultDirectoryRefreshDebounceNanoseconds
     ) {
         self.currentURL = currentURL
@@ -171,18 +192,24 @@ final class FilePaneViewModel: ObservableObject {
         self.isShowingRecursiveSearchResults = false
         self.backStack = []
         self.forwardStack = []
+        self.visibleItems = []
+        self.calculatedFolderSizes = [:]
+        self.calculatingFolderSizeURLs = []
         self.fileBrowserService = fileBrowserService
         self.fileSearchService = fileSearchService
         self.workspaceService = workspaceService
         self.quickLookPreviewService = quickLookPreviewService ?? QuickLookPreviewService.shared
-        self.directoryMonitorService = directoryMonitorService
+        self.directoryMonitorService = directoryMonitorService ?? Self.defaultDirectoryMonitorService()
+        self.folderSizeService = folderSizeService
         self.directoryRefreshDebounceNanoseconds = directoryRefreshDebounceNanoseconds
+        recomputeVisibleItems()
         restartDirectoryMonitor()
     }
 
     deinit {
         directoryMonitorToken?.cancel()
         directoryMonitorRefreshTask?.cancel()
+        folderSizeTasksByURL.values.forEach { $0.cancel() }
     }
 
     func loadCurrentDirectory() async {
@@ -191,10 +218,14 @@ final class FilePaneViewModel: ObservableObject {
             return
         }
 
+        let requestURL = currentURL
+        let requestTabID = activeTabID
+        let generation = nextRequestGeneration()
+        let wasDirty = activeTabIsDirty
         let selectedURLs = Set(selectedItems.map { $0.url.standardizedFileURL })
         isLoading = true
         errorMessage = nil
-        clearRecursiveSearch(clearSelection: false)
+        clearRecursiveSearch(clearSelection: false, invalidateRequests: false)
         defer {
             isLoading = false
             schedulePendingDirectoryMonitorRefreshIfNeeded()
@@ -202,19 +233,32 @@ final class FilePaneViewModel: ObservableObject {
 
         do {
             let loadedItems = try await fileBrowserService.contentsOfDirectory(
-                at: currentURL,
+                at: requestURL,
                 includeHiddenFiles: includeHiddenFiles
             )
+            guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
+                return
+            }
+
             items = loadedItems
             selectedItems = Set(loadedItems.filter { selectedURLs.contains($0.url.standardizedFileURL) })
+            setActiveTabDirty(false)
         } catch {
+            guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
+                return
+            }
+
             items = []
             selectedItems = []
-            errorMessage = Self.userReadableError(for: error, at: currentURL)
+            if wasDirty {
+                setActiveTabDirty(true)
+            }
+            errorMessage = Self.userReadableError(for: error, at: requestURL)
         }
     }
 
     func refresh() async {
+        invalidateFolderSizeCacheForCurrentDirectory()
         await loadCurrentDirectory()
     }
 
@@ -242,7 +286,7 @@ final class FilePaneViewModel: ObservableObject {
         let nextIndex = min(closingIndex, tabs.count - 1)
         applyTab(tabs[nextIndex])
 
-        if items.isEmpty {
+        if items.isEmpty || activeTabIsDirty {
             await loadCurrentDirectory()
         }
     }
@@ -256,7 +300,7 @@ final class FilePaneViewModel: ObservableObject {
         saveActiveTabState()
         applyTab(tab)
 
-        if items.isEmpty {
+        if items.isEmpty || activeTabIsDirty {
             await loadCurrentDirectory()
         }
     }
@@ -321,6 +365,9 @@ final class FilePaneViewModel: ObservableObject {
             return
         }
 
+        let requestURL = currentURL
+        let requestTabID = activeTabID
+        let generation = nextRequestGeneration()
         isLoading = true
         errorMessage = nil
         selectedItems = []
@@ -329,17 +376,28 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         do {
-            recursiveSearchResults = try await fileSearchService.search(
-                root: currentURL,
+            let searchResults = try await fileSearchService.search(
+                root: requestURL,
                 query: trimmedSearchText,
                 includeHiddenFiles: includeHiddenFiles,
                 limit: limit
             )
+
+            guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL),
+                  searchText.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedSearchText else {
+                return
+            }
+
+            recursiveSearchResults = searchResults
             isShowingRecursiveSearchResults = true
         } catch {
+            guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
+                return
+            }
+
             recursiveSearchResults = []
             isShowingRecursiveSearchResults = false
-            errorMessage = Self.userReadableError(for: error, at: currentURL)
+            errorMessage = Self.userReadableError(for: error, at: requestURL)
         }
     }
 
@@ -347,12 +405,27 @@ final class FilePaneViewModel: ObservableObject {
         clearRecursiveSearch(clearSelection: true)
     }
 
-    private func clearRecursiveSearch(clearSelection: Bool) {
+    private func clearRecursiveSearch(clearSelection: Bool, invalidateRequests: Bool = true) {
+        if invalidateRequests {
+            invalidatePendingRequests()
+        }
+
         recursiveSearchResults = []
         isShowingRecursiveSearchResults = false
 
         if clearSelection {
             selectedItems = []
+        }
+    }
+
+    func markTabsDirty(showingAnyOf directoryURLs: [URL]) {
+        let affectedDirectories = Set(directoryURLs.map(\.standardizedFileURL))
+        guard !affectedDirectories.isEmpty else {
+            return
+        }
+
+        for index in tabs.indices where affectedDirectories.contains(tabs[index].currentURL.standardizedFileURL) {
+            tabs[index].isDirty = true
         }
     }
 
@@ -440,21 +513,135 @@ final class FilePaneViewModel: ObservableObject {
 
         errorMessage = nil
 
-        workspaceService.open(url: item.url)
+        guard workspaceService.open(url: item.url) else {
+            errorMessage = WorkspaceError.openFailed(item.url).localizedDescription
+            return
+        }
     }
 
     func applicationsAvailableToOpen(_ item: FileItem) -> [ApplicationOption] {
-        workspaceService.appsAvailableToOpen(url: item.url)
+        guard !item.isDirectory else {
+            return []
+        }
+
+        let cacheKey = Self.openWithCacheKey(for: item)
+
+        if let cachedOptions = applicationOptionsByTypeKey[cacheKey] {
+            return cachedOptions
+        }
+
+        let options = workspaceService.appsAvailableToOpen(url: item.url)
+        applicationOptionsByTypeKey[cacheKey] = options
+        return options
     }
 
-    func open(_ item: FileItem, withApplication applicationURL: URL) {
+    nonisolated static func openWithCacheKey(for item: FileItem) -> String {
+        if let typeIdentifier = item.typeIdentifier,
+           !typeIdentifier.isEmpty {
+            return "type:\(typeIdentifier)"
+        }
+
+        let pathExtension = item.url.pathExtension
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+
+        if pathExtension.isEmpty {
+            return "extension:<none>"
+        }
+
+        return "extension:\(pathExtension)"
+    }
+
+    func open(_ item: FileItem, withApplication applicationURL: URL) async {
         errorMessage = nil
-        workspaceService.open(url: item.url, withApplication: applicationURL)
+
+        do {
+            try await workspaceService.open(url: item.url, withApplication: applicationURL)
+        } catch {
+            errorMessage = Self.userReadableWorkspaceError(for: error)
+        }
     }
 
     func chooseApplicationToOpen(_ item: FileItem) {
         errorMessage = nil
         workspaceService.chooseApplicationAndOpen(url: item.url)
+    }
+
+    func calculatedFolderSizeText(for item: FileItem) -> String? {
+        guard item.isDirectory else {
+            return nil
+        }
+
+        let standardizedURL = item.url.standardizedFileURL
+
+        if calculatingFolderSizeURLs.contains(standardizedURL) {
+            return "Calculating…"
+        }
+
+        if let result = calculatedFolderSizes[standardizedURL] {
+            if result.skippedItemCount > 0 {
+                return "\(result.formattedSize)*"
+            }
+
+            return result.formattedSize
+        }
+
+        return nil
+    }
+
+    func calculateFolderSizeForContextMenu(clickedItem: FileItem) {
+        calculateFolderSize(for: clickedItem)
+    }
+
+    func calculateFolderSize(for item: FileItem) {
+        guard item.isDirectory else {
+            errorMessage = "\(item.displayName) is not a folder."
+            return
+        }
+
+        let standardizedURL = item.url.standardizedFileURL
+
+        if let cachedSize = folderSizeService.cachedSize(of: item.url) {
+            calculatedFolderSizes[standardizedURL] = cachedSize
+            return
+        }
+
+        folderSizeTasksByURL[standardizedURL]?.cancel()
+        calculatingFolderSizeURLs.insert(standardizedURL)
+        errorMessage = nil
+
+        folderSizeTasksByURL[standardizedURL] = Task { [weak self] in
+            do {
+                guard let self else {
+                    return
+                }
+
+                let result = try await self.folderSizeService.size(of: item.url)
+                await MainActor.run {
+                    self.calculatingFolderSizeURLs.remove(standardizedURL)
+                    self.folderSizeTasksByURL[standardizedURL] = nil
+                    self.calculatedFolderSizes[standardizedURL] = result
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self?.calculatingFolderSizeURLs.remove(standardizedURL)
+                    self?.folderSizeTasksByURL[standardizedURL] = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self?.calculatingFolderSizeURLs.remove(standardizedURL)
+                    self?.folderSizeTasksByURL[standardizedURL] = nil
+                    self?.errorMessage = Self.userReadableFolderSizeError(for: error)
+                }
+            }
+        }
+    }
+
+    func cancelFolderSizeCalculation(for item: FileItem) {
+        let standardizedURL = item.url.standardizedFileURL
+        folderSizeTasksByURL[standardizedURL]?.cancel()
+        folderSizeTasksByURL[standardizedURL] = nil
+        calculatingFolderSizeURLs.remove(standardizedURL)
     }
 
     func shareForContextMenu(clickedItem: FileItem) {
@@ -569,6 +756,8 @@ final class FilePaneViewModel: ObservableObject {
             return nil
         }
 
+        let requestTabID = activeTabID
+        let generation = nextRequestGeneration()
         isLoading = true
         errorMessage = nil
         defer {
@@ -576,11 +765,22 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         do {
-            return try await fileBrowserService.contentsOfDirectory(
+            let loadedItems = try await fileBrowserService.contentsOfDirectory(
                 at: url,
                 includeHiddenFiles: includeHiddenFiles
             )
+            guard generation == requestGeneration,
+                  activeTabID == requestTabID else {
+                return nil
+            }
+
+            return loadedItems
         } catch {
+            guard generation == requestGeneration,
+                  activeTabID == requestTabID else {
+                return nil
+            }
+
             errorMessage = Self.userReadableError(for: error, at: url)
             return nil
         }
@@ -589,8 +789,38 @@ final class FilePaneViewModel: ObservableObject {
     private func applyNavigation(to url: URL, items newItems: [FileItem]) {
         currentURL = url
         items = newItems
-        clearRecursiveSearch()
+        selectedItems = []
+        setActiveTabDirty(false)
+        clearRecursiveSearch(clearSelection: false)
         restartDirectoryMonitor()
+    }
+
+    private func recomputeVisibleItems() {
+        #if DEBUG
+        visibleItemsRecomputeCount += 1
+        #endif
+
+        let sourceItems: [FileItem]
+
+        if isShowingRecursiveSearchResults {
+            sourceItems = recursiveSearchResults
+        } else {
+            let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if trimmedSearchText.isEmpty {
+                sourceItems = items
+            } else {
+                sourceItems = items.filter { item in
+                    item.name.localizedCaseInsensitiveContains(trimmedSearchText)
+                }
+            }
+        }
+
+        let nextVisibleItems = sortedItems(sourceItems)
+
+        if nextVisibleItems != visibleItems {
+            visibleItems = nextVisibleItems
+        }
     }
 
     private func sortedItems(_ items: [FileItem]) -> [FileItem] {
@@ -638,6 +868,7 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private func applyTab(_ tab: FilePaneTab) {
+        invalidatePendingRequests()
         activeTabID = tab.id
         recursiveSearchResults = []
         isShowingRecursiveSearchResults = false
@@ -659,6 +890,22 @@ final class FilePaneViewModel: ObservableObject {
                 self?.scheduleDirectoryMonitorRefresh()
             }
         }
+    }
+
+    private static func defaultDirectoryMonitorService() -> any DirectoryMonitorServicing {
+        if isRunningUnderXCTest || isRunningForUITests {
+            return NoopDirectoryMonitoringService()
+        }
+
+        return DirectoryMonitoringService()
+    }
+
+    private static var isRunningUnderXCTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    private static var isRunningForUITests: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ui-testing")
     }
 
     private func scheduleDirectoryMonitorRefresh() {
@@ -706,6 +953,31 @@ final class FilePaneViewModel: ObservableObject {
         }
     }
 
+    private var activeTabIsDirty: Bool {
+        tabs.first { $0.id == activeTabID }?.isDirty == true
+    }
+
+    private func setActiveTabDirty(_ isDirty: Bool) {
+        updateActiveTab { tab in
+            tab.isDirty = isDirty
+        }
+    }
+
+    private func nextRequestGeneration() -> Int {
+        requestGeneration += 1
+        return requestGeneration
+    }
+
+    private func invalidatePendingRequests() {
+        requestGeneration += 1
+    }
+
+    private func isCurrentRequest(_ generation: Int, tabID: FilePaneTab.ID, url: URL) -> Bool {
+        generation == requestGeneration &&
+            activeTabID == tabID &&
+            currentURL == url
+    }
+
     private func updateActiveTab(_ update: (inout FilePaneTab) -> Void) {
         guard let index = tabs.firstIndex(where: { $0.id == activeTabID }) else {
             return
@@ -716,6 +988,71 @@ final class FilePaneViewModel: ObservableObject {
 
     private func boundedTabInsertionIndex(_ index: Int) -> Int {
         min(max(index, 0), tabs.count)
+    }
+
+    func sessionState(fileManager: FileManager = .default) -> SessionPaneState {
+        saveActiveTabState()
+
+        let sessionTabs = tabs.map { tab in
+            SessionTabState(
+                id: tab.id,
+                currentURL: tab.currentURL
+            )
+        }
+
+        return SessionPaneState(
+            tabs: sessionTabs,
+            activeTabID: activeTabID,
+            currentURL: currentURL,
+            includeHiddenFiles: includeHiddenFiles,
+            sortOption: sortOption,
+            sortDirection: sortDirection,
+            directoriesFirst: directoriesFirst
+        )
+    }
+
+    func applySessionState(
+        _ state: SessionPaneState,
+        fallbackURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fileManager: FileManager = .default
+    ) {
+        invalidatePendingRequests()
+        let restoredTabs = state.tabs.map { tabState in
+            FilePaneTab(
+                id: tabState.id,
+                currentURL: Self.restorableDirectoryURL(
+                    tabState.currentURL,
+                    fallbackURL: fallbackURL,
+                    fileManager: fileManager
+                )
+            )
+        }
+        let safeTabs = restoredTabs.isEmpty
+            ? [FilePaneTab(currentURL: fallbackURL)]
+            : restoredTabs
+        let activeID = safeTabs.contains { $0.id == state.activeTabID }
+            ? state.activeTabID
+            : safeTabs[0].id
+        let activeTab = safeTabs.first { $0.id == activeID } ?? safeTabs[0]
+
+        tabs = safeTabs
+        activeTabID = activeID
+        currentURL = activeTab.currentURL
+        items = []
+        selectedItems = []
+        includeHiddenFiles = state.includeHiddenFiles
+        searchText = ""
+        sortOption = state.sortOption
+        sortDirection = state.sortDirection
+        directoriesFirst = state.directoriesFirst
+        recursiveSearchResults = []
+        isShowingRecursiveSearchResults = false
+        backStack = []
+        forwardStack = []
+        errorMessage = nil
+        calculatedFolderSizes = [:]
+        calculatingFolderSizeURLs = []
+        restartDirectoryMonitor()
     }
 
     func contextMenuTargetItems(clickedItem: FileItem) -> [FileItem] {
@@ -737,6 +1074,28 @@ final class FilePaneViewModel: ObservableObject {
         case .name:
             item.name
         }
+    }
+
+    private func invalidateFolderSizeCacheForCurrentDirectory() {
+        folderSizeService.invalidateDescendants(of: currentURL)
+        calculatedFolderSizes = calculatedFolderSizes.filter { url, _ in
+            url != currentURL.standardizedFileURL &&
+                !url.isDescendant(of: currentURL.standardizedFileURL)
+        }
+    }
+
+    private static func restorableDirectoryURL(
+        _ url: URL,
+        fallbackURL: URL,
+        fileManager: FileManager
+    ) -> URL {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return fallbackURL
+        }
+
+        return url
     }
 
     private static func userReadableError(for error: Error, at url: URL) -> String {
@@ -771,5 +1130,14 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         return "The action could not be completed."
+    }
+
+    private static func userReadableFolderSizeError(for error: Error) -> String {
+        if let localizedError = error as? LocalizedError,
+           let description = localizedError.errorDescription {
+            return description
+        }
+
+        return "Could not calculate folder size."
     }
 }

@@ -104,6 +104,8 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 ## Keyboard Shortcuts
 
 - `Command-,`: Open Settings
+- `Command-[`: Back in the active pane
+- `Command-]`: Forward in the active pane
 - `Command-R`: Refresh active pane
 - `Command-Shift-R`: Refresh both panes
 - `Command-Up`: Go up in the active pane

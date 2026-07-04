@@ -33,6 +33,19 @@ struct DualPaneViewModelTests {
         #expect(viewModel.inactivePane === leftPane)
     }
 
+    @Test func navigateActivePaneCanOpenMountedVolumeURL() async {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        let volumeURL = URL(filePath: "/Volumes/External", directoryHint: .isDirectory)
+        viewModel.setActivePane(.right)
+
+        await viewModel.navigateActivePane(to: volumeURL)
+
+        #expect(leftPane.currentURL == URL(filePath: "/left"))
+        #expect(rightPane.currentURL == volumeURL)
+    }
+
     @Test func backAndForwardNavigationRouteToActivePane() async {
         let leftURL = URL(filePath: "/left", directoryHint: .isDirectory)
         let leftChildURL = URL(filePath: "/left/child", directoryHint: .isDirectory)
@@ -300,6 +313,97 @@ struct DualPaneViewModelTests {
         #expect(rightPane.selectedItems.isEmpty)
         #expect(fileOperationService.movedItems == [sourceItem])
         #expect(fileOperationService.moveDestinationURL == temporaryDirectory.destinationURL)
+    }
+
+    @Test func operationStateTracksRunningItemCount() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createSourceFile(named: "first.txt", contents: "one")
+        let secondItem = try temporaryDirectory.createSourceFile(named: "second.txt", contents: "two")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = SuspendingMoveFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+        leftPane.selectedItems = [firstItem, secondItem]
+
+        let operationTask = Task {
+            await viewModel.moveSelectionToOtherPane()
+        }
+
+        await fileOperationService.waitForMoveToStart()
+
+        #expect(viewModel.operationState.isRunning)
+        #expect(viewModel.operationState.totalItemCount == 2)
+        #expect(viewModel.operationState.completedItemCount == 0)
+        #expect(viewModel.operationState.isCancellable)
+
+        fileOperationService.resumeMove()
+        await operationTask.value
+
+        #expect(viewModel.operationState == .idle)
+        #expect(viewModel.isPerformingOperation == false)
+    }
+
+    @Test func operationStateAdvancesWhenServiceReportsProgress() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createSourceFile(named: "first.txt", contents: "one")
+        let secondItem = try temporaryDirectory.createSourceFile(named: "second.txt", contents: "two")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = SuspendingMoveFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+        leftPane.selectedItems = [firstItem, secondItem]
+
+        let operationTask = Task {
+            await viewModel.moveSelectionToOtherPane()
+        }
+
+        await fileOperationService.waitForMoveToStart()
+        fileOperationService.reportMoveProgress(completedItemCount: 1, totalItemCount: 2)
+        await Task.yield()
+
+        #expect(viewModel.operationState.isRunning)
+        #expect(viewModel.operationState.completedItemCount == 1)
+        #expect(viewModel.operationState.totalItemCount == 2)
+
+        fileOperationService.resumeMove()
+        await operationTask.value
+
+        #expect(viewModel.operationState == .idle)
+    }
+
+    @Test func cancelCurrentOperationCancelsRunningOperationWithoutFileFailure() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "cancel.txt", contents: "stop")
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
+        let fileOperationService = SuspendingMoveFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+        leftPane.selectedItems = [sourceItem]
+
+        let operationTask = Task {
+            await viewModel.moveSelectionToOtherPane()
+        }
+
+        await fileOperationService.waitForMoveToStart()
+        viewModel.cancelCurrentOperation()
+        await operationTask.value
+
+        #expect(viewModel.operationState == .idle)
+        #expect(viewModel.isPerformingOperation == false)
+        #expect(viewModel.operationStatusMessage == "Operation cancelled.")
+        #expect(viewModel.errorMessage == nil)
     }
 
     @Test func pasteIntoPaneCopiesPasteboardFileURLsToTargetPane() async throws {
@@ -692,9 +796,9 @@ private final class PasteboardWorkspaceService: WorkspaceServicing, @unchecked S
         self.fileURLs = fileURLs
     }
 
-    func open(url: URL) {}
+    func open(url: URL) -> Bool { true }
     func appsAvailableToOpen(url: URL) -> [ApplicationOption] { [] }
-    func open(url: URL, withApplication applicationURL: URL) {}
+    func open(url: URL, withApplication applicationURL: URL) async throws {}
     func chooseApplicationAndOpen(url: URL) {}
     func revealInFinder(urls: [URL]) {}
     func share(urls: [URL]) throws {}
@@ -764,8 +868,16 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
     func copy(
         items: [FileItem],
         to destinationDirectory: URL,
-        conflictResolution: FileConflictResolution
+        conflictResolution: FileConflictResolution,
+        progressHandler: FileOperationProgressHandler?
     ) async throws {
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: 0,
+                totalItemCount: items.count
+            )
+        )
+
         queue.sync {
             protectedCopiedItems.append(contentsOf: items)
             protectedCopyDestinationURL = destinationDirectory
@@ -775,13 +887,28 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
         if let error {
             throw error
         }
+
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: items.count,
+                totalItemCount: items.count
+            )
+        )
     }
 
     func move(
         items: [FileItem],
         to destinationDirectory: URL,
-        conflictResolution: FileConflictResolution
+        conflictResolution: FileConflictResolution,
+        progressHandler: FileOperationProgressHandler?
     ) async throws {
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: 0,
+                totalItemCount: items.count
+            )
+        )
+
         queue.sync {
             protectedMovedItems.append(contentsOf: items)
             protectedMoveDestinationURL = destinationDirectory
@@ -791,9 +918,23 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
         if let error {
             throw error
         }
+
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: items.count,
+                totalItemCount: items.count
+            )
+        )
     }
 
-    func trash(items: [FileItem]) async throws {
+    func trash(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: 0,
+                totalItemCount: items.count
+            )
+        )
+
         queue.sync {
             protectedTrashedItems.append(contentsOf: items)
         }
@@ -801,12 +942,33 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
         if let error {
             throw error
         }
+
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: items.count,
+                totalItemCount: items.count
+            )
+        )
     }
 
-    func duplicate(items: [FileItem]) async throws {}
+    func duplicate(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: items.count,
+                totalItemCount: items.count
+            )
+        )
+    }
 
-    func compress(items: [FileItem]) async throws -> URL {
-        URL(filePath: "/archive.zip")
+    func compress(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws -> URL {
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: items.count,
+                totalItemCount: items.count
+            )
+        )
+
+        return URL(filePath: "/archive.zip")
     }
 
     func rename(item: FileItem, to newName: String) async throws -> URL {
@@ -835,9 +997,10 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
     private let lock = NSLock()
     private var didStartMove = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
-    private var resumeMoveContinuation: CheckedContinuation<Void, Never>?
+    private var resumeMoveContinuation: CheckedContinuation<Void, Error>?
     private var protectedMovedItems: [FileItem] = []
     private var protectedMoveDestinationURL: URL?
+    private var protectedMoveProgressHandler: FileOperationProgressHandler?
 
     var movedItems: [FileItem] {
         lock.lock()
@@ -856,33 +1019,54 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
     func copy(
         items: [FileItem],
         to destinationDirectory: URL,
-        conflictResolution: FileConflictResolution
+        conflictResolution: FileConflictResolution,
+        progressHandler: FileOperationProgressHandler?
     ) async throws {}
 
     func move(
         items: [FileItem],
         to destinationDirectory: URL,
-        conflictResolution: FileConflictResolution
+        conflictResolution: FileConflictResolution,
+        progressHandler: FileOperationProgressHandler?
     ) async throws {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            protectedMovedItems = items
-            protectedMoveDestinationURL = destinationDirectory
-            resumeMoveContinuation = continuation
-            didStartMove = true
-            let waiters = startWaiters
-            startWaiters = []
-            lock.unlock()
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: 0,
+                totalItemCount: items.count
+            )
+        )
 
-            waiters.forEach { $0.resume() }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                protectedMovedItems = items
+                protectedMoveDestinationURL = destinationDirectory
+                protectedMoveProgressHandler = progressHandler
+                resumeMoveContinuation = continuation
+                didStartMove = true
+                let waiters = startWaiters
+                startWaiters = []
+                lock.unlock()
+
+                waiters.forEach { $0.resume() }
+            }
+        } onCancel: {
+            resumeMove(throwing: CancellationError())
         }
+
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: items.count,
+                totalItemCount: items.count
+            )
+        )
     }
 
-    func trash(items: [FileItem]) async throws {}
+    func trash(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {}
 
-    func duplicate(items: [FileItem]) async throws {}
+    func duplicate(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {}
 
-    func compress(items: [FileItem]) async throws -> URL {
+    func compress(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws -> URL {
         URL(filePath: "/archive.zip")
     }
 
@@ -921,12 +1105,33 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
     }
 
     func resumeMove() {
+        resumeMove(throwing: nil)
+    }
+
+    func reportMoveProgress(completedItemCount: Int, totalItemCount: Int) {
+        lock.lock()
+        let progressHandler = protectedMoveProgressHandler
+        lock.unlock()
+
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: completedItemCount,
+                totalItemCount: totalItemCount
+            )
+        )
+    }
+
+    private func resumeMove(throwing error: Error?) {
         lock.lock()
         let continuation = resumeMoveContinuation
         resumeMoveContinuation = nil
         lock.unlock()
 
-        continuation?.resume()
+        if let error {
+            continuation?.resume(throwing: error)
+        } else {
+            continuation?.resume()
+        }
     }
 }
 

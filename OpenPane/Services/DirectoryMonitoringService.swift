@@ -59,6 +59,15 @@ nonisolated struct DirectoryMonitoringService: DirectoryMonitorServicing {
     }
 }
 
+nonisolated struct NoopDirectoryMonitoringService: DirectoryMonitorServicing {
+    nonisolated func monitorDirectory(
+        at url: URL,
+        onChange: @escaping @Sendable () -> Void
+    ) -> any DirectoryMonitorToken {
+        NoopDirectoryMonitorToken()
+    }
+}
+
 private final class NoopDirectoryMonitorToken: DirectoryMonitorToken, @unchecked Sendable {
     nonisolated func cancel() {}
 }

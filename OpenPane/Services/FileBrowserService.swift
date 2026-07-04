@@ -37,9 +37,11 @@ nonisolated protocol FileBrowserServicing: Sendable {
 
 nonisolated struct FileBrowserService: FileBrowserServicing {
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
-        try await Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .userInitiated) {
             do {
+                try Task.checkCancellation()
                 try Self.validateDirectory(url)
+                try Task.checkCancellation()
 
                 let fileURLs = try FileManager.default.contentsOfDirectory(
                     at: url,
@@ -47,14 +49,26 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
                     options: []
                 )
 
-                return try fileURLs
-                    .map(FileItem.init)
-                    .filter { item in
-                        includeHiddenFiles || (!item.isHidden && !item.name.hasPrefix("."))
+                var items: [FileItem] = []
+                items.reserveCapacity(fileURLs.count)
+
+                for fileURL in fileURLs {
+                    try Task.checkCancellation()
+                    let item = try FileItem(url: fileURL)
+
+                    guard includeHiddenFiles || (!item.isHidden && !item.name.hasPrefix(".")) else {
+                        continue
                     }
-                    .sorted(by: Self.sortItems)
+
+                    items.append(item)
+                }
+
+                try Task.checkCancellation()
+                return items.sorted(by: Self.sortItems)
             } catch let error as FileBrowserError {
                 throw error
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 if Self.isAccessDeniedError(error) {
                     throw FileBrowserError.accessDenied(url)
@@ -62,7 +76,13 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
 
                 throw FileBrowserError.unreadableDirectory(url, Self.userReadableReason(for: error))
             }
-        }.value
+        }
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private nonisolated static func sortItems(_ lhs: FileItem, _ rhs: FileItem) -> Bool {

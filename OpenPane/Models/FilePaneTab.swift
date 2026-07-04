@@ -12,17 +12,20 @@ struct FilePaneTab: Identifiable, Equatable, Sendable {
     var currentURL: URL
     var items: [FileItem]
     var selectedItems: Set<FileItem>
+    var isDirty: Bool
 
     init(
         id: UUID = UUID(),
         currentURL: URL,
         items: [FileItem] = [],
-        selectedItems: Set<FileItem> = []
+        selectedItems: Set<FileItem> = [],
+        isDirty: Bool = false
     ) {
         self.id = id
         self.currentURL = currentURL
         self.items = items
         self.selectedItems = selectedItems
+        self.isDirty = isDirty
     }
 
     var title: String {

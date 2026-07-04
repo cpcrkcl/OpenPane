@@ -28,34 +28,44 @@ nonisolated struct FileItem: Identifiable, Hashable, Sendable {
     let modifiedDate: Date?
     let typeIdentifier: String?
     let isHidden: Bool
+    let formattedSize: String
+    let formattedModifiedDate: String
+    let kindDescription: String
 
     init(url: URL) throws {
         let resourceValues = try url.resourceValues(forKeys: Self.resourceKeys)
         let isDirectory = resourceValues.isDirectory ?? false
+        let size = isDirectory ? nil : Self.fileSize(from: resourceValues)
+        let typeIdentifier = resourceValues.typeIdentifier
+        let modifiedDate = resourceValues.contentModificationDate
 
         self.id = url
         self.url = url
         self.name = url.openPaneDisplayName
         self.isDirectory = isDirectory
-        self.size = isDirectory ? nil : Self.fileSize(from: resourceValues)
-        self.modifiedDate = resourceValues.contentModificationDate
-        self.typeIdentifier = resourceValues.typeIdentifier
+        self.size = size
+        self.modifiedDate = modifiedDate
+        self.typeIdentifier = typeIdentifier
         self.isHidden = resourceValues.isHidden ?? false
+        self.formattedSize = Self.formattedSize(for: size, isDirectory: isDirectory)
+        self.formattedModifiedDate = Self.formattedModifiedDate(for: modifiedDate)
+        self.kindDescription = Self.kindDescription(for: typeIdentifier, isDirectory: isDirectory)
     }
 
     var displayName: String {
         name
     }
 
-    var formattedSize: String {
-        guard let size else {
+    private static func formattedSize(for size: Int64?, isDirectory: Bool) -> String {
+        guard let size,
+              !isDirectory else {
             return "Folder"
         }
 
         return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
     }
 
-    var formattedModifiedDate: String {
+    private static func formattedModifiedDate(for modifiedDate: Date?) -> String {
         guard let modifiedDate else {
             return ""
         }
@@ -63,7 +73,7 @@ nonisolated struct FileItem: Identifiable, Hashable, Sendable {
         return modifiedDate.formatted(date: .abbreviated, time: .shortened)
     }
 
-    var kindDescription: String {
+    private static func kindDescription(for typeIdentifier: String?, isDirectory: Bool) -> String {
         if let typeIdentifier,
            let type = UTType(typeIdentifier),
            let localizedDescription = type.localizedDescription {

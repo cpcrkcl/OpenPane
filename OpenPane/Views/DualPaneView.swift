@@ -5,6 +5,7 @@
 //  Created by Christopher Rego on 6/4/26.
 //
 
+import Combine
 import SwiftUI
 
 struct DualPaneView: View {
@@ -23,6 +24,8 @@ struct DualPaneView: View {
     @State private var pendingFileDrop: PendingFileDrop?
     @State private var leftPaneWidth: CGFloat?
     @State private var splitDragStartLeftPaneWidth: CGFloat?
+    @State private var isResizingPaneSplit = false
+    @State private var isCommandPalettePresented = false
     @FocusState private var focusedSheetField: SheetField?
 
     private enum ActiveSheet: Identifiable {
@@ -67,21 +70,42 @@ struct DualPaneView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
+        ZStack {
+            VStack(spacing: 0) {
+                toolbar
+                    .padding(12)
+
+                horizontalDivider
+
+                paneSplit
                 .padding(12)
+                .background(CatppuccinMochaTheme.appBackground)
 
-            horizontalDivider
+                horizontalDivider
 
-            paneSplit
-            .padding(12)
-            .background(CatppuccinMochaTheme.appBackground)
+                statusBar
+            }
 
-            horizontalDivider
+            if isCommandPalettePresented {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        isCommandPalettePresented = false
+                    }
 
-            statusBar
+                CommandPaletteView(
+                    commands: commandPaletteCommands,
+                    isPresented: $isCommandPalettePresented
+                )
+                .transition(.scale(scale: 0.98).combined(with: .opacity))
+                .zIndex(1)
+            }
         }
         .background(CatppuccinMochaTheme.windowBackground)
+        .animation(.easeOut(duration: 0.12), value: isCommandPalettePresented)
+        .onReceive(NotificationCenter.default.publisher(for: .openCommandPalette)) { _ in
+            isCommandPalettePresented = true
+        }
         .alert(
             "OpenPane Couldn’t Complete the Operation",
             isPresented: Binding {
@@ -213,8 +237,21 @@ struct DualPaneView: View {
                     .clipped()
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+            .transaction { transaction in
+                if isResizingPaneSplit {
+                    transaction.animation = nil
+                }
+            }
             .onAppear {
-                leftPaneWidth = layout.leftWidth
+                if let fraction = viewModel.splitLeftPaneFraction,
+                   leftPaneWidth == nil {
+                    leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
+                        geometry.size.width * CGFloat(fraction),
+                        totalWidth: geometry.size.width
+                    )
+                } else {
+                    leftPaneWidth = layout.leftWidth
+                }
             }
             .onChange(of: geometry.size.width) { _, newWidth in
                 leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
@@ -224,6 +261,8 @@ struct DualPaneView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dual-pane-split")
     }
 
     @ViewBuilder
@@ -291,6 +330,7 @@ struct DualPaneView: View {
                     .onChanged { value in
                         if splitDragStartLeftPaneWidth == nil {
                             splitDragStartLeftPaneWidth = currentLeftWidth
+                            isResizingPaneSplit = true
                         }
 
                         let proposedLeftWidth = (splitDragStartLeftPaneWidth ?? currentLeftWidth) + value.translation.width
@@ -301,9 +341,22 @@ struct DualPaneView: View {
                     }
                     .onEnded { _ in
                         splitDragStartLeftPaneWidth = nil
+                        isResizingPaneSplit = false
+                        updateSplitFraction(totalWidth: totalWidth)
                     }
             )
             .help("Drag to resize panes")
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("pane-split-divider")
+    }
+
+    private func updateSplitFraction(totalWidth: CGFloat) {
+        guard totalWidth > 0,
+              let leftPaneWidth else {
+            return
+        }
+
+        viewModel.splitLeftPaneFraction = min(max(Double(leftPaneWidth / totalWidth), 0), 1)
     }
 
     private var toolbar: some View {
@@ -341,6 +394,7 @@ struct DualPaneView: View {
             .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .newFolder))
             .disabled(viewModel.isPerformingOperation)
+            .accessibilityIdentifier("toolbar-new-folder-button")
 
             Button {
                 prepareRenameSheet()
@@ -350,6 +404,7 @@ struct DualPaneView: View {
             .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .rename))
             .disabled(viewModel.isPerformingOperation)
+            .accessibilityIdentifier("toolbar-rename-button")
 
             Button {
                 Task {
@@ -361,6 +416,7 @@ struct DualPaneView: View {
             .buttonStyle(ToolbarIconButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .goBack))
             .disabled(!viewModel.activePane.canGoBack)
+            .accessibilityIdentifier("toolbar-back-button")
 
             Button {
                 Task {
@@ -372,6 +428,7 @@ struct DualPaneView: View {
             .buttonStyle(ToolbarIconButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .goForward))
             .disabled(!viewModel.activePane.canGoForward)
+            .accessibilityIdentifier("toolbar-forward-button")
 
             Button {
                 Task {
@@ -382,6 +439,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(ToolbarIconButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .goUp))
+            .accessibilityIdentifier("toolbar-up-button")
 
             Button {
                 Task {
@@ -392,6 +450,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(ToolbarIconButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .refreshActive))
+            .accessibilityIdentifier("toolbar-refresh-active-button")
 
             Button {
                 toggleHiddenFilesInActivePane()
@@ -412,6 +471,7 @@ struct DualPaneView: View {
             .buttonStyle(PrimaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .copyToOtherPane))
             .disabled(viewModel.isPerformingOperation)
+            .accessibilityIdentifier("toolbar-copy-to-other-pane-button")
 
             Button {
                 prepareMoveToOtherPane()
@@ -421,6 +481,7 @@ struct DualPaneView: View {
             .buttonStyle(PrimaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .moveToOtherPane))
             .disabled(viewModel.isPerformingOperation)
+            .accessibilityIdentifier("toolbar-move-to-other-pane-button")
 
             Button {
                 prepareTrashConfirmation()
@@ -470,6 +531,21 @@ struct DualPaneView: View {
                 .lineLimit(1)
                 .foregroundStyle(viewModel.errorMessage == nil ? CatppuccinMochaTheme.secondaryText : CatppuccinMochaTheme.destructive)
 
+            if let operationProgressText {
+                Text(operationProgressText)
+                    .lineLimit(1)
+                    .foregroundStyle(CatppuccinMochaTheme.mutedText)
+            }
+
+            if viewModel.operationState.isRunning,
+               viewModel.operationState.isCancellable {
+                Button("Cancel") {
+                    viewModel.cancelCurrentOperation()
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("operation-cancel-button")
+            }
+
             Spacer()
         }
         .font(.caption)
@@ -477,6 +553,141 @@ struct DualPaneView: View {
         .padding(.vertical, 6)
         .frame(minHeight: 30)
         .background(CatppuccinMochaTheme.toolbarBackground)
+    }
+
+    private var operationProgressText: String? {
+        let state = viewModel.operationState
+
+        guard state.isRunning,
+              state.totalItemCount > 0 else {
+            return nil
+        }
+
+        return "\(state.completedItemCount)/\(state.totalItemCount)"
+    }
+
+    private var commandPaletteCommands: [CommandPaletteCommand] {
+        let selectedItemCount = viewModel.activePane.selectedItems.count
+
+        return [
+            CommandPaletteCommand(
+                id: "new-folder",
+                title: "New Folder",
+                systemImage: "folder.badge.plus"
+            ) {
+                prepareNewFolderSheet()
+            },
+            CommandPaletteCommand(
+                id: "rename",
+                title: "Rename",
+                systemImage: "pencil",
+                disabledReason: selectedItemCount == 1 ? nil : "Select exactly one item"
+            ) {
+                prepareRenameSheet()
+            },
+            CommandPaletteCommand(
+                id: "copy-to-other-pane",
+                title: "Copy to Other Pane",
+                systemImage: "doc.on.doc",
+                disabledReason: selectedItemCount > 0 ? nil : "Select one or more items"
+            ) {
+                prepareCopyToOtherPane()
+            },
+            CommandPaletteCommand(
+                id: "move-to-other-pane",
+                title: "Move to Other Pane",
+                systemImage: "arrow.right.doc.on.clipboard",
+                disabledReason: selectedItemCount > 0 ? nil : "Select one or more items"
+            ) {
+                prepareMoveToOtherPane()
+            },
+            CommandPaletteCommand(
+                id: "refresh-active-pane",
+                title: "Refresh Active Pane",
+                systemImage: "arrow.clockwise"
+            ) {
+                Task {
+                    await viewModel.activePane.refresh()
+                }
+            },
+            CommandPaletteCommand(
+                id: "refresh-both-panes",
+                title: "Refresh Both Panes",
+                systemImage: "arrow.triangle.2.circlepath"
+            ) {
+                Task {
+                    await viewModel.refreshBoth()
+                }
+            },
+            CommandPaletteCommand(
+                id: "toggle-hidden-files",
+                title: viewModel.activePane.includeHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files",
+                systemImage: "eye"
+            ) {
+                toggleHiddenFilesInActivePane()
+            },
+            CommandPaletteCommand(
+                id: "go-up",
+                title: "Go Up",
+                systemImage: "arrow.up"
+            ) {
+                Task {
+                    await viewModel.activePane.goUp()
+                }
+            },
+            CommandPaletteCommand(
+                id: "back",
+                title: "Back",
+                systemImage: "chevron.left",
+                disabledReason: viewModel.activePane.canGoBack ? nil : "No back history"
+            ) {
+                Task {
+                    await viewModel.goBackInActivePane()
+                }
+            },
+            CommandPaletteCommand(
+                id: "forward",
+                title: "Forward",
+                systemImage: "chevron.right",
+                disabledReason: viewModel.activePane.canGoForward ? nil : "No forward history"
+            ) {
+                Task {
+                    await viewModel.goForwardInActivePane()
+                }
+            },
+            CommandPaletteCommand(
+                id: "new-tab",
+                title: "New Tab",
+                systemImage: "plus.square"
+            ) {
+                Task {
+                    await viewModel.activePane.newTab()
+                }
+            },
+            CommandPaletteCommand(
+                id: "close-tab",
+                title: "Close Tab",
+                systemImage: "xmark.square",
+                disabledReason: viewModel.activePane.tabs.count > 1 ? nil : "Each pane needs one tab"
+            ) {
+                Task {
+                    await viewModel.activePane.closeTab(viewModel.activePane.activeTabID)
+                }
+            },
+            CommandPaletteCommand(
+                id: "switch-active-pane",
+                title: "Switch Active Pane",
+                systemImage: "rectangle.2.swap"
+            ) {
+                viewModel.setActivePane(viewModel.activePaneSide == .left ? .right : .left)
+            },
+            CommandPaletteCommand(
+                id: "show-mounted-volumes",
+                title: "Show Mounted Volumes",
+                systemImage: "externaldrive",
+                disabledReason: "Use the Volumes section in the sidebar"
+            ) {}
+        ]
     }
 
     private var trashConfirmationMessage: String {
@@ -968,14 +1179,16 @@ struct DualPaneView: View {
             return false
         }
 
-        let inactivePaneNames = Set(viewModel.inactivePane.items.map(\.name))
-        return selectedItems.contains { inactivePaneNames.contains($0.name) }
+        return FileOperationService.hasPotentialTransferConflict(
+            items: Array(selectedItems),
+            to: viewModel.inactivePane.currentURL
+        )
     }
 
     private func hasPotentialConflict(in pendingFileDrop: PendingFileDrop) -> Bool {
-        pendingFileDrop.fileURLs.contains { fileURL in
-            let destinationURL = pendingFileDrop.targetDirectory.appendingPathComponent(fileURL.lastPathComponent)
-            return FileManager.default.fileExists(atPath: destinationURL.path)
-        }
+        FileOperationService.hasPotentialTransferConflict(
+            fileURLs: pendingFileDrop.fileURLs,
+            to: pendingFileDrop.targetDirectory
+        )
     }
 }

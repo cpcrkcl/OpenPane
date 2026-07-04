@@ -26,11 +26,16 @@ final class FileIconService: FileIconServicing {
             return cachedIcon
         }
 
-        let icon = NSWorkspace.shared.icon(forFile: item.url.path)
-        icon.size = NSSize(width: 16, height: 16)
+        let icon = resizedCopy(of: NSWorkspace.shared.icon(forFile: item.url.path))
         cachedIconsByKey[key] = icon
 
         return icon
+    }
+
+    private func resizedCopy(of image: NSImage) -> NSImage {
+        let copiedImage = (image.copy() as? NSImage) ?? image
+        copiedImage.size = NSSize(width: 16, height: 16)
+        return copiedImage
     }
 
     private func cacheKey(for item: FileItem) -> String {

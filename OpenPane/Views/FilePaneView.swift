@@ -92,8 +92,6 @@ struct FilePaneView: View {
     @State private var infoItem: FileItem?
     @State private var isShowingViewOptions = false
 
-    private let fileIconService = FileIconService.shared
-
     private enum PaneContentState {
         case loading
         case error(String)
@@ -117,11 +115,11 @@ struct FilePaneView: View {
         }
 
         if let errorMessage = viewModel.errorMessage,
-           viewModel.filteredItems.isEmpty {
+           viewModel.visibleItems.isEmpty {
             return .error(errorMessage)
         }
 
-        guard viewModel.filteredItems.isEmpty else {
+        guard viewModel.visibleItems.isEmpty else {
             return nil
         }
 
@@ -138,12 +136,34 @@ struct FilePaneView: View {
 
     private var shouldShowErrorBanner: Bool {
         viewModel.errorMessage != nil &&
-            !viewModel.filteredItems.isEmpty &&
+            !viewModel.visibleItems.isEmpty &&
             !viewModel.isLoading
     }
 
     private var isAnyTabDropTargeted: Bool {
         isTabAppendDropTargeted || targetedTabID != nil
+    }
+
+    private var paneAccessibilityIdentifier: String {
+        switch paneSide {
+        case .left:
+            return "left-file-pane"
+        case .right:
+            return "right-file-pane"
+        case nil:
+            return "file-pane"
+        }
+    }
+
+    private var fileListAccessibilityIdentifier: String {
+        switch paneSide {
+        case .left:
+            return "left-file-list"
+        case .right:
+            return "right-file-list"
+        case nil:
+            return "file-list"
+        }
     }
 
     var body: some View {
@@ -213,6 +233,8 @@ struct FilePaneView: View {
                     lineWidth: isActive ? CatppuccinMochaTheme.paneBorderWidth : CatppuccinMochaTheme.hairlineBorderWidth
                 )
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(paneAccessibilityIdentifier)
         .sheet(item: $infoItem) { item in
             FileInfoView(
                 item: item,
@@ -738,10 +760,10 @@ struct FilePaneView: View {
 
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(viewModel.filteredItems) { item in
+                        ForEach(viewModel.visibleItems) { item in
                             FilePaneRowView(
                                 item: item,
-                                icon: fileIconService.icon(for: item),
+                                calculatedSizeText: viewModel.calculatedFolderSizeText(for: item),
                                 columnVisibility: columnVisibility,
                                 isSelected: viewModel.selectedItems.contains(item),
                                 isPaneActive: isActive,
@@ -762,9 +784,13 @@ struct FilePaneView: View {
                                         await viewModel.open(item)
                                     }
                                 },
-                                applicationOptions: viewModel.applicationsAvailableToOpen(item),
+                                applicationOptions: {
+                                    viewModel.applicationsAvailableToOpen(item)
+                                },
                                 onOpenWithApplication: { applicationURL in
-                                    viewModel.open(item, withApplication: applicationURL)
+                                    Task {
+                                        await viewModel.open(item, withApplication: applicationURL)
+                                    }
                                 },
                                 onChooseApplication: {
                                     viewModel.chooseApplicationToOpen(item)
@@ -778,6 +804,9 @@ struct FilePaneView: View {
                                 },
                                 onGetInfo: {
                                     infoItem = item
+                                },
+                                onCalculateFolderSize: {
+                                    viewModel.calculateFolderSizeForContextMenu(clickedItem: item)
                                 },
                                 onRename: onRenameSelected,
                                 onTrash: onTrashSelected,
@@ -808,7 +837,9 @@ struct FilePaneView: View {
                                         targetedFolderDropID = nil
                                     }
                                 },
-                                compressItemCount: viewModel.contextMenuTargetItems(clickedItem: item).count
+                                compressItemCount: {
+                                    viewModel.contextMenuTargetItems(clickedItem: item).count
+                                }
                             )
                         }
                     }
@@ -865,6 +896,8 @@ struct FilePaneView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CatppuccinMochaTheme.base)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(fileListAccessibilityIdentifier)
     }
 
     private func fileListHeader(columnVisibility: FilePaneColumnVisibility) -> some View {
@@ -1156,11 +1189,15 @@ struct FilePaneView: View {
         var seenURLs: Set<URL> = []
 
         return urls.filter { url in
-            guard !seenURLs.contains(url) else {
+            let identityURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+
+            guard !seenURLs.contains(identityURL) else {
                 return false
             }
 
-            seenURLs.insert(url)
+            seenURLs.insert(identityURL)
             return true
         }
     }
@@ -1191,7 +1228,7 @@ struct FilePaneView: View {
 
 private struct FilePaneRowView: View {
     let item: FileItem
-    let icon: NSImage
+    let calculatedSizeText: String?
     let columnVisibility: FilePaneColumnVisibility
     let isSelected: Bool
     let isPaneActive: Bool
@@ -1201,12 +1238,13 @@ private struct FilePaneRowView: View {
     let onDragItems: () -> [FileItem]
     let onContextSelect: () -> Void
     let onOpen: () -> Void
-    let applicationOptions: [ApplicationOption]
+    let applicationOptions: () -> [ApplicationOption]
     let onOpenWithApplication: (URL) -> Void
     let onChooseApplication: () -> Void
     let onShare: () -> Void
     let onCopyItems: () -> Void
     let onGetInfo: () -> Void
+    let onCalculateFolderSize: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
     let onDuplicate: () -> Void
@@ -1216,7 +1254,7 @@ private struct FilePaneRowView: View {
     let onCopyText: (FileItemCopyTextFormat) -> Void
     let onDropFiles: ([NSItemProvider], URL) -> Bool
     let onFileDropTargetedChange: (Bool) -> Void
-    let compressItemCount: Int
+    let compressItemCount: () -> Int
 
     @State private var isHovered = false
     @State private var isFileDropTargeted = false
@@ -1305,11 +1343,7 @@ private struct FilePaneRowView: View {
     var body: some View {
         HStack(spacing: FilePaneListMetrics.columnSpacing) {
             HStack(spacing: 8) {
-                Image(nsImage: icon)
-                    .resizable()
-                    .frame(width: 17, height: 17)
-                    .opacity(item.isDirectory ? 1 : 0.92)
-                    .layoutPriority(1)
+                FileIconImage(item: item)
 
                 Text(item.displayName)
                     .font(.system(size: 13, weight: item.isDirectory ? .medium : .regular))
@@ -1323,7 +1357,7 @@ private struct FilePaneRowView: View {
             .clipped()
 
             if columnVisibility.showsSize {
-                Text(item.formattedSize)
+                Text(calculatedSizeText ?? item.formattedSize)
                     .lineLimit(1)
                     .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
             }
@@ -1428,6 +1462,7 @@ private struct FilePaneRowView: View {
                 onShare: onShare,
                 onCopyItems: onCopyItems,
                 onGetInfo: onGetInfo,
+                onCalculateFolderSize: onCalculateFolderSize,
                 onRename: onRename,
                 onTrash: onTrash,
                 onDuplicate: onDuplicate,
@@ -1511,17 +1546,45 @@ private struct FilePaneRowView: View {
     }
 }
 
+private struct FileIconImage: View {
+    let item: FileItem
+
+    @State private var icon: NSImage?
+
+    var body: some View {
+        Group {
+            if let icon {
+                Image(nsImage: icon)
+                    .resizable()
+            } else {
+                Image(systemName: item.isDirectory ? "folder.fill" : "doc")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(item.isDirectory ? CatppuccinMochaTheme.lavender : CatppuccinMochaTheme.mutedText)
+            }
+        }
+        .frame(width: 17, height: 17)
+        .opacity(item.isDirectory ? 1 : 0.92)
+        .layoutPriority(1)
+        .task(id: item.id) {
+            icon = nil
+            icon = FileIconService.shared.icon(for: item)
+        }
+    }
+}
+
 private struct FileItemContextMenu: View {
     let item: FileItem
     let isPaneActive: Bool
     let onPrepare: () -> Void
     let onOpen: () -> Void
-    let applicationOptions: [ApplicationOption]
+    let applicationOptions: () -> [ApplicationOption]
     let onOpenWithApplication: (URL) -> Void
     let onChooseApplication: () -> Void
     let onShare: () -> Void
     let onCopyItems: () -> Void
     let onGetInfo: () -> Void
+    let onCalculateFolderSize: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
     let onDuplicate: () -> Void
@@ -1529,7 +1592,7 @@ private struct FileItemContextMenu: View {
     let onPreview: () -> Void
     let onReveal: () -> Void
     let onCopyText: (FileItemCopyTextFormat) -> Void
-    let compressItemCount: Int
+    let compressItemCount: () -> Int
 
     var body: some View {
         Button {
@@ -1540,34 +1603,13 @@ private struct FileItemContextMenu: View {
         }
 
         Menu {
-            Button {
-                onPrepare()
-                onOpen()
-            } label: {
-                Label("Default", systemImage: "app")
-            }
-
-            if !applicationOptions.isEmpty {
-                Divider()
-
-                ForEach(applicationOptions) { application in
-                    Button {
-                        onPrepare()
-                        onOpenWithApplication(application.url)
-                    } label: {
-                        ApplicationOptionLabel(application: application)
-                    }
-                }
-            }
-
-            Divider()
-
-            Button {
-                onPrepare()
-                onChooseApplication()
-            } label: {
-                Label("Choose Application...", systemImage: "ellipsis.circle")
-            }
+            OpenWithMenuContent(
+                applicationOptions: applicationOptions,
+                onPrepare: onPrepare,
+                onOpen: onOpen,
+                onOpenWithApplication: onOpenWithApplication,
+                onChooseApplication: onChooseApplication
+            )
         } label: {
             Label("Open With", systemImage: "app.badge")
         }
@@ -1588,6 +1630,15 @@ private struct FileItemContextMenu: View {
             onGetInfo()
         } label: {
             Label("Get Info", systemImage: "info.circle")
+        }
+
+        if item.isDirectory {
+            Button {
+                onPrepare()
+                onCalculateFolderSize()
+            } label: {
+                Label("Calculate Folder Size", systemImage: "sum")
+            }
         }
 
         Button {
@@ -1669,11 +1720,54 @@ private struct FileItemContextMenu: View {
     }
 
     private var compressTitle: String {
+        let compressItemCount = compressItemCount()
+
         if compressItemCount > 1 {
             return "Compress \(compressItemCount) Items"
         }
 
         return "Compress \"\(item.displayName)\""
+    }
+}
+
+private struct OpenWithMenuContent: View {
+    let applicationOptions: () -> [ApplicationOption]
+    let onPrepare: () -> Void
+    let onOpen: () -> Void
+    let onOpenWithApplication: (URL) -> Void
+    let onChooseApplication: () -> Void
+
+    var body: some View {
+        let options = applicationOptions()
+
+        Button {
+            onPrepare()
+            onOpen()
+        } label: {
+            Label("Default", systemImage: "app")
+        }
+
+        if !options.isEmpty {
+            Divider()
+
+            ForEach(options) { application in
+                Button {
+                    onPrepare()
+                    onOpenWithApplication(application.url)
+                } label: {
+                    ApplicationOptionLabel(application: application)
+                }
+            }
+        }
+
+        Divider()
+
+        Button {
+            onPrepare()
+            onChooseApplication()
+        } label: {
+            Label("Choose Application...", systemImage: "ellipsis.circle")
+        }
     }
 }
 

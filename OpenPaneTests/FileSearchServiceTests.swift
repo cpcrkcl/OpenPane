@@ -24,7 +24,7 @@ struct FileSearchServiceTests {
             limit: 500
         )
 
-        #expect(Set(results.map(\.url)) == Set([nestedFile.url, rootFile.url]))
+        #expect(Set(results.map { canonicalFileURL($0.url) }) == Set([nestedFile.url, rootFile.url].map(canonicalFileURL)))
     }
 
     @Test func searchExcludesHiddenFilesWhenRequested() async throws {
@@ -39,7 +39,7 @@ struct FileSearchServiceTests {
             limit: 500
         )
 
-        #expect(results.map(\.url) == [visibleFile.url])
+        #expect(results.map { canonicalFileURL($0.url) } == [canonicalFileURL(visibleFile.url)])
     }
 
     @Test func searchIncludesHiddenFilesWhenRequested() async throws {
@@ -54,7 +54,7 @@ struct FileSearchServiceTests {
             limit: 500
         )
 
-        #expect(Set(results.map(\.url)) == Set([hiddenFile.url, visibleFile.url]))
+        #expect(Set(results.map { canonicalFileURL($0.url) }) == Set([hiddenFile.url, visibleFile.url].map(canonicalFileURL)))
     }
 
     @Test func searchRespectsLimit() async throws {
@@ -107,7 +107,42 @@ struct FileSearchServiceTests {
             limit: 500
         )
 
-        #expect(results.map(\.url).contains(visibleFile.url))
+        #expect(results.map { canonicalFileURL($0.url) }.contains(canonicalFileURL(visibleFile.url)))
+    }
+
+    @Test func searchReturnsEmptyResultsForBlankQuery() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        _ = try temporaryDirectory.createFile(named: "project-plan.txt", contents: "plan")
+
+        let results = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "   ",
+            includeHiddenFiles: false,
+            limit: 500
+        )
+
+        #expect(results.isEmpty)
+    }
+
+    @Test func searchReturnsEmptyResultsForNonPositiveLimit() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        _ = try temporaryDirectory.createFile(named: "project-plan.txt", contents: "plan")
+
+        let zeroResults = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "project",
+            includeHiddenFiles: false,
+            limit: 0
+        )
+        let negativeResults = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "project",
+            includeHiddenFiles: false,
+            limit: -1
+        )
+
+        #expect(zeroResults.isEmpty)
+        #expect(negativeResults.isEmpty)
     }
 
     @Test func searchMissingRootThrowsFileBrowserError() async {
@@ -146,6 +181,10 @@ struct FileSearchServiceTests {
             _ = try await task.value
         }
     }
+}
+
+private func canonicalFileURL(_ url: URL) -> URL {
+    url.resolvingSymlinksInPath().standardizedFileURL
 }
 
 private struct SearchTestTemporaryDirectory {

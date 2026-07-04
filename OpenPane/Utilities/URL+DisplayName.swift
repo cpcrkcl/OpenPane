@@ -11,4 +11,15 @@ extension URL {
     nonisolated var openPaneDisplayName: String {
         lastPathComponent.isEmpty ? path : lastPathComponent
     }
+
+    nonisolated func isDescendant(of ancestorURL: URL) -> Bool {
+        let pathComponents = standardizedFileURL.pathComponents
+        let ancestorComponents = ancestorURL.standardizedFileURL.pathComponents
+
+        guard pathComponents.count > ancestorComponents.count else {
+            return false
+        }
+
+        return pathComponents.starts(with: ancestorComponents)
+    }
 }
