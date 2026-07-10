@@ -723,6 +723,84 @@ struct FilePaneViewModelTests {
         #expect(viewModel.forwardStack.isEmpty)
     }
 
+    @Test func latestDirectoryRequestWinsWhileEarlierLoadIsSlow() async throws {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let slowURL = URL(filePath: "/root/slow", directoryHint: .isDirectory)
+        let latestURL = URL(filePath: "/root/latest", directoryHint: .isDirectory)
+        let latestItem = try PaneTestTemporaryDirectory().createFileItem(named: "latest.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: DelayedMockFileBrowserService(
+                itemsByURL: [latestURL: [latestItem]],
+                delayNanosecondsByURL: [slowURL: 300_000_000]
+            )
+        )
+
+        let slowNavigation = Task { @MainActor in
+            await viewModel.setDirectory(slowURL)
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        await viewModel.setDirectory(latestURL)
+        await slowNavigation.value
+
+        #expect(viewModel.currentURL == latestURL)
+        #expect(viewModel.items == [latestItem])
+        #expect(viewModel.backStack == [rootURL])
+        #expect(viewModel.forwardStack.isEmpty)
+        #expect(viewModel.isLoading == false)
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func backNavigationCancelsPendingFolderLoadAndWins() async throws {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let currentURL = URL(filePath: "/root/current", directoryHint: .isDirectory)
+        let slowURL = URL(filePath: "/root/current/slow", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: DelayedMockFileBrowserService(
+                delayNanosecondsByURL: [slowURL: 300_000_000]
+            )
+        )
+        await viewModel.setDirectory(currentURL)
+
+        let slowNavigation = Task { @MainActor in
+            await viewModel.setDirectory(slowURL)
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        await viewModel.goBack()
+        await slowNavigation.value
+
+        #expect(viewModel.currentURL == rootURL)
+        #expect(viewModel.backStack.isEmpty)
+        #expect(viewModel.forwardStack == [currentURL])
+        #expect(viewModel.isLoading == false)
+    }
+
+    @Test func latestNavigationFailureIsReportedAndStaleSuccessIsDiscarded() async throws {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let slowURL = URL(filePath: "/root/slow", directoryHint: .isDirectory)
+        let missingURL = URL(filePath: "/root/missing", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: DelayedMockFileBrowserService(
+                errorByURL: [missingURL: FileBrowserError.directoryNotFound(missingURL)],
+                delayNanosecondsByURL: [slowURL: 300_000_000]
+            )
+        )
+
+        let slowNavigation = Task { @MainActor in
+            await viewModel.setDirectory(slowURL)
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        await viewModel.setDirectory(missingURL)
+        await slowNavigation.value
+
+        #expect(viewModel.currentURL == rootURL)
+        #expect(viewModel.backStack.isEmpty)
+        #expect(viewModel.errorMessage == "missing could not be found.")
+        #expect(viewModel.isLoading == false)
+    }
+
     @Test func refreshDoesNotChangeNavigationHistory() async {
         let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
         let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)

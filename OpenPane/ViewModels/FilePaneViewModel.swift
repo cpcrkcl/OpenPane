@@ -146,6 +146,8 @@ final class FilePaneViewModel: ObservableObject {
     private let directoryRefreshDebounceNanoseconds: UInt64
     private var directoryMonitorToken: (any DirectoryMonitorToken)?
     private var directoryMonitorRefreshTask: Task<Void, Never>?
+    private var directoryLoadTask: Task<[FileItem], Error>?
+    private var recursiveSearchTask: Task<[FileItem], Error>?
     private var folderSizeTasksByURL: [URL: Task<Void, Never>] = [:]
     private var hasPendingDirectoryMonitorRefresh = false
     private var requestGeneration = 0
@@ -224,15 +226,12 @@ final class FilePaneViewModel: ObservableObject {
     deinit {
         directoryMonitorToken?.cancel()
         directoryMonitorRefreshTask?.cancel()
+        directoryLoadTask?.cancel()
+        recursiveSearchTask?.cancel()
         folderSizeTasksByURL.values.forEach { $0.cancel() }
     }
 
     func loadCurrentDirectory() async {
-        guard !isLoading else {
-            hasPendingDirectoryMonitorRefresh = true
-            return
-        }
-
         let requestURL = currentURL
         let requestTabID = activeTabID
         let generation = nextRequestGeneration()
@@ -242,15 +241,15 @@ final class FilePaneViewModel: ObservableObject {
         errorMessage = nil
         clearRecursiveSearch(clearSelection: false, invalidateRequests: false)
         defer {
-            isLoading = false
-            schedulePendingDirectoryMonitorRefreshIfNeeded()
+            if generation == requestGeneration {
+                directoryLoadTask = nil
+                isLoading = false
+                schedulePendingDirectoryMonitorRefreshIfNeeded()
+            }
         }
 
         do {
-            let loadedItems = try await fileBrowserService.contentsOfDirectory(
-                at: requestURL,
-                includeHiddenFiles: includeHiddenFiles
-            )
+            let loadedItems = try await loadDirectoryItems(at: requestURL)
             guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
                 return
             }
@@ -258,6 +257,8 @@ final class FilePaneViewModel: ObservableObject {
             items = loadedItems
             selectedItems = Set(loadedItems.filter { selectedURLs.contains($0.url.standardizedFileURL) })
             setActiveTabDirty(false)
+        } catch is CancellationError {
+            return
         } catch {
             guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
                 return
@@ -387,16 +388,29 @@ final class FilePaneViewModel: ObservableObject {
         errorMessage = nil
         selectedItems = []
         defer {
-            isLoading = false
+            if generation == requestGeneration {
+                recursiveSearchTask = nil
+                isLoading = false
+            }
         }
 
         do {
-            let searchResults = try await fileSearchService.search(
-                root: requestURL,
-                query: trimmedSearchText,
-                includeHiddenFiles: includeHiddenFiles,
-                limit: limit
-            )
+            let fileSearchService = fileSearchService
+            let includeHiddenFiles = includeHiddenFiles
+            let task = Task {
+                try await fileSearchService.search(
+                    root: requestURL,
+                    query: trimmedSearchText,
+                    includeHiddenFiles: includeHiddenFiles,
+                    limit: limit
+                )
+            }
+            recursiveSearchTask = task
+            let searchResults = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
 
             guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL),
                   searchText.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedSearchText else {
@@ -405,6 +419,8 @@ final class FilePaneViewModel: ObservableObject {
 
             recursiveSearchResults = searchResults
             isShowingRecursiveSearchResults = true
+        } catch is CancellationError {
+            return
         } catch {
             guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
                 return
@@ -457,8 +473,10 @@ final class FilePaneViewModel: ObservableObject {
 
     func itemsForDrag(startingFrom item: FileItem) -> [FileItem] {
         if selectedItems.contains(item) {
-            updateFileListSelection { selection, entries in
-                selection.focus(item.id, in: entries)
+            if visibleItems.contains(item) {
+                updateFileListSelection { selection, entries in
+                    selection.focus(item.id, in: entries)
+                }
             }
             let orderedItems = orderedSelectedItems
             if !orderedItems.isEmpty {
@@ -872,29 +890,28 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private func itemsForNavigation(to url: URL) async -> [FileItem]? {
-        guard !isLoading else {
-            return nil
-        }
-
         let requestTabID = activeTabID
         let generation = nextRequestGeneration()
         isLoading = true
         errorMessage = nil
         defer {
-            isLoading = false
+            if generation == requestGeneration {
+                directoryLoadTask = nil
+                isLoading = false
+                schedulePendingDirectoryMonitorRefreshIfNeeded()
+            }
         }
 
         do {
-            let loadedItems = try await fileBrowserService.contentsOfDirectory(
-                at: url,
-                includeHiddenFiles: includeHiddenFiles
-            )
+            let loadedItems = try await loadDirectoryItems(at: url)
             guard generation == requestGeneration,
                   activeTabID == requestTabID else {
                 return nil
             }
 
             return loadedItems
+        } catch is CancellationError {
+            return nil
         } catch {
             guard generation == requestGeneration,
                   activeTabID == requestTabID else {
@@ -907,12 +924,31 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private func applyNavigation(to url: URL, items newItems: [FileItem]) {
+        fileListSelection.clear()
         currentURL = url
         items = newItems
         selectedItems = []
         setActiveTabDirty(false)
-        clearRecursiveSearch(clearSelection: false)
+        clearRecursiveSearch(clearSelection: false, invalidateRequests: false)
         restartDirectoryMonitor()
+    }
+
+    private func loadDirectoryItems(at url: URL) async throws -> [FileItem] {
+        let fileBrowserService = fileBrowserService
+        let includeHiddenFiles = includeHiddenFiles
+        let task = Task {
+            try await fileBrowserService.contentsOfDirectory(
+                at: url,
+                includeHiddenFiles: includeHiddenFiles
+            )
+        }
+        directoryLoadTask = task
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func recomputeVisibleItems() {
@@ -1131,12 +1167,19 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private func nextRequestGeneration() -> Int {
+        directoryLoadTask?.cancel()
+        recursiveSearchTask?.cancel()
         requestGeneration += 1
         return requestGeneration
     }
 
     private func invalidatePendingRequests() {
+        directoryLoadTask?.cancel()
+        recursiveSearchTask?.cancel()
+        directoryLoadTask = nil
+        recursiveSearchTask = nil
         requestGeneration += 1
+        isLoading = false
     }
 
     private func isCurrentRequest(_ generation: Int, tabID: FilePaneTab.ID, url: URL) -> Bool {
