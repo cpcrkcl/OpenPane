@@ -12,8 +12,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var commandPaletteMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
         NSApp.appearance = NSAppearance(named: .darkAqua)
         installCommandPaletteMonitor()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        bringApplicationWindowForwardIfNeeded()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        bringApplicationWindowForwardIfNeeded()
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -37,6 +47,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             NotificationCenter.default.post(name: .openCommandPalette, object: nil)
         }
+    }
+
+    private func bringApplicationWindowForwardIfNeeded() {
+        NSApp.unhide(nil)
+
+        guard let window = NSApp.windows.first(where: { window in
+            window.canBecomeKey &&
+                window.level == .normal
+        }) else {
+            return
+        }
+
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     private static func isCommandPaletteShortcut(_ event: NSEvent) -> Bool {
@@ -67,6 +95,10 @@ struct OpenPaneApp: App {
                     NotificationCenter.default.post(name: .openCommandPalette, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: .command)
+
+                Button("Switch Active Pane") {
+                    NotificationCenter.default.post(name: .switchActivePane, object: nil)
+                }
             }
         }
 

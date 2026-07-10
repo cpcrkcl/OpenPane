@@ -1162,8 +1162,12 @@ struct FilePaneViewModelTests {
         fileBrowserService.setItems([initialItem, addedItem], for: temporaryDirectory.url)
 
         directoryMonitorService.emitChange(for: temporaryDirectory.url)
-        try await Task.sleep(nanoseconds: 80_000_000)
+        let didRefresh = try await waitUntil {
+            viewModel.items == [initialItem, addedItem]
+                && fileBrowserService.loadCount(for: temporaryDirectory.url) == 2
+        }
 
+        #expect(didRefresh)
         #expect(viewModel.items == [initialItem, addedItem])
         #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
     }
@@ -1188,8 +1192,12 @@ struct FilePaneViewModelTests {
         directoryMonitorService.emitChange(for: temporaryDirectory.url)
         directoryMonitorService.emitChange(for: temporaryDirectory.url)
         directoryMonitorService.emitChange(for: temporaryDirectory.url)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        let didRefresh = try await waitUntil {
+            viewModel.items == [initialItem, addedItem]
+                && fileBrowserService.loadCount(for: temporaryDirectory.url) == 2
+        }
 
+        #expect(didRefresh)
         #expect(viewModel.items == [initialItem, addedItem])
         #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
     }
@@ -1257,12 +1265,38 @@ struct FilePaneViewModelTests {
         fileBrowserService.setError(FileBrowserError.directoryNotFound(temporaryDirectory.url), for: temporaryDirectory.url)
 
         directoryMonitorService.emitChange(for: temporaryDirectory.url)
-        try await Task.sleep(nanoseconds: 80_000_000)
+        let didRefresh = try await waitUntil {
+            viewModel.items.isEmpty
+                && viewModel.selectedItems.isEmpty
+                && viewModel.errorMessage == "\(temporaryDirectory.url.openPaneDisplayName) could not be found."
+        }
 
+        #expect(didRefresh)
         #expect(viewModel.items.isEmpty)
         #expect(viewModel.selectedItems.isEmpty)
         #expect(viewModel.errorMessage == "\(temporaryDirectory.url.openPaneDisplayName) could not be found.")
     }
+}
+
+@MainActor
+private func waitUntil(
+    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    intervalNanoseconds: UInt64 = 10_000_000,
+    condition: () -> Bool
+) async throws -> Bool {
+    var remainingNanoseconds = timeoutNanoseconds
+
+    while !condition() {
+        guard remainingNanoseconds > 0 else {
+            return false
+        }
+
+        let sleepNanoseconds = min(intervalNanoseconds, remainingNanoseconds)
+        try await Task.sleep(nanoseconds: sleepNanoseconds)
+        remainingNanoseconds -= sleepNanoseconds
+    }
+
+    return true
 }
 
 @MainActor

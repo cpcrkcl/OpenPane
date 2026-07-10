@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 private enum FilePaneListMetrics {
     static let contentPadding: CGFloat = 6
     static let rowHorizontalPadding: CGFloat = 8
+    static let rowHeight: CGFloat = 31
     static let headerHorizontalPadding = contentPadding + rowHorizontalPadding
     static let columnSpacing: CGFloat = 18
     static let sizeColumnWidth: CGFloat = 92
@@ -56,9 +57,34 @@ private let fileDropTypeIdentifiers = [
     fileNamesPasteboardTypeIdentifier
 ].uniqued()
 
-private struct FileDrop {
+private nonisolated struct FileDrop: Sendable {
     let sourcePaneSide: PaneSide?
     let fileURLs: [URL]
+}
+
+private nonisolated final class FileDropAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fileURLs: [URL] = []
+    private var sourcePaneSide: PaneSide?
+
+    func append(_ payload: FileDragPayload) {
+        lock.withLock {
+            sourcePaneSide = sourcePaneSide ?? payload.sourcePaneSide
+            fileURLs.append(contentsOf: payload.fileURLs)
+        }
+    }
+
+    func append(fileURLs newFileURLs: [URL]) {
+        lock.withLock {
+            fileURLs.append(contentsOf: newFileURLs)
+        }
+    }
+
+    func snapshot() -> FileDrop {
+        lock.withLock {
+            FileDrop(sourcePaneSide: sourcePaneSide, fileURLs: fileURLs)
+        }
+    }
 }
 
 private enum FileDropVisualState {
@@ -74,7 +100,7 @@ struct FilePaneView: View {
     var paneSide: PaneSide?
     var isPerformingOperation = false
     var onActivate: () -> Void = {}
-    var onMoveTab: (FilePaneTab.ID, PaneSide, PaneSide, Int?) -> Void = { _, _, _, _ in }
+    var onMoveTab: @MainActor @Sendable (FilePaneTab.ID, PaneSide, PaneSide, Int?) -> Void = { _, _, _, _ in }
     var onRenameSelected: () -> Void = {}
     var onTrashSelected: () -> Void = {}
     var onDuplicate: (FileItem) -> Void = { _ in }
@@ -215,12 +241,6 @@ struct FilePaneView: View {
         .task {
             await viewModel.loadCurrentDirectory()
         }
-        .contentShape(Rectangle())
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                onActivate()
-            }
-        )
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(isActive ? CatppuccinMochaTheme.accentSecondary : Color.clear)
@@ -233,8 +253,12 @@ struct FilePaneView: View {
                     lineWidth: isActive ? CatppuccinMochaTheme.paneBorderWidth : CatppuccinMochaTheme.hairlineBorderWidth
                 )
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(paneAccessibilityIdentifier)
+        .modifier(
+            FilePaneActivationModifier(
+                accessibilityIdentifier: paneAccessibilityIdentifier,
+                onActivate: onActivate
+            )
+        )
         .sheet(item: $infoItem) { item in
             FileInfoView(
                 item: item,
@@ -841,6 +865,7 @@ struct FilePaneView: View {
                                     viewModel.contextMenuTargetItems(clickedItem: item).count
                                 }
                             )
+                            .equatable()
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1079,11 +1104,12 @@ struct FilePaneView: View {
         }
     }
 
-    private func loadDroppedFiles(from providers: [NSItemProvider], completion: @escaping (FileDrop) -> Void) {
+    private func loadDroppedFiles(
+        from providers: [NSItemProvider],
+        completion: @escaping @MainActor @Sendable (FileDrop) -> Void
+    ) {
         let group = DispatchGroup()
-        let lock = NSLock()
-        var fileURLs: [URL] = []
-        var sourcePaneSide: PaneSide?
+        let accumulator = FileDropAccumulator()
 
         for provider in providers where canLoadFileDropProvider(provider) {
             group.enter()
@@ -1092,21 +1118,16 @@ struct FilePaneView: View {
                 provider.loadDataRepresentation(forTypeIdentifier: FileDragPayload.typeIdentifier) { data, _ in
                     if let data,
                        let payload = FileDragPayload.decoded(from: data) {
-                        lock.withLock {
-                            sourcePaneSide = sourcePaneSide ?? payload.sourcePaneSide
-                            fileURLs.append(contentsOf: payload.fileURLs)
-                        }
+                        accumulator.append(payload)
                     }
                     group.leave()
                 }
             } else if let typeIdentifier = externalFileTypeIdentifier(for: provider) {
                 provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { item, _ in
-                    let loadedFileURLs = decodedFileURLs(from: item)
+                    let loadedFileURLs = Self.decodedFileURLs(from: item)
 
                     if !loadedFileURLs.isEmpty {
-                        lock.withLock {
-                            fileURLs.append(contentsOf: loadedFileURLs)
-                        }
+                        accumulator.append(fileURLs: loadedFileURLs)
                     }
                     group.leave()
                 }
@@ -1116,11 +1137,11 @@ struct FilePaneView: View {
         }
 
         group.notify(queue: .main) {
-            completion(FileDrop(sourcePaneSide: sourcePaneSide, fileURLs: fileURLs))
+            completion(accumulator.snapshot())
         }
     }
 
-    private func decodedFileURLs(from item: NSSecureCoding?) -> [URL] {
+    private nonisolated static func decodedFileURLs(from item: NSSecureCoding?) -> [URL] {
         if let url = item as? URL {
             return url.isFileURL ? [url] : []
         }
@@ -1141,7 +1162,7 @@ struct FilePaneView: View {
         }
 
         if let paths = item as? [String] {
-            return paths.compactMap(fileURL(from:))
+            return paths.compactMap { fileURL(from: $0) }
         }
 
         if let data = item as? Data,
@@ -1156,10 +1177,10 @@ struct FilePaneView: View {
         return []
     }
 
-    private func fileURLs(from data: Data) -> [URL]? {
+    private nonisolated static func fileURLs(from data: Data) -> [URL]? {
         if let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
            let paths = propertyList as? [String] {
-            return paths.compactMap(fileURL(from:))
+            return paths.compactMap { fileURL(from: $0) }
         }
 
         if let string = String(data: data, encoding: .utf8),
@@ -1170,7 +1191,7 @@ struct FilePaneView: View {
         return nil
     }
 
-    private func fileURL(from string: String) -> URL? {
+    private nonisolated static func fileURL(from string: String) -> URL? {
         let trimmedString = string.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let url = URL(string: trimmedString),
@@ -1223,6 +1244,53 @@ struct FilePaneView: View {
     private func copyItemsStatusMessage(itemCount: Int) -> String {
         let suffix = itemCount == 1 ? "" : "s"
         return "Copied \(itemCount) item\(suffix)."
+    }
+}
+
+private struct FilePaneRowContent: View, Equatable {
+    let item: FileItem
+    let calculatedSizeText: String?
+    let columnVisibility: FilePaneColumnVisibility
+
+    private var nameColor: Color {
+        item.isDirectory ? CatppuccinMochaTheme.lavender : CatppuccinMochaTheme.primaryText
+    }
+
+    var body: some View {
+        HStack(spacing: FilePaneListMetrics.columnSpacing) {
+            HStack(spacing: 8) {
+                FileIconImage(item: item)
+
+                Text(item.displayName)
+                    .font(.system(size: 13, weight: item.isDirectory ? .medium : .regular))
+                    .foregroundStyle(nameColor)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+            .clipped()
+
+            if columnVisibility.showsSize {
+                Text(calculatedSizeText ?? item.formattedSize)
+                    .lineLimit(1)
+                    .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
+            }
+
+            if columnVisibility.showsModifiedDate {
+                Text(item.formattedModifiedDate)
+                    .lineLimit(1)
+                    .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
+            }
+
+            if columnVisibility.showsKind {
+                Text(item.kindDescription)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: FilePaneListMetrics.kindColumnWidth, alignment: .leading)
+            }
+        }
     }
 }
 
@@ -1336,50 +1404,18 @@ private struct FilePaneRowView: View {
         }
     }
 
-    private var nameColor: Color {
-        item.isDirectory ? CatppuccinMochaTheme.lavender : CatppuccinMochaTheme.primaryText
-    }
-
     var body: some View {
-        HStack(spacing: FilePaneListMetrics.columnSpacing) {
-            HStack(spacing: 8) {
-                FileIconImage(item: item)
-
-                Text(item.displayName)
-                    .font(.system(size: 13, weight: item.isDirectory ? .medium : .regular))
-                    .foregroundStyle(nameColor)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            .layoutPriority(1)
-            .clipped()
-
-            if columnVisibility.showsSize {
-                Text(calculatedSizeText ?? item.formattedSize)
-                    .lineLimit(1)
-                    .frame(width: FilePaneListMetrics.sizeColumnWidth, alignment: .trailing)
-            }
-
-            if columnVisibility.showsModifiedDate {
-                Text(item.formattedModifiedDate)
-                    .lineLimit(1)
-                    .frame(width: FilePaneListMetrics.modifiedColumnWidth, alignment: .leading)
-            }
-
-            if columnVisibility.showsKind {
-                Text(item.kindDescription)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(width: FilePaneListMetrics.kindColumnWidth, alignment: .leading)
-            }
-        }
+        FilePaneRowContent(
+            item: item,
+            calculatedSizeText: calculatedSizeText,
+            columnVisibility: columnVisibility
+        )
+        .equatable()
         .font(.system(size: 12))
         .foregroundStyle(CatppuccinMochaTheme.subtext0)
         .padding(.horizontal, FilePaneListMetrics.rowHorizontalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(minHeight: 31)
+        .frame(height: FilePaneListMetrics.rowHeight)
         .opacity(isOperationInProgress ? 0.68 : 1)
         .background(
             rowBackground,
@@ -1421,9 +1457,6 @@ private struct FilePaneRowView: View {
         }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .onRightClickInside {
-            onContextSelect()
-        }
         .onTapGesture {
             onSelect()
         }
@@ -1434,16 +1467,12 @@ private struct FilePaneRowView: View {
         .onDrag {
             dragItemProvider()
         }
-        // Folder rows are valid targets. Regular file rows deliberately reject
-        // drops so a drag never looks like it might overwrite that file.
+        // Only folder rows install a drop target. Giving every file row its own
+        // target makes resize and event handling scale with the full file count.
         .fileDropTarget(
-            enabled: true,
+            enabled: item.isDirectory,
             isTargeted: $isFileDropTargeted,
             perform: { providers in
-                guard item.isDirectory else {
-                    return false
-                }
-
                 return onDropFiles(providers, item.url)
             }
         )
@@ -1543,6 +1572,38 @@ private struct FilePaneRowView: View {
                 return nil
             }
         }
+    }
+}
+
+extension FilePaneRowView: Equatable {
+    static func == (lhs: FilePaneRowView, rhs: FilePaneRowView) -> Bool {
+        lhs.item == rhs.item &&
+            lhs.calculatedSizeText == rhs.calculatedSizeText &&
+            lhs.columnVisibility == rhs.columnVisibility &&
+            lhs.isSelected == rhs.isSelected &&
+            lhs.isPaneActive == rhs.isPaneActive &&
+            lhs.paneSide == rhs.paneSide &&
+            lhs.isOperationInProgress == rhs.isOperationInProgress
+    }
+}
+
+private struct FilePaneActivationModifier: ViewModifier {
+    let accessibilityIdentifier: String
+    let onActivate: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    onActivate()
+                }
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(accessibilityIdentifier)
+            .accessibilityAction {
+                onActivate()
+            }
     }
 }
 
@@ -2014,9 +2075,6 @@ private final class RightClickMonitorNSView: NSView {
         self.monitor = nil
     }
 
-    deinit {
-        stopMonitoring()
-    }
 }
 
 private extension View {

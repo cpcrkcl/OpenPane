@@ -154,6 +154,116 @@ struct FileOperationServiceTests {
         #expect(archiveURL == temporaryDirectory.sourceURL.appendingPathComponent("Folder.zip"))
     }
 
+    @Test func compressMultipleItemsWithSystemDittoIncludesEverySelectedEntry() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "First.txt", contents: "one")
+        let secondFile = try temporaryDirectory.createFile(named: "Second.txt", contents: "two")
+        let linkURL = temporaryDirectory.sourceURL.appendingPathComponent("First Link.txt")
+        try FileManager.default.createSymbolicLink(
+            atPath: linkURL.path,
+            withDestinationPath: firstFile.url.lastPathComponent
+        )
+        let linkedFile = try FileItem(url: linkURL)
+
+        let archiveURL = try await FileOperationService().compress(items: [firstFile, secondFile, linkedFile])
+        let entryNames = try zipEntryNames(at: archiveURL)
+        let extractedURL = temporaryDirectory.rootURL.appendingPathComponent("Extracted", isDirectory: true)
+        try extractZip(at: archiveURL, to: extractedURL)
+        let extractedLinkDestination = try FileManager.default.destinationOfSymbolicLink(
+            atPath: extractedURL.appendingPathComponent("First Link.txt").path
+        )
+
+        #expect(archiveURL == temporaryDirectory.sourceURL.appendingPathComponent("Archive.zip"))
+        #expect(FileManager.default.fileExists(atPath: archiveURL.path))
+        #expect(entryNames.contains("First.txt"))
+        #expect(entryNames.contains("Second.txt"))
+        #expect(entryNames.contains("First Link.txt"))
+        #expect(!entryNames.contains { $0.hasPrefix("OpenPane-Archive-") })
+        #expect(extractedLinkDestination == "First.txt")
+        #expect(!(try hasTemporaryArchiveArtifacts(in: temporaryDirectory.sourceURL)))
+    }
+
+    @Test func compressFailureRemovesOnlyOwnedPartialArchive() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "File.txt", contents: "zip me")
+        let archiveURL = temporaryDirectory.sourceURL.appendingPathComponent("File.txt.zip")
+        let archiveProcessRunner = FailingArchiveProcessRunner(
+            error: FileOperationError.operationFailed("compress", archiveURL, "Simulated archive failure"),
+            partialArchiveContents: "partial",
+            competingArchiveURL: archiveURL,
+            competingArchiveContents: "created by another process"
+        )
+
+        await #expect(throws: FileOperationError.operationFailed("compress", archiveURL, "Simulated archive failure")) {
+            _ = try await FileOperationService(archiveProcessRunner: archiveProcessRunner)
+                .compress(items: [sourceFile])
+        }
+
+        #expect(FileManager.default.fileExists(atPath: archiveURL.path))
+        #expect(try String(contentsOf: archiveURL, encoding: .utf8) == "created by another process")
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+        #expect(!(try hasTemporaryArchiveArtifacts(in: temporaryDirectory.sourceURL)))
+    }
+
+    @Test func compressCancellationRemovesOnlyOwnedPartialArchive() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "File.txt", contents: "zip me")
+        let archiveURL = temporaryDirectory.sourceURL.appendingPathComponent("File.txt.zip")
+        let archiveProcessRunner = FailingArchiveProcessRunner(
+            error: CancellationError(),
+            partialArchiveContents: "partial",
+            competingArchiveURL: archiveURL,
+            competingArchiveContents: "created by another process"
+        )
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await FileOperationService(archiveProcessRunner: archiveProcessRunner)
+                .compress(items: [sourceFile])
+        }
+
+        #expect(FileManager.default.fileExists(atPath: archiveURL.path))
+        #expect(try String(contentsOf: archiveURL, encoding: .utf8) == "created by another process")
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+        #expect(!(try hasTemporaryArchiveArtifacts(in: temporaryDirectory.sourceURL)))
+    }
+
+    @Test func compressPublishesToNextSuffixWhenArchiveNameIsClaimedDuringCompression() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "File.txt", contents: "zip me")
+        let competingArchiveURL = temporaryDirectory.sourceURL.appendingPathComponent("File.txt.zip")
+        let archiveProcessRunner = LateCollisionArchiveProcessRunner(
+            competingArchiveURL: competingArchiveURL,
+            competingArchiveContents: "created by another process",
+            archiveContents: "OpenPane archive"
+        )
+
+        let archiveURL = try await FileOperationService(archiveProcessRunner: archiveProcessRunner)
+            .compress(items: [sourceFile])
+
+        let expectedArchiveURL = temporaryDirectory.sourceURL.appendingPathComponent("File.txt 2.zip")
+        #expect(archiveURL == expectedArchiveURL)
+        #expect(try String(contentsOf: competingArchiveURL, encoding: .utf8) == "created by another process")
+        #expect(try String(contentsOf: archiveURL, encoding: .utf8) == "OpenPane archive")
+        #expect(!(try hasTemporaryArchiveArtifacts(in: temporaryDirectory.sourceURL)))
+    }
+
+    @Test func compressFailsWithoutNonAtomicPublicationFallback() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "File.txt", contents: "zip me")
+        let archiveURL = temporaryDirectory.sourceURL.appendingPathComponent("File.txt.zip")
+        let fileSystem = FailingFileSystem(exclusiveMoveError: POSIXError(.EINVAL))
+
+        await #expect(throws: FileOperationError.self) {
+            _ = try await FileOperationService(
+                fileSystem: fileSystem,
+                archiveProcessRunner: SuccessfulArchiveProcessRunner(archiveContents: "OpenPane archive")
+            ).compress(items: [sourceFile])
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: archiveURL.path))
+        #expect(!(try hasTemporaryArchiveArtifacts(in: temporaryDirectory.sourceURL)))
+    }
+
     @Test func trashesItemsUsingTrashService() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "first")
@@ -854,19 +964,116 @@ private final class ProgressRecorder: @unchecked Sendable {
     }
 }
 
+private struct FailingArchiveProcessRunner: ArchiveProcessRunning {
+    let error: any Error & Sendable
+    let partialArchiveContents: String?
+    let competingArchiveURL: URL?
+    let competingArchiveContents: String?
+
+    func createArchive(from items: [FileItem], at archiveURL: URL) async throws {
+        if let partialArchiveContents {
+            try partialArchiveContents.write(to: archiveURL, atomically: true, encoding: .utf8)
+        }
+
+        if let competingArchiveURL, let competingArchiveContents {
+            try competingArchiveContents.write(to: competingArchiveURL, atomically: true, encoding: .utf8)
+        }
+
+        throw error
+    }
+}
+
+private struct LateCollisionArchiveProcessRunner: ArchiveProcessRunning {
+    let competingArchiveURL: URL
+    let competingArchiveContents: String
+    let archiveContents: String
+
+    func createArchive(from items: [FileItem], at archiveURL: URL) async throws {
+        try archiveContents.write(to: archiveURL, atomically: true, encoding: .utf8)
+        try competingArchiveContents.write(to: competingArchiveURL, atomically: true, encoding: .utf8)
+    }
+}
+
+private struct SuccessfulArchiveProcessRunner: ArchiveProcessRunning {
+    let archiveContents: String
+
+    func createArchive(from items: [FileItem], at archiveURL: URL) async throws {
+        try archiveContents.write(to: archiveURL, atomically: true, encoding: .utf8)
+    }
+}
+
+private func hasTemporaryArchiveArtifacts(in directoryURL: URL) throws -> Bool {
+    try FileManager.default.contentsOfDirectory(
+        at: directoryURL,
+        includingPropertiesForKeys: nil,
+        options: []
+    ).contains { $0.lastPathComponent.hasPrefix(".openpane-archive-") }
+}
+
+private func zipEntryNames(at archiveURL: URL) throws -> Set<String> {
+    let process = Process()
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+    process.arguments = ["-Z1", archiveURL.path]
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+
+    try process.run()
+    process.waitUntilExit()
+
+    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+    guard process.terminationStatus == 0 else {
+        let reason = String(data: errorData, encoding: .utf8) ?? "Unable to inspect ZIP entries."
+        throw NSError(
+            domain: "OpenPaneTests",
+            code: Int(process.terminationStatus),
+            userInfo: [NSLocalizedDescriptionKey: reason]
+        )
+    }
+
+    let output = String(data: outputData, encoding: .utf8) ?? ""
+    return Set(output.split(whereSeparator: \.isNewline).map(String.init))
+}
+
+private func extractZip(at archiveURL: URL, to destinationURL: URL) throws {
+    let process = Process()
+    let errorPipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+    process.arguments = ["-x", "-k", archiveURL.path, destinationURL.path]
+    process.standardError = errorPipe
+
+    try process.run()
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let reason = String(data: errorData, encoding: .utf8) ?? "Unable to extract ZIP archive."
+        throw NSError(
+            domain: "OpenPaneTests",
+            code: Int(process.terminationStatus),
+            userInfo: [NSLocalizedDescriptionKey: reason]
+        )
+    }
+}
+
 private final class FailingFileSystem: FileSystemOperating, @unchecked Sendable {
     private let failCopyToReplacementStaging: Bool
     private let failReplacement: Bool
     private let failRemoveSourceNamed: String?
+    private let exclusiveMoveError: (any Error & Sendable)?
 
     init(
         failCopyToReplacementStaging: Bool = false,
         failReplacement: Bool = false,
-        failRemoveSourceNamed: String? = nil
+        failRemoveSourceNamed: String? = nil,
+        exclusiveMoveError: (any Error & Sendable)? = nil
     ) {
         self.failCopyToReplacementStaging = failCopyToReplacementStaging
         self.failReplacement = failReplacement
         self.failRemoveSourceNamed = failRemoveSourceNamed
+        self.exclusiveMoveError = exclusiveMoveError
     }
 
     func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
@@ -883,6 +1090,14 @@ private final class FailingFileSystem: FileSystemOperating, @unchecked Sendable 
 
     func moveItem(at sourceURL: URL, to destinationURL: URL) throws {
         try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+    }
+
+    func moveItemExclusively(at sourceURL: URL, to destinationURL: URL) throws {
+        if let exclusiveMoveError {
+            throw exclusiveMoveError
+        }
+
+        try FileManagerFileSystem().moveItemExclusively(at: sourceURL, to: destinationURL)
     }
 
     func removeItem(at url: URL) throws {

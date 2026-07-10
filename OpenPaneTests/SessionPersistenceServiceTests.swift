@@ -111,8 +111,11 @@ struct SessionPersistenceServiceTests {
 
         controller.scheduleSave(firstState)
         controller.scheduleSave(secondState)
-        try await Task.sleep(nanoseconds: 80_000_000)
+        let didSave = try await waitUntil {
+            service.savedStates == [secondState]
+        }
 
+        #expect(didSave)
         #expect(service.savedStates == [secondState])
     }
 
@@ -142,6 +145,27 @@ struct SessionPersistenceServiceTests {
             splitLeftPaneFraction: 0.5
         )
     }
+}
+
+@MainActor
+private func waitUntil(
+    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    intervalNanoseconds: UInt64 = 10_000_000,
+    condition: () -> Bool
+) async throws -> Bool {
+    var remainingNanoseconds = timeoutNanoseconds
+
+    while !condition() {
+        guard remainingNanoseconds > 0 else {
+            return false
+        }
+
+        let sleepNanoseconds = min(intervalNanoseconds, remainingNanoseconds)
+        try await Task.sleep(nanoseconds: sleepNanoseconds)
+        remainingNanoseconds -= sleepNanoseconds
+    }
+
+    return true
 }
 
 @MainActor

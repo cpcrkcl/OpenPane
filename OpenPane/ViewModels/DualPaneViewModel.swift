@@ -97,9 +97,10 @@ final class DualPaneViewModel: ObservableObject {
     }
 
     convenience init() {
+        let defaultPaneURLs = Self.defaultPaneURLs()
         self.init(
-            leftPane: FilePaneViewModel(currentURL: FileManager.default.homeDirectoryForCurrentUser),
-            rightPane: FilePaneViewModel(currentURL: Self.defaultRightPaneURL)
+            leftPane: FilePaneViewModel(currentURL: defaultPaneURLs.left),
+            rightPane: FilePaneViewModel(currentURL: defaultPaneURLs.right)
         )
     }
 
@@ -181,28 +182,31 @@ final class DualPaneViewModel: ObservableObject {
 
     static func restoring(
         _ sessionState: SessionState?,
-        fallbackURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fallbackURL: URL? = nil,
         fileManager: FileManager = .default,
         fileOperationService: any FileOperationServicing = FileOperationService()
     ) -> DualPaneViewModel {
+        let defaultPaneURLs = Self.defaultPaneURLs()
+        let resolvedFallbackURL = fallbackURL ?? defaultPaneURLs.left
+
         guard let sessionState else {
             return DualPaneViewModel(
-                leftPane: FilePaneViewModel(currentURL: fallbackURL),
-                rightPane: FilePaneViewModel(currentURL: defaultRightPaneURL),
+                leftPane: FilePaneViewModel(currentURL: resolvedFallbackURL),
+                rightPane: FilePaneViewModel(currentURL: defaultPaneURLs.right),
                 fileOperationService: fileOperationService
             )
         }
 
-        let leftPane = FilePaneViewModel(currentURL: fallbackURL)
-        let rightPane = FilePaneViewModel(currentURL: fallbackURL)
+        let leftPane = FilePaneViewModel(currentURL: resolvedFallbackURL)
+        let rightPane = FilePaneViewModel(currentURL: resolvedFallbackURL)
         leftPane.applySessionState(
             sessionState.leftPane,
-            fallbackURL: fallbackURL,
+            fallbackURL: resolvedFallbackURL,
             fileManager: fileManager
         )
         rightPane.applySessionState(
             sessionState.rightPane,
-            fallbackURL: fallbackURL,
+            fallbackURL: resolvedFallbackURL,
             fileManager: fileManager
         )
 
@@ -818,8 +822,30 @@ final class DualPaneViewModel: ObservableObject {
         return "The operation could not be completed."
     }
 
-    private static var defaultRightPaneURL: URL {
+    private static func defaultPaneURLs() -> (left: URL, right: URL) {
+        if let uiTestingRootURL {
+            return (
+                uiTestingRootURL.appendingPathComponent("Left", isDirectory: true),
+                uiTestingRootURL.appendingPathComponent("Right", isDirectory: true)
+            )
+        }
+
         let homeURL = FileManager.default.homeDirectoryForCurrentUser
+        return (homeURL, defaultRightPaneURL(fallbackURL: homeURL))
+    }
+
+    private static var uiTestingRootURL: URL? {
+        let processInfo = ProcessInfo.processInfo
+        guard processInfo.arguments.contains("-ui-testing"),
+              let rootPath = processInfo.environment["OPENPANE_UI_TEST_ROOT"],
+              !rootPath.isEmpty else {
+            return nil
+        }
+
+        return URL(filePath: rootPath, directoryHint: .isDirectory)
+    }
+
+    private static func defaultRightPaneURL(fallbackURL homeURL: URL) -> URL {
         let downloadsURL = homeURL.appendingPathComponent("Downloads", isDirectory: true)
         var isDirectory: ObjCBool = false
 

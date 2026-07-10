@@ -69,4 +69,16 @@ struct PaneSplitLayoutTests {
 
         #expect(minimumWidth == 200)
     }
+
+    @Test func persistedSplitFractionRestoresToClampedPaneWidth() {
+        let totalWidth: CGFloat = 900
+        let restoredLeftWidth = PaneSplitLayout.clampedLeftWidth(
+            totalWidth * 0.8,
+            totalWidth: totalWidth,
+            minimumPaneWidth: 320,
+            dividerWidth: 10
+        )
+
+        #expect(restoredLeftWidth == 570)
+    }
 }

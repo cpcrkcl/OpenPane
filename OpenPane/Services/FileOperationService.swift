@@ -5,6 +5,7 @@
 //  Created by Christopher Rego on 6/4/26.
 //
 
+import Darwin
 import Foundation
 
 enum FileConflictResolution: Equatable, Sendable {
@@ -179,6 +180,7 @@ nonisolated struct FileManagerTrashService: TrashServicing {
 nonisolated protocol FileSystemOperating: Sendable {
     nonisolated func copyItem(at sourceURL: URL, to destinationURL: URL) throws
     nonisolated func moveItem(at sourceURL: URL, to destinationURL: URL) throws
+    nonisolated func moveItemExclusively(at sourceURL: URL, to destinationURL: URL) throws
     nonisolated func removeItem(at url: URL) throws
     nonisolated func replaceItem(at originalURL: URL, withItemAt replacementURL: URL) throws
     nonisolated func fileExists(at url: URL) -> Bool
@@ -196,6 +198,18 @@ nonisolated struct FileManagerFileSystem: FileSystemOperating {
 
     nonisolated func moveItem(at sourceURL: URL, to destinationURL: URL) throws {
         try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+    }
+
+    nonisolated func moveItemExclusively(at sourceURL: URL, to destinationURL: URL) throws {
+        let result = sourceURL.withUnsafeFileSystemRepresentation { sourcePath -> Int32 in
+            destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
+                renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL))
+            }
+        }
+
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     nonisolated func removeItem(at url: URL) throws {
@@ -240,39 +254,11 @@ nonisolated struct FileManagerFileSystem: FileSystemOperating {
     }
 }
 
-nonisolated struct FileOperationService: FileOperationServicing {
-    private let trashService: any TrashServicing
-    private let fileSystem: any FileSystemOperating
+nonisolated protocol ArchiveProcessRunning: Sendable {
+    nonisolated func createArchive(from items: [FileItem], at archiveURL: URL) async throws
+}
 
-    private struct TransferPlan: Sendable {
-        let item: FileItem
-        let destinationURL: URL
-        let shouldReplaceExistingItem: Bool
-    }
-
-    private struct RenamePlan: Sendable {
-        let item: FileItem
-        let destinationURL: URL
-    }
-
-    private struct StagedRenamePlan: Sendable {
-        let plan: RenamePlan
-        let temporaryURL: URL
-    }
-
-    private struct SourceCleanupFailure: LocalizedError, Sendable {
-        let reason: String
-
-        var errorDescription: String? {
-            "Destination was replaced, but the original item could not be removed: \(reason)"
-        }
-    }
-
-    private struct DestinationIdentity: Hashable, Sendable {
-        let parentIdentity: String
-        let nameKey: String
-    }
-
+nonisolated struct DittoArchiveProcessRunner: ArchiveProcessRunning {
     private final class CancellableProcessBox: @unchecked Sendable {
         private let lock = NSLock()
         private var process: Process?
@@ -302,12 +288,185 @@ nonisolated struct FileOperationService: FileOperationServicing {
         }
     }
 
+    nonisolated func createArchive(from items: [FileItem], at archiveURL: URL) async throws {
+        guard let firstItem = items.first else {
+            throw FileOperationError.noItems
+        }
+
+        let processBox = CancellableProcessBox()
+        let operationIdentifier = UUID().uuidString
+
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            var stagingDirectoryURL: URL?
+            defer {
+                if let stagingDirectoryURL {
+                    try? FileManager.default.removeItem(at: stagingDirectoryURL)
+                }
+            }
+
+            let archiveSourceURL: URL
+            let keepsSourceParent: Bool
+
+            if items.count == 1 {
+                archiveSourceURL = firstItem.url
+                keepsSourceParent = true
+            } else {
+                let stagingURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(
+                        "OpenPane-Archive-\(operationIdentifier)",
+                        isDirectory: true
+                    )
+
+                do {
+                    try FileManager.default.createDirectory(
+                        at: stagingURL,
+                        withIntermediateDirectories: false
+                    )
+                } catch {
+                    throw FileOperationError.operationFailed(
+                        "compress",
+                        archiveURL,
+                        Self.userReadableReason(for: error)
+                    )
+                }
+
+                stagingDirectoryURL = stagingURL
+
+                for item in items {
+                    try Task.checkCancellation()
+                    let stagedItemURL = stagingURL.appendingPathComponent(
+                        item.url.lastPathComponent,
+                        isDirectory: item.isDirectory
+                    )
+
+                    do {
+                        try FileManager.default.copyItem(at: item.url, to: stagedItemURL)
+                    } catch {
+                        throw FileOperationError.operationFailed(
+                            "compress",
+                            archiveURL,
+                            Self.userReadableReason(for: error)
+                        )
+                    }
+                }
+
+                archiveSourceURL = stagingURL
+                keepsSourceParent = false
+            }
+
+            try Task.checkCancellation()
+            var arguments = [
+                "-c",
+                "-k",
+                "--sequesterRsrc"
+            ]
+            if keepsSourceParent {
+                arguments.append("--keepParent")
+            }
+            arguments.append(contentsOf: [archiveSourceURL.path, archiveURL.path])
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            process.arguments = arguments
+
+            let errorPipe = Pipe()
+            process.standardError = errorPipe
+            processBox.setProcess(process)
+            defer {
+                processBox.clearProcess(process)
+            }
+
+            do {
+                try process.run()
+            } catch {
+                throw FileOperationError.operationFailed("compress", archiveURL, Self.userReadableReason(for: error))
+            }
+
+            while process.isRunning {
+                do {
+                    try Task.checkCancellation()
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                } catch is CancellationError {
+                    processBox.terminateProcess()
+                    throw CancellationError()
+                }
+            }
+
+            try Task.checkCancellation()
+            guard process.terminationStatus == 0 else {
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorMessage = String(data: errorData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                throw FileOperationError.operationFailed(
+                    "compress",
+                    archiveURL,
+                    errorMessage?.isEmpty == false ? errorMessage! : "The archive could not be created."
+                )
+            }
+
+        } onCancel: {
+            processBox.terminateProcess()
+        }
+    }
+
+    private nonisolated static func userReadableReason(for error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.localizedDescription != "The operation couldn’t be completed." {
+            return nsError.localizedDescription
+        }
+
+        return "The operation could not be completed."
+    }
+}
+
+nonisolated struct FileOperationService: FileOperationServicing {
+    private let trashService: any TrashServicing
+    private let fileSystem: any FileSystemOperating
+    private let archiveProcessRunner: any ArchiveProcessRunning
+
+    private struct TransferPlan: Sendable {
+        let item: FileItem
+        let destinationURL: URL
+        let shouldReplaceExistingItem: Bool
+    }
+
+    private struct RenamePlan: Sendable {
+        let item: FileItem
+        let destinationURL: URL
+    }
+
+    private struct StagedRenamePlan: Sendable {
+        let plan: RenamePlan
+        let temporaryURL: URL
+    }
+
+    private struct ArchiveDestination: Sendable {
+        let directoryURL: URL
+        let baseName: String
+    }
+
+    private struct SourceCleanupFailure: LocalizedError, Sendable {
+        let reason: String
+
+        var errorDescription: String? {
+            "Destination was replaced, but the original item could not be removed: \(reason)"
+        }
+    }
+
+    private struct DestinationIdentity: Hashable, Sendable {
+        let parentIdentity: String
+        let nameKey: String
+    }
+
     nonisolated init(
         trashService: any TrashServicing = FileManagerTrashService(),
-        fileSystem: any FileSystemOperating = FileManagerFileSystem()
+        fileSystem: any FileSystemOperating = FileManagerFileSystem(),
+        archiveProcessRunner: any ArchiveProcessRunning = DittoArchiveProcessRunner()
     ) {
         self.trashService = trashService
         self.fileSystem = fileSystem
+        self.archiveProcessRunner = archiveProcessRunner
     }
 
     private nonisolated static func runUserInitiated<T: Sendable>(
@@ -494,65 +653,51 @@ nonisolated struct FileOperationService: FileOperationServicing {
     }
 
     nonisolated func compress(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws -> URL {
-        let processBox = CancellableProcessBox()
+        let archiveProcessRunner = archiveProcessRunner
+        let fileSystem = fileSystem
         let task = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
-            let archiveURL = try Self.archiveURL(for: items)
-            Self.reportProgress(completedItemCount: 0, totalItemCount: items.count, to: progressHandler)
-            let arguments = [
-                "-c",
-                "-k",
-                "--sequesterRsrc",
-                "--keepParent"
-            ] + items.map(\.url.path) + [archiveURL.path]
-
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-            process.arguments = arguments
-
-            let errorPipe = Pipe()
-            process.standardError = errorPipe
-            processBox.setProcess(process)
+            let archiveDestination = try Self.archiveDestination(for: items)
+            let archiveURL = Self.uniqueArchiveURL(
+                in: archiveDestination.directoryURL,
+                baseName: archiveDestination.baseName
+            )
+            let temporaryArchiveDirectoryURL = try Self.createTemporaryArchiveDirectory(
+                in: archiveDestination.directoryURL,
+                reportingFailureFor: archiveURL,
+                fileSystem: fileSystem
+            )
+            let temporaryArchiveURL = temporaryArchiveDirectoryURL
+                .appendingPathComponent("archive.zip", isDirectory: false)
             defer {
-                processBox.clearProcess(process)
+                try? fileSystem.removeItem(at: temporaryArchiveURL)
+                try? fileSystem.removeItem(at: temporaryArchiveDirectoryURL)
             }
+
+            Self.reportProgress(completedItemCount: 0, totalItemCount: items.count, to: progressHandler)
 
             do {
-                try process.run()
+                try await archiveProcessRunner.createArchive(from: items, at: temporaryArchiveURL)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                throw FileOperationError.operationFailed("compress", archiveURL, Self.userReadableReason(for: error))
+                throw Self.archiveCreationFailure(for: archiveURL, error: error)
             }
 
-            while process.isRunning {
-                do {
-                    try Task.checkCancellation()
-                    try await Task.sleep(nanoseconds: 50_000_000)
-                } catch is CancellationError {
-                    processBox.terminateProcess()
-                    try? FileManager.default.removeItem(at: archiveURL)
-                    throw CancellationError()
-                }
-            }
-
-            guard process.terminationStatus == 0 else {
-                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                let errorMessage = String(data: errorData, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                throw FileOperationError.operationFailed(
-                    "compress",
-                    archiveURL,
-                    errorMessage?.isEmpty == false ? errorMessage! : "The archive could not be created."
-                )
-            }
-
+            try Task.checkCancellation()
+            let publishedArchiveURL = try Self.publishArchive(
+                at: temporaryArchiveURL,
+                initiallyTo: archiveURL,
+                destination: archiveDestination,
+                fileSystem: fileSystem
+            )
             Self.reportProgress(completedItemCount: items.count, totalItemCount: items.count, to: progressHandler)
-            return archiveURL
+            return publishedArchiveURL
         }
 
         return try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
-            processBox.terminateProcess()
             task.cancel()
         }
     }
@@ -629,6 +774,11 @@ nonisolated struct FileOperationService: FileOperationServicing {
     }
 
     nonisolated static func archiveURL(for items: [FileItem]) throws -> URL {
+        let destination = try archiveDestination(for: items)
+        return uniqueArchiveURL(in: destination.directoryURL, baseName: destination.baseName)
+    }
+
+    private nonisolated static func archiveDestination(for items: [FileItem]) throws -> ArchiveDestination {
         guard let firstItem = items.first else {
             throw FileOperationError.noItems
         }
@@ -640,7 +790,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
         let directoryURL = firstItem.url.deletingLastPathComponent()
         let baseName = items.count == 1 ? firstItem.url.lastPathComponent : "Archive"
-        return uniqueArchiveURL(in: directoryURL, baseName: baseName)
+        return ArchiveDestination(directoryURL: directoryURL, baseName: baseName)
     }
 
     nonisolated static func validateTransfer(
@@ -1117,6 +1267,85 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
             archiveNumber += 1
         }
+    }
+
+    private nonisolated static func createTemporaryArchiveDirectory(
+        in directoryURL: URL,
+        reportingFailureFor archiveURL: URL,
+        fileSystem: any FileSystemOperating
+    ) throws -> URL {
+        while true {
+            let temporaryDirectoryURL = directoryURL.appendingPathComponent(
+                ".openpane-archive-\(UUID().uuidString)",
+                isDirectory: true
+            )
+
+            do {
+                try fileSystem.createDirectory(at: temporaryDirectoryURL)
+                return temporaryDirectoryURL
+            } catch {
+                if isDestinationExistsError(error) {
+                    continue
+                }
+
+                throw FileOperationError.operationFailed(
+                    "compress",
+                    archiveURL,
+                    userReadableReason(for: error)
+                )
+            }
+        }
+    }
+
+    private nonisolated static func publishArchive(
+        at temporaryArchiveURL: URL,
+        initiallyTo initialArchiveURL: URL,
+        destination: ArchiveDestination,
+        fileSystem: any FileSystemOperating
+    ) throws -> URL {
+        var candidateURL = initialArchiveURL
+
+        while true {
+            do {
+                try fileSystem.moveItemExclusively(at: temporaryArchiveURL, to: candidateURL)
+                return candidateURL
+            } catch {
+                if isDestinationExistsError(error) {
+                    candidateURL = uniqueArchiveURL(
+                        in: destination.directoryURL,
+                        baseName: destination.baseName
+                    )
+                    continue
+                }
+
+                throw FileOperationError.operationFailed(
+                    "compress",
+                    candidateURL,
+                    userReadableReason(for: error)
+                )
+            }
+        }
+    }
+
+    private nonisolated static func archiveCreationFailure(
+        for archiveURL: URL,
+        error: Error
+    ) -> FileOperationError {
+        if case let FileOperationError.operationFailed(_, _, reason) = error {
+            return .operationFailed("compress", archiveURL, reason)
+        }
+
+        return .operationFailed("compress", archiveURL, userReadableReason(for: error))
+    }
+
+    private nonisolated static func isDestinationExistsError(_ error: Error) -> Bool {
+        if let posixError = error as? POSIXError {
+            return posixError.code == .EEXIST
+        }
+
+        let nsError = error as NSError
+        return (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(EEXIST))
+            || (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileWriteFileExistsError)
     }
 
     private nonisolated static func uniqueTemporaryRenameURL(

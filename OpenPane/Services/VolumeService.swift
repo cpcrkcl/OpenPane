@@ -8,7 +8,7 @@
 import AppKit
 import Foundation
 
-protocol VolumeMonitorToken: AnyObject {
+protocol VolumeMonitorToken: AnyObject, Sendable {
     nonisolated func cancel()
 }
 
@@ -86,8 +86,9 @@ final class VolumeService: VolumeServicing {
     }
 }
 
-private final class WorkspaceVolumeMonitorToken: VolumeMonitorToken {
+private final class WorkspaceVolumeMonitorToken: VolumeMonitorToken, @unchecked Sendable {
     private let notificationCenter: NotificationCenter
+    private let lock = NSLock()
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
 
     init(
@@ -115,7 +116,12 @@ private final class WorkspaceVolumeMonitorToken: VolumeMonitorToken {
     }
 
     nonisolated func cancel() {
-        observers.forEach(notificationCenter.removeObserver)
-        observers.removeAll()
+        let observersToRemove = lock.withLock {
+            let observersToRemove = observers
+            observers.removeAll()
+            return observersToRemove
+        }
+
+        observersToRemove.forEach(notificationCenter.removeObserver)
     }
 }

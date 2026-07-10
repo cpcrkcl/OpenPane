@@ -5,6 +5,7 @@
 //  Created by Christopher Rego on 6/4/26.
 //
 
+import AppKit
 import Combine
 import SwiftUI
 
@@ -23,8 +24,6 @@ struct DualPaneView: View {
     @State private var pendingConflictOperation: PendingConflictOperation?
     @State private var pendingFileDrop: PendingFileDrop?
     @State private var leftPaneWidth: CGFloat?
-    @State private var splitDragStartLeftPaneWidth: CGFloat?
-    @State private var isResizingPaneSplit = false
     @State private var isCommandPalettePresented = false
     @FocusState private var focusedSheetField: SheetField?
 
@@ -105,6 +104,9 @@ struct DualPaneView: View {
         .animation(.easeOut(duration: 0.12), value: isCommandPalettePresented)
         .onReceive(NotificationCenter.default.publisher(for: .openCommandPalette)) { _ in
             isCommandPalettePresented = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .switchActivePane)) { _ in
+            switchActivePane()
         }
         .alert(
             "OpenPane Couldn’t Complete the Operation",
@@ -221,27 +223,26 @@ struct DualPaneView: View {
                 proposedLeftWidth: leftPaneWidth
             )
 
-            HStack(spacing: 0) {
+            PaneSplitView(
+                totalWidth: geometry.size.width,
+                desiredLeftWidth: layout.leftWidth,
+                dividerWidth: layout.dividerWidth
+            ) {
                 filePane(for: .left)
-                    .frame(width: layout.leftWidth)
-                    .clipped()
-
-                splitDivider(
-                    totalWidth: geometry.size.width,
-                    currentLeftWidth: layout.leftWidth
-                )
-                .frame(width: layout.dividerWidth)
-
+            } rightPane: {
                 filePane(for: .right)
-                    .frame(width: layout.rightWidth)
-                    .clipped()
+            } onCommit: { committedLeftWidth in
+                let clampedLeftWidth = PaneSplitLayout.clampedLeftWidth(
+                    committedLeftWidth,
+                    totalWidth: geometry.size.width
+                )
+                leftPaneWidth = clampedLeftWidth
+                updateSplitFraction(
+                    totalWidth: geometry.size.width,
+                    leftPaneWidth: clampedLeftWidth
+                )
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
-            .transaction { transaction in
-                if isResizingPaneSplit {
-                    transaction.animation = nil
-                }
-            }
             .onAppear {
                 if let fraction = viewModel.splitLeftPaneFraction,
                    leftPaneWidth == nil {
@@ -315,44 +316,8 @@ struct DualPaneView: View {
         }
     }
 
-    private func splitDivider(totalWidth: CGFloat, currentLeftWidth: CGFloat) -> some View {
-        Rectangle()
-            .fill(Color.clear)
-            .overlay {
-                Capsule()
-                    .fill(CatppuccinMochaTheme.surface1.opacity(0.95))
-                    .frame(width: CatppuccinMochaTheme.hairlineBorderWidth)
-                    .padding(.vertical, 12)
-            }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if splitDragStartLeftPaneWidth == nil {
-                            splitDragStartLeftPaneWidth = currentLeftWidth
-                            isResizingPaneSplit = true
-                        }
-
-                        let proposedLeftWidth = (splitDragStartLeftPaneWidth ?? currentLeftWidth) + value.translation.width
-                        leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
-                            proposedLeftWidth,
-                            totalWidth: totalWidth
-                        )
-                    }
-                    .onEnded { _ in
-                        splitDragStartLeftPaneWidth = nil
-                        isResizingPaneSplit = false
-                        updateSplitFraction(totalWidth: totalWidth)
-                    }
-            )
-            .help("Drag to resize panes")
-            .accessibilityElement(children: .ignore)
-            .accessibilityIdentifier("pane-split-divider")
-    }
-
-    private func updateSplitFraction(totalWidth: CGFloat) {
-        guard totalWidth > 0,
-              let leftPaneWidth else {
+    private func updateSplitFraction(totalWidth: CGFloat, leftPaneWidth: CGFloat) {
+        guard totalWidth > 0 else {
             return
         }
 
@@ -679,7 +644,7 @@ struct DualPaneView: View {
                 title: "Switch Active Pane",
                 systemImage: "rectangle.2.swap"
             ) {
-                viewModel.setActivePane(viewModel.activePaneSide == .left ? .right : .left)
+                switchActivePane()
             },
             CommandPaletteCommand(
                 id: "show-mounted-volumes",
@@ -688,6 +653,10 @@ struct DualPaneView: View {
                 disabledReason: "Use the Volumes section in the sidebar"
             ) {}
         ]
+    }
+
+    private func switchActivePane() {
+        viewModel.setActivePane(viewModel.activePaneSide == .left ? .right : .left)
     }
 
     private var trashConfirmationMessage: String {
@@ -1191,4 +1160,351 @@ struct DualPaneView: View {
             to: pendingFileDrop.targetDirectory
         )
     }
+}
+
+private struct PaneSplitView<LeftPane: View, RightPane: View>: NSViewRepresentable {
+    let totalWidth: CGFloat
+    let desiredLeftWidth: CGFloat
+    let dividerWidth: CGFloat
+    let leftPane: LeftPane
+    let rightPane: RightPane
+    let onCommit: (CGFloat) -> Void
+
+    init(
+        totalWidth: CGFloat,
+        desiredLeftWidth: CGFloat,
+        dividerWidth: CGFloat,
+        @ViewBuilder leftPane: () -> LeftPane,
+        @ViewBuilder rightPane: () -> RightPane,
+        onCommit: @escaping (CGFloat) -> Void
+    ) {
+        self.totalWidth = totalWidth
+        self.desiredLeftWidth = desiredLeftWidth
+        self.dividerWidth = dividerWidth
+        self.leftPane = leftPane()
+        self.rightPane = rightPane()
+        self.onCommit = onCommit
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCommit: onCommit)
+    }
+
+    func makeNSView(context: Context) -> PaneSplitContainerView<LeftPane, RightPane> {
+        let containerView = PaneSplitContainerView(leftPane: leftPane, rightPane: rightPane)
+        containerView.onCommit = { [weak coordinator = context.coordinator] leftWidth in
+            coordinator?.commit(leftWidth)
+        }
+        return containerView
+    }
+
+    func updateNSView(_ containerView: PaneSplitContainerView<LeftPane, RightPane>, context: Context) {
+        context.coordinator.onCommit = onCommit
+        containerView.onCommit = { [weak coordinator = context.coordinator] leftWidth in
+            coordinator?.commit(leftWidth)
+        }
+        containerView.update(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            totalWidth: totalWidth,
+            desiredLeftWidth: desiredLeftWidth,
+            dividerWidth: dividerWidth
+        )
+    }
+
+    final class Coordinator: NSObject {
+        fileprivate var onCommit: (CGFloat) -> Void
+
+        init(onCommit: @escaping (CGFloat) -> Void) {
+            self.onCommit = onCommit
+        }
+
+        func commit(_ leftWidth: CGFloat) {
+            onCommit(leftWidth)
+        }
+    }
+}
+
+private final class PaneSplitContainerView<LeftPane: View, RightPane: View>: NSView, PaneSplitDividerViewDelegate {
+    fileprivate var onCommit: (CGFloat) -> Void = { _ in }
+
+    private let leftHostingView: NSHostingView<LeftPane>
+    private let rightHostingView: NSHostingView<RightPane>
+    private let dividerView = PaneSplitDividerView()
+    private let previewView = PaneSplitDividerPreviewView()
+    private var totalWidth: CGFloat = 0
+    private var dividerWidth: CGFloat = PaneSplitLayout.defaultDividerWidth
+    private var committedLeftWidth: CGFloat = 0
+    private var dragStartLeftWidth: CGFloat?
+    private var previewLeftWidth: CGFloat?
+
+    init(leftPane: LeftPane, rightPane: RightPane) {
+        self.leftHostingView = NSHostingView(rootView: leftPane)
+        self.rightHostingView = NSHostingView(rootView: rightPane)
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        postsFrameChangedNotifications = true
+
+        dividerView.delegate = self
+        previewView.isHidden = true
+
+        addSubview(leftHostingView)
+        addSubview(rightHostingView)
+        addSubview(dividerView)
+        addSubview(previewView)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    func update(
+        leftPane: LeftPane,
+        rightPane: RightPane,
+        totalWidth: CGFloat,
+        desiredLeftWidth: CGFloat,
+        dividerWidth: CGFloat
+    ) {
+        leftHostingView.rootView = leftPane
+        rightHostingView.rootView = rightPane
+        self.totalWidth = totalWidth
+        self.dividerWidth = dividerWidth
+        dividerView.preferredWidth = dividerWidth
+        previewView.preferredWidth = dividerWidth
+
+        guard dragStartLeftWidth == nil else {
+            return
+        }
+
+        applyCommittedLeftWidth(desiredLeftWidth)
+    }
+
+    override func layout() {
+        super.layout()
+
+        guard dragStartLeftWidth == nil else {
+            layoutPanes(leftWidth: committedLeftWidth)
+            layoutPreview()
+            return
+        }
+
+        let clampedLeftWidth = clampedLeftWidth(committedLeftWidth)
+        committedLeftWidth = clampedLeftWidth
+        layoutPanes(leftWidth: clampedLeftWidth)
+    }
+
+    func dividerDidBeginDragging(_ dividerView: PaneSplitDividerView) {
+        dragStartLeftWidth = committedLeftWidth
+        previewLeftWidth = committedLeftWidth
+        previewView.isHidden = false
+        layoutPreview()
+    }
+
+    func divider(_ dividerView: PaneSplitDividerView, didDragBy deltaX: CGFloat) {
+        let startLeftWidth = dragStartLeftWidth ?? committedLeftWidth
+        previewLeftWidth = clampedLeftWidth(startLeftWidth + deltaX)
+        layoutPreview()
+    }
+
+    func dividerDidEndDragging(_ dividerView: PaneSplitDividerView) {
+        let finalLeftWidth = previewLeftWidth ?? committedLeftWidth
+        dragStartLeftWidth = nil
+        previewLeftWidth = nil
+        previewView.isHidden = true
+        applyCommittedLeftWidth(finalLeftWidth)
+        onCommit(committedLeftWidth)
+    }
+
+    private func applyCommittedLeftWidth(_ proposedLeftWidth: CGFloat) {
+        let clampedLeftWidth = clampedLeftWidth(proposedLeftWidth)
+        guard abs(committedLeftWidth - clampedLeftWidth) > 0.5 else {
+            layoutPanes(leftWidth: clampedLeftWidth)
+            return
+        }
+
+        committedLeftWidth = clampedLeftWidth
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+
+    private func layoutPanes(leftWidth: CGFloat) {
+        let safeTotalWidth = resolvedTotalWidth
+        let safeDividerWidth = resolvedDividerWidth(for: safeTotalWidth)
+        let safeLeftWidth = PaneSplitLayout.clampedLeftWidth(
+            leftWidth,
+            totalWidth: safeTotalWidth,
+            dividerWidth: safeDividerWidth
+        )
+        let rightWidth = max(0, safeTotalWidth - safeDividerWidth - safeLeftWidth)
+
+        leftHostingView.frame = NSRect(x: 0, y: 0, width: safeLeftWidth, height: bounds.height)
+        dividerView.frame = NSRect(x: safeLeftWidth, y: 0, width: safeDividerWidth, height: bounds.height)
+        rightHostingView.frame = NSRect(
+            x: safeLeftWidth + safeDividerWidth,
+            y: 0,
+            width: rightWidth,
+            height: bounds.height
+        )
+    }
+
+    private func layoutPreview() {
+        guard let previewLeftWidth else {
+            return
+        }
+
+        let safeTotalWidth = resolvedTotalWidth
+        let safeDividerWidth = resolvedDividerWidth(for: safeTotalWidth)
+        previewView.frame = NSRect(
+            x: clampedLeftWidth(previewLeftWidth),
+            y: 0,
+            width: safeDividerWidth,
+            height: bounds.height
+        )
+        previewView.needsDisplay = true
+    }
+
+    private func clampedLeftWidth(_ proposedLeftWidth: CGFloat) -> CGFloat {
+        PaneSplitLayout.clampedLeftWidth(
+            proposedLeftWidth,
+            totalWidth: resolvedTotalWidth,
+            dividerWidth: resolvedDividerWidth(for: resolvedTotalWidth)
+        )
+    }
+
+    private var resolvedTotalWidth: CGFloat {
+        bounds.width > 0 ? bounds.width : totalWidth
+    }
+
+    private func resolvedDividerWidth(for totalWidth: CGFloat) -> CGFloat {
+        min(max(0, dividerWidth), max(0, totalWidth))
+    }
+}
+
+private protocol PaneSplitDividerViewDelegate: AnyObject {
+    func dividerDidBeginDragging(_ dividerView: PaneSplitDividerView)
+    func divider(_ dividerView: PaneSplitDividerView, didDragBy deltaX: CGFloat)
+    func dividerDidEndDragging(_ dividerView: PaneSplitDividerView)
+}
+
+private final class PaneSplitDividerView: NSView {
+    weak var delegate: PaneSplitDividerViewDelegate?
+    var preferredWidth: CGFloat = PaneSplitLayout.defaultDividerWidth {
+        didSet {
+            needsDisplay = true
+        }
+    }
+    private var dragStartLocationInWindow: NSPoint?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds.insetBy(dx: -4, dy: 0), cursor: .resizeLeftRight)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartLocationInWindow = event.locationInWindow
+        delegate?.dividerDidBeginDragging(self)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragStartLocationInWindow else {
+            return
+        }
+
+        delegate?.divider(self, didDragBy: event.locationInWindow.x - dragStartLocationInWindow.x)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        delegate?.dividerDidEndDragging(self)
+        dragStartLocationInWindow = nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        PaneSplitDividerColors.idleDivider.setFill()
+        bounds.fill()
+
+        let lineWidth = max(1, CatppuccinMochaTheme.hairlineBorderWidth)
+        let lineRect = NSRect(
+            x: bounds.midX - lineWidth / 2,
+            y: bounds.minY + 12,
+            width: lineWidth,
+            height: max(0, bounds.height - 24)
+        )
+        PaneSplitDividerColors.previewDivider.setFill()
+        NSBezierPath(roundedRect: lineRect, xRadius: lineWidth / 2, yRadius: lineWidth / 2).fill()
+    }
+
+    private func commonInit() {
+        wantsLayer = true
+        toolTip = "Drag to resize panes"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.splitter)
+        setAccessibilityIdentifier("pane-split-divider")
+        setAccessibilityLabel("Pane split divider")
+    }
+}
+
+private final class PaneSplitDividerPreviewView: NSView {
+    var preferredWidth: CGFloat = PaneSplitLayout.defaultDividerWidth {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        PaneSplitDividerColors.activeDivider.setFill()
+        bounds.fill()
+
+        let lineWidth = max(2, min(preferredWidth, 3))
+        let lineRect = NSRect(
+            x: bounds.midX - lineWidth / 2,
+            y: bounds.minY + 8,
+            width: lineWidth,
+            height: max(0, bounds.height - 16)
+        )
+        PaneSplitDividerColors.previewDivider.setFill()
+        NSBezierPath(roundedRect: lineRect, xRadius: lineWidth / 2, yRadius: lineWidth / 2).fill()
+    }
+}
+
+private enum PaneSplitDividerColors {
+    static let idleDivider = NSColor(
+        srgbRed: 0x45 / 255,
+        green: 0x47 / 255,
+        blue: 0x5a / 255,
+        alpha: 0.95
+    )
+    static let activeDivider = NSColor(
+        srgbRed: 0x89 / 255,
+        green: 0xb4 / 255,
+        blue: 0xfa / 255,
+        alpha: 0.38
+    )
+    static let previewDivider = NSColor(
+        srgbRed: 0x89 / 255,
+        green: 0xb4 / 255,
+        blue: 0xfa / 255,
+        alpha: 0.88
+    )
 }

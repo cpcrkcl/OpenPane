@@ -32,16 +32,12 @@ final class QuickLookPreviewService: NSObject, QuickLookPreviewServicing, QLPrev
         panel.makeKeyAndOrderFront(nil)
     }
 
-    nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        MainActor.assumeIsolated {
-            previewURLs.count
-        }
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewURLs.count
     }
 
-    nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        MainActor.assumeIsolated {
-            Self.previewItem(from: previewURLs, at: index)
-        }
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        Self.previewItem(from: previewURLs, at: index)
     }
 
     nonisolated static func previewItem(from previewURLs: [URL], at index: Int) -> QLPreviewItem? {
