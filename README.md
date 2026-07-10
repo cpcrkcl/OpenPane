@@ -17,7 +17,10 @@ Screenshots will be added for the initial GitHub release.
 - Dual-pane browsing
 - Per-pane tabs
 - Local file browsing
+- Keyboard-native file selection, range selection, and type-ahead navigation
 - Copy and move between panes
+- Clipboard copy/paste with `Command-C` and `Command-V`
+- Drag-and-drop copies by default, with conflict handling when needed
 - Conflict handling: cancel, skip, replace, and keep both
 - Rename and batch rename
 - New folder
@@ -113,8 +116,16 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 - `Command-Option-C`: Copy selection to the other pane
 - `Command-Option-M`: Move selection to the other pane
 - `Command-Shift-N`: New folder
-- `Return`: Rename selected item
+- `Up` / `Down`: Move file-list focus and selection
+- `Shift-Up` / `Shift-Down`: Extend the selection range
+- `Command-A`: Select all visible items
+- `Home` / `End` / `Page Up` / `Page Down`: Move through the focused file list
+- Type a filename prefix: Jump to the next matching item
+- `Return`: Open the focused item
+- `Command-Return`: Rename selected item
 - `Space`: Quick Look preview
+- `Command-C`: Copy selected files to the clipboard
+- `Command-V`: Paste files into the active pane
 - `Command-Delete`: Move selection to Trash
 
 ## Roadmap

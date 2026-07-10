@@ -44,6 +44,27 @@ final class OpenPaneUITests: XCTestCase {
     }
 
     @MainActor
+    func testKeyboardSelectionAndReturnOpenFolder() throws {
+        assertDualPaneShellVisible()
+
+        app.typeKey(.downArrow, modifierFlags: [])
+        XCTAssertTrue(app.staticTexts["1 selected"].waitForExistence(timeout: 2))
+
+        app.typeKey(.downArrow, modifierFlags: .shift)
+        XCTAssertTrue(app.staticTexts["2 selected"].waitForExistence(timeout: 2))
+
+        app.typeKey("a", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["2 selected"].waitForExistence(timeout: 2))
+
+        app.typeKey(.upArrow, modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.staticTexts["inside.txt"].waitForExistence(timeout: 3))
+
+        app.typeKey(.upArrow, modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["left-note.txt"].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
     func testPaneStructureSurvivesDividerDrag() throws {
         assertDualPaneShellVisible()
 
@@ -191,6 +212,9 @@ final class OpenPaneUITestDriver {
 
         try fileManager.createDirectory(at: leftURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: rightURL, withIntermediateDirectories: true)
+        let folderURL = leftURL.appendingPathComponent("Folder", isDirectory: true)
+        try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: false)
+        try "inside".write(to: folderURL.appendingPathComponent("inside.txt"), atomically: true, encoding: .utf8)
         try "left".write(to: leftURL.appendingPathComponent("left-note.txt"), atomically: true, encoding: .utf8)
         try "right".write(to: rightURL.appendingPathComponent("right-note.txt"), atomically: true, encoding: .utf8)
 
