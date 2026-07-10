@@ -55,13 +55,27 @@ final class OpenPaneUITests: XCTestCase {
     }
 
     @MainActor
-    func testAppCanReactivateAfterSwitchingAway() throws {
+    func testReactivationKeepsThePreviouslyActiveBrowserWindowFrontmost() throws {
         assertDualPaneShellVisible()
+
+        app.typeKey("n", modifierFlags: .command)
+
+        let browserSurfaces = app.descendants(matching: .any)
+            .matching(identifier: "main-content-surface")
+        XCTAssertTrue(browserSurfaces.element(boundBy: 1).waitForExistence(timeout: 8))
+
+        let frontmostBrowserWindow = app.windows.firstMatch
+        let rightPane = frontmostBrowserWindow.descendants(matching: .any)
+            .matching(identifier: "right-file-pane")
+            .firstMatch
+        XCTAssertTrue(rightPane.waitForExistence(timeout: 3))
+        rightPane.click()
+        XCTAssertTrue(frontmostBrowserWindow.staticTexts["Right pane active"].waitForExistence(timeout: 3))
 
         XCUIApplication(bundleIdentifier: "com.apple.finder").activate()
         app.activate()
 
-        assertDualPaneShellVisible()
+        XCTAssertTrue(app.windows.firstMatch.staticTexts["Right pane active"].waitForExistence(timeout: 3))
     }
 
     private func dragDivider(

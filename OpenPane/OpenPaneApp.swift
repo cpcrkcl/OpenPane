@@ -8,6 +8,47 @@
 import SwiftUI
 import AppKit
 
+@MainActor
+private final class BrowserWindowRegistry {
+    static let shared = BrowserWindowRegistry()
+
+    private let windows = NSHashTable<NSWindow>.weakObjects()
+    private weak var mostRecentWindow: NSWindow?
+
+    func register(_ window: NSWindow) {
+        windows.add(window)
+
+        if window.isKeyWindow || window.isMainWindow {
+            mostRecentWindow = window
+        }
+    }
+
+    func markKey(_ window: NSWindow) {
+        guard windows.contains(window) else {
+            return
+        }
+
+        mostRecentWindow = window
+    }
+
+    func preferredWindow(in application: NSApplication) -> NSWindow? {
+        let browserWindows = application.windows.filter { window in
+            windows.contains(window) && (window.isVisible || window.isMiniaturized)
+        }
+
+        if let mostRecentWindow,
+           browserWindows.contains(where: { $0 === mostRecentWindow }) {
+            return mostRecentWindow
+        }
+
+        return browserWindows.first
+    }
+
+    func contains(_ window: NSWindow) -> Bool {
+        windows.contains(window)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var commandPaletteMonitor: Any?
 
@@ -15,18 +56,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.appearance = NSAppearance(named: .darkAqua)
         installCommandPaletteMonitor()
-    }
-
-    func applicationDidBecomeActive(_ notification: Notification) {
-        bringApplicationWindowForwardIfNeeded()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        bringApplicationWindowForwardIfNeeded()
-        return true
+        // Ordinary activation keeps AppKit's existing window order. Recovery is
+        // limited to a Dock reopen when no window is already visible.
+        guard !flag else {
+            return true
+        }
+
+        return !restoreBrowserWindowForReopen()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
+
         if let commandPaletteMonitor {
             NSEvent.removeMonitor(commandPaletteMonitor)
         }
@@ -49,14 +103,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func bringApplicationWindowForwardIfNeeded() {
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              Self.isBrowserWindow(window) else {
+            return
+        }
+
+        BrowserWindowRegistry.shared.markKey(window)
+    }
+
+    private func restoreBrowserWindowForReopen() -> Bool {
         NSApp.unhide(nil)
 
-        guard let window = NSApp.windows.first(where: { window in
-            window.canBecomeKey &&
-                window.level == .normal
-        }) else {
-            return
+        let activeWindows = [NSApp.keyWindow, NSApp.mainWindow].compactMap { $0 }
+        guard !activeWindows.contains(where: \.isVisible) else {
+            return true
+        }
+
+        guard let window = BrowserWindowRegistry.shared.preferredWindow(in: NSApp) else {
+            return false
         }
 
         if window.isMiniaturized {
@@ -64,7 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        return true
+    }
+
+    private static func isBrowserWindow(_ window: NSWindow) -> Bool {
+        BrowserWindowRegistry.shared.contains(window)
     }
 
     private static func isCommandPaletteShortcut(_ event: NSEvent) -> Bool {
@@ -78,6 +147,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private struct BrowserWindowRegistrationView: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        BrowserWindowRegistrationNSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class BrowserWindowRegistrationNSView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+
+        if let window {
+            BrowserWindowRegistry.shared.register(window)
+        }
+    }
+}
+
 @main
 struct OpenPaneApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -87,6 +174,7 @@ struct OpenPaneApp: App {
         WindowGroup {
             MainWindowView()
                 .environmentObject(keyboardShortcutStore)
+                .background(BrowserWindowRegistrationView())
         }
         .defaultSize(width: 1240, height: 760)
         .commands {
