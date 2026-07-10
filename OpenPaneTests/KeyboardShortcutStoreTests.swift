@@ -12,6 +12,70 @@ import Testing
 
 @MainActor
 struct KeyboardShortcutStoreTests {
+    @Test func defaultsUseReturnForOpenAndCommandReturnForRename() throws {
+        let suiteName = "OpenPaneKeyboardShortcutDefaultsTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = KeyboardShortcutStore(userDefaults: userDefaults)
+
+        #expect(store.shortcut(for: .open).key.rawValue == "return")
+        #expect(!store.shortcut(for: .open).usesCommand)
+        #expect(store.shortcut(for: .rename).key.rawValue == "return")
+        #expect(store.shortcut(for: .rename).usesCommand)
+        #expect(store.shortcut(for: .copyFiles).displayText == "⌘C")
+        #expect(store.shortcut(for: .pasteFiles).displayText == "⌘V")
+    }
+
+    @Test func savedCustomShortcutsArePreservedWhileNewDefaultsAreMerged() throws {
+        let suiteName = "OpenPaneKeyboardShortcutMergeTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let customRename = OpenPaneKeyboardShortcut(
+            key: ShortcutKey(rawValue: "e"),
+            usesCommand: true,
+            usesShift: false,
+            usesOption: false,
+            usesControl: false
+        )
+        let data = try JSONEncoder().encode([OpenPaneShortcutAction.rename.rawValue: customRename])
+        userDefaults.set(data, forKey: "OpenPaneKeyboardShortcuts")
+
+        let store = KeyboardShortcutStore(userDefaults: userDefaults)
+
+        #expect(store.shortcut(for: .rename) == customRename)
+        #expect(store.shortcut(for: .open).key.rawValue == "return")
+        #expect(store.shortcut(for: .copyFiles).displayText == "⌘C")
+    }
+
+    @Test func legacyBareReturnRenameMigratesToCommandReturn() throws {
+        let suiteName = "OpenPaneKeyboardShortcutMigrationTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let legacyRename = OpenPaneKeyboardShortcut(
+            key: ShortcutKey(rawValue: "return"),
+            usesCommand: false,
+            usesShift: false,
+            usesOption: false,
+            usesControl: false
+        )
+        let data = try JSONEncoder().encode([OpenPaneShortcutAction.rename.rawValue: legacyRename])
+        userDefaults.set(data, forKey: "OpenPaneKeyboardShortcuts")
+
+        let store = KeyboardShortcutStore(userDefaults: userDefaults)
+
+        #expect(store.shortcut(for: .open).displayText == "Return")
+        #expect(store.shortcut(for: .rename).displayText == "⌘Return")
+    }
+
     @Test func shortcutKeyFallsBackForEmptyOrMultiCharacterRawValues() {
         #expect(ShortcutKey(rawValue: "").rawValue == "space")
         #expect(ShortcutKey(rawValue: "escape").rawValue == "space")

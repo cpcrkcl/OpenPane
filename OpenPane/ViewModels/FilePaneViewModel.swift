@@ -89,6 +89,9 @@ final class FilePaneViewModel: ObservableObject {
             updateActiveTab { tab in
                 tab.selectedItems = selectedItems
             }
+            if !isApplyingFileListSelection {
+                synchronizeFileListSelection()
+            }
         }
     }
 
@@ -130,6 +133,7 @@ final class FilePaneViewModel: ObservableObject {
     @Published private(set) var backStack: [URL]
     @Published private(set) var forwardStack: [URL]
     @Published private(set) var visibleItems: [FileItem]
+    @Published private(set) var fileListSelection: FileListSelectionController
     @Published private(set) var calculatedFolderSizes: [URL: FolderSizeResult]
     @Published private(set) var calculatingFolderSizeURLs: Set<URL>
 
@@ -146,6 +150,7 @@ final class FilePaneViewModel: ObservableObject {
     private var hasPendingDirectoryMonitorRefresh = false
     private var requestGeneration = 0
     private var applicationOptionsByTypeKey: [String: [ApplicationOption]] = [:]
+    private var isApplyingFileListSelection = false
 
     #if DEBUG
     private(set) var visibleItemsRecomputeCount = 0
@@ -163,6 +168,15 @@ final class FilePaneViewModel: ObservableObject {
 
     var filteredItems: [FileItem] {
         visibleItems
+    }
+
+    var focusedFileListItemID: FileItem.ID? {
+        fileListSelection.focusedID
+    }
+
+    var orderedSelectedItems: [FileItem] {
+        let itemsByID = Dictionary(uniqueKeysWithValues: visibleItems.map { ($0.id, $0) })
+        return fileListSelection.orderedSelectionIDs.compactMap { itemsByID[$0] }
     }
 
     init(
@@ -193,6 +207,7 @@ final class FilePaneViewModel: ObservableObject {
         self.backStack = []
         self.forwardStack = []
         self.visibleItems = []
+        self.fileListSelection = FileListSelectionController()
         self.calculatedFolderSizes = [:]
         self.calculatingFolderSizeURLs = []
         self.fileBrowserService = fileBrowserService
@@ -430,22 +445,127 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     func selectForContextMenu(_ item: FileItem) {
-        guard !selectedItems.contains(item) else {
+        if selectedItems.contains(item) {
+            updateFileListSelection { selection, entries in
+                selection.focus(item.id, in: entries)
+            }
             return
         }
 
-        selectedItems = [item]
+        selectFileListItem(item, commandModifier: false, shiftModifier: false)
     }
 
     func itemsForDrag(startingFrom item: FileItem) -> [FileItem] {
         if selectedItems.contains(item) {
+            updateFileListSelection { selection, entries in
+                selection.focus(item.id, in: entries)
+            }
+            let orderedItems = orderedSelectedItems
+            if !orderedItems.isEmpty {
+                return orderedItems
+            }
+
             return selectedItems.sorted {
                 $0.name.localizedStandardCompare($1.name) == .orderedAscending
             }
         }
 
-        selectedItems = [item]
+        guard visibleItems.contains(item) else {
+            selectedItems = [item]
+            return [item]
+        }
+
+        selectFileListItem(item, commandModifier: false, shiftModifier: false)
         return [item]
+    }
+
+    func selectFileListItem(
+        _ item: FileItem,
+        commandModifier: Bool,
+        shiftModifier: Bool
+    ) {
+        updateFileListSelection { selection, entries in
+            if shiftModifier {
+                selection.selectRange(to: item.id, in: entries)
+            } else if commandModifier {
+                selection.toggle(item.id, in: entries)
+            } else {
+                selection.selectOnly(item.id, in: entries)
+            }
+        }
+    }
+
+    @discardableResult
+    func moveFileListFocus(by offset: Int, extendingSelection: Bool) -> FileItem.ID? {
+        var focusedID: FileItem.ID?
+        updateFileListSelection { selection, entries in
+            focusedID = selection.moveFocus(
+                by: offset,
+                extendingSelection: extendingSelection,
+                in: entries
+            )
+        }
+        return focusedID
+    }
+
+    @discardableResult
+    func moveFileListFocus(toIndex index: Int, extendingSelection: Bool) -> FileItem.ID? {
+        var focusedID: FileItem.ID?
+        updateFileListSelection { selection, entries in
+            focusedID = selection.moveFocus(
+                toIndex: index,
+                extendingSelection: extendingSelection,
+                in: entries
+            )
+        }
+        return focusedID
+    }
+
+    func selectAllVisibleItems() {
+        updateFileListSelection { selection, entries in
+            selection.selectAll(in: entries)
+        }
+    }
+
+    @discardableResult
+    func selectFileListItemByTypeAhead(_ characters: String, now: Date = Date()) -> FileItem.ID? {
+        var focusedID: FileItem.ID?
+        updateFileListSelection { selection, entries in
+            focusedID = selection.typeAhead(characters, in: entries, now: now)
+        }
+        return focusedID
+    }
+
+    func openFocusedFileListItem() async {
+        if let focusedID = focusedFileListItemID,
+           let focusedItem = visibleItems.first(where: { $0.id == focusedID }) {
+            await open(focusedItem)
+            return
+        }
+
+        await openSelectedItem()
+    }
+
+    func previewFocusedFileListItem() {
+        if let focusedID = focusedFileListItemID,
+           let focusedItem = visibleItems.first(where: { $0.id == focusedID }) {
+            selectFileListItem(focusedItem, commandModifier: false, shiftModifier: false)
+        }
+
+        previewSelectedItem()
+    }
+
+    @discardableResult
+    func copySelectedItemsToPasteboard() -> Int {
+        let targetItems = orderedSelectedItems
+        guard !targetItems.isEmpty else {
+            errorMessage = "Select one or more items to copy."
+            return 0
+        }
+
+        errorMessage = nil
+        workspaceService.copyFileURLs(targetItems.map(\.url))
+        return targetItems.count
     }
 
     func showPlaceholderError(_ message: String) {
@@ -820,7 +940,53 @@ final class FilePaneViewModel: ObservableObject {
 
         if nextVisibleItems != visibleItems {
             visibleItems = nextVisibleItems
+            reconcileFileListSelection()
         }
+    }
+
+    private var fileListSelectionEntries: [FileListSelectionEntry] {
+        visibleItems.map { FileListSelectionEntry(id: $0.id, name: $0.name) }
+    }
+
+    private func updateFileListSelection(
+        _ update: (inout FileListSelectionController, [FileListSelectionEntry]) -> Void
+    ) {
+        var selection = fileListSelection
+        update(&selection, fileListSelectionEntries)
+        fileListSelection = selection
+        applyFileListSelectionToSelectedItems()
+    }
+
+    private func applyFileListSelectionToSelectedItems() {
+        let itemsByID = Dictionary(uniqueKeysWithValues: visibleItems.map { ($0.id, $0) })
+        let nextSelection = Set(fileListSelection.orderedSelectionIDs.compactMap { itemsByID[$0] })
+
+        guard nextSelection != selectedItems else {
+            return
+        }
+
+        isApplyingFileListSelection = true
+        selectedItems = nextSelection
+        isApplyingFileListSelection = false
+    }
+
+    private func synchronizeFileListSelection() {
+        var selection = fileListSelection
+        selection.synchronize(
+            selectedIDs: Set(selectedItems.map(\.id)),
+            entries: fileListSelectionEntries
+        )
+        fileListSelection = selection
+    }
+
+    private func reconcileFileListSelection() {
+        var selection = fileListSelection
+        selection.reconcile(
+            entries: fileListSelectionEntries,
+            selectedIDs: Set(selectedItems.map(\.id))
+        )
+        fileListSelection = selection
+        applyFileListSelectionToSelectedItems()
     }
 
     private func sortedItems(_ items: [FileItem]) -> [FileItem] {
@@ -869,6 +1035,7 @@ final class FilePaneViewModel: ObservableObject {
 
     private func applyTab(_ tab: FilePaneTab) {
         invalidatePendingRequests()
+        fileListSelection.clear()
         activeTabID = tab.id
         recursiveSearchResults = []
         isShowingRecursiveSearchResults = false

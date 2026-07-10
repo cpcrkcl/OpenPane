@@ -117,6 +117,8 @@ struct FilePaneView: View {
     @State private var targetedFolderDropID: FileItem.ID?
     @State private var infoItem: FileItem?
     @State private var isShowingViewOptions = false
+    @State private var fileListFocusRequest = 0
+    @State private var isFileListKeyboardFocused = false
 
     private enum PaneContentState {
         case loading
@@ -282,6 +284,11 @@ struct FilePaneView: View {
                     isShowingViewOptions = false
                 }
             )
+        }
+        .onChange(of: isActive) { _, isActive in
+            if isActive {
+                requestFileListFocus(activatePane: false)
+            }
         }
     }
 
@@ -717,7 +724,6 @@ struct FilePaneView: View {
                 Label("Preview", systemImage: "eye")
             }
             .buttonStyle(SecondaryActionButtonStyle())
-            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .preview))
             .disabled(viewModel.selectedItems.count != 1)
 
             Button {
@@ -778,18 +784,26 @@ struct FilePaneView: View {
     private var fileTable: some View {
         GeometryReader { geometry in
             let columnVisibility = FilePaneColumnVisibility(width: geometry.size.width)
+            let pageSize = max(
+                1,
+                Int((geometry.size.height - FilePaneListMetrics.rowHeight) / (FilePaneListMetrics.rowHeight + 2)) - 1
+            )
 
-            VStack(spacing: 0) {
-                fileListHeader(columnVisibility: columnVisibility)
+            ScrollViewReader { scrollProxy in
+                VStack(spacing: 0) {
+                    fileListHeader(columnVisibility: columnVisibility)
 
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(viewModel.visibleItems) { item in
-                            FilePaneRowView(
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(viewModel.visibleItems) { item in
+                                FilePaneRowView(
                                 item: item,
                                 calculatedSizeText: viewModel.calculatedFolderSizeText(for: item),
                                 columnVisibility: columnVisibility,
                                 isSelected: viewModel.selectedItems.contains(item),
+                                isKeyboardFocused: isActive &&
+                                    isFileListKeyboardFocused &&
+                                    viewModel.focusedFileListItemID == item.id,
                                 isPaneActive: isActive,
                                 paneSide: paneSide,
                                 isOperationInProgress: isPerformingOperation,
@@ -797,7 +811,7 @@ struct FilePaneView: View {
                                     selectItem(item)
                                 },
                                 onDragItems: {
-                                    onActivate()
+                                    requestFileListFocus()
                                     return viewModel.itemsForDrag(startingFrom: item)
                                 },
                                 onContextSelect: {
@@ -864,60 +878,89 @@ struct FilePaneView: View {
                                 compressItemCount: {
                                     viewModel.contextMenuTargetItems(clickedItem: item).count
                                 }
-                            )
-                            .equatable()
+                                )
+                                .equatable()
+                                .id(item.id)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(FilePaneListMetrics.contentPadding)
+                    }
+                    .background(CatppuccinMochaTheme.base)
+                    .background {
+                        FileListKeyboardFocusView(
+                            focusRequest: fileListFocusRequest,
+                            isActive: isActive,
+                            onFocusChange: { isFocused in
+                                isFileListKeyboardFocused = isFocused
+                            },
+                            onKeyDown: { event in
+                                handleFileListKeyDown(event, pageSize: pageSize)
+                            }
+                        )
+                    }
+                    .overlay {
+                        if isPaneFileDropTargeted && targetedFolderDropID == nil {
+                            paneDropTargetOverlay
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(FilePaneListMetrics.contentPadding)
-                }
-                .background(CatppuccinMochaTheme.base)
-                .overlay {
-                    if isPaneFileDropTargeted && targetedFolderDropID == nil {
-                        paneDropTargetOverlay
-                    }
-                }
-                .onDrop(
-                    of: fileDropTypeIdentifiers,
-                    isTargeted: $isPaneFileDropTargeted,
-                    perform: { providers in
-                        handleFileDrop(providers, targetDirectory: viewModel.currentURL)
-                    }
-                )
-                .contextMenu {
-                    EmptyPaneContextMenu(
-                        includeHiddenFiles: viewModel.includeHiddenFiles,
-                        canPasteFiles: viewModel.hasFileURLsToPaste(),
-                        onNewFolder: onCreateFolder,
-                        onNewFile: onCreateFile,
-                        onPaste: onPaste,
-                        onShowViewOptions: {
-                            isShowingViewOptions = true
-                        },
-                        onCopyCurrentFolderPath: {
-                            viewModel.copyCurrentFolderPath()
-                            onStatusMessage("Copied current folder path.")
-                        },
-                        onRevealCurrentFolder: {
-                            viewModel.revealCurrentFolderInFinder()
-                        },
-                        onRefresh: {
-                            Task {
-                                await viewModel.refresh()
-                            }
-                        },
-                        onToggleHiddenFiles: {
-                            Task {
-                                await viewModel.toggleHiddenFiles()
-                            }
+                    .onDrop(
+                        of: fileDropTypeIdentifiers,
+                        isTargeted: $isPaneFileDropTargeted,
+                        perform: { providers in
+                            handleFileDrop(providers, targetDirectory: viewModel.currentURL)
                         }
                     )
+                    .contextMenu {
+                        EmptyPaneContextMenu(
+                            includeHiddenFiles: viewModel.includeHiddenFiles,
+                            canPasteFiles: viewModel.hasFileURLsToPaste(),
+                            onNewFolder: onCreateFolder,
+                            onNewFile: onCreateFile,
+                            onPaste: onPaste,
+                            onShowViewOptions: {
+                                isShowingViewOptions = true
+                            },
+                            onCopyCurrentFolderPath: {
+                                viewModel.copyCurrentFolderPath()
+                                onStatusMessage("Copied current folder path.")
+                            },
+                            onRevealCurrentFolder: {
+                                viewModel.revealCurrentFolderInFinder()
+                            },
+                            onRefresh: {
+                                Task {
+                                    await viewModel.refresh()
+                                }
+                            },
+                            onToggleHiddenFiles: {
+                                Task {
+                                    await viewModel.toggleHiddenFiles()
+                                }
+                            }
+                        )
+                    }
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            requestFileListFocus()
+                        }
+                    )
+                    .onRightClickInside {
+                        requestFileListFocus()
+                    }
                 }
-                .onRightClickInside {
-                    onActivate()
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .onChange(of: viewModel.focusedFileListItemID) { _, focusedID in
+                    guard let focusedID else {
+                        return
+                    }
+
+                    withAnimation(.easeOut(duration: 0.08)) {
+                        scrollProxy.scrollTo(focusedID, anchor: .center)
+                    }
                 }
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CatppuccinMochaTheme.base)
@@ -1051,20 +1094,98 @@ struct FilePaneView: View {
     }
 
     private func selectItem(_ item: FileItem) {
-        if NSEvent.modifierFlags.contains(.command) {
-            if viewModel.selectedItems.contains(item) {
-                viewModel.selectedItems.remove(item)
-            } else {
-                viewModel.selectedItems.insert(item)
-            }
-        } else {
-            viewModel.selectedItems = [item]
-        }
+        requestFileListFocus()
+        let modifiers = NSEvent.modifierFlags
+        viewModel.selectFileListItem(
+            item,
+            commandModifier: modifiers.contains(.command),
+            shiftModifier: modifiers.contains(.shift)
+        )
     }
 
     private func selectItemForContextMenu(_ item: FileItem) {
-        onActivate()
+        requestFileListFocus()
         viewModel.selectForContextMenu(item)
+    }
+
+    private func requestFileListFocus(activatePane: Bool = true) {
+        if activatePane {
+            onActivate()
+        }
+        fileListFocusRequest += 1
+    }
+
+    private func handleFileListKeyDown(_ event: NSEvent, pageSize: Int) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let extendsSelection = modifiers.contains(.shift)
+
+        if keyboardShortcutStore.shortcut(for: .open).matches(event) {
+            Task {
+                await viewModel.openFocusedFileListItem()
+            }
+            return true
+        }
+
+        if keyboardShortcutStore.shortcut(for: .preview).matches(event) {
+            viewModel.previewFocusedFileListItem()
+            return true
+        }
+
+        if keyboardShortcutStore.shortcut(for: .copyFiles).matches(event) {
+            let copiedItemCount = viewModel.copySelectedItemsToPasteboard()
+            if copiedItemCount > 0 {
+                onStatusMessage(copyItemsStatusMessage(itemCount: copiedItemCount))
+            }
+            return true
+        }
+
+        if keyboardShortcutStore.shortcut(for: .pasteFiles).matches(event) {
+            onPaste()
+            return true
+        }
+
+        if modifiers.contains(.command),
+           !modifiers.contains(.option),
+           !modifiers.contains(.control),
+           event.charactersIgnoringModifiers?.lowercased() == "a" {
+            viewModel.selectAllVisibleItems()
+            return true
+        }
+
+        let focusedID: FileItem.ID?
+        switch event.keyCode {
+        case 126:
+            focusedID = viewModel.moveFileListFocus(by: -1, extendingSelection: extendsSelection)
+        case 125:
+            focusedID = viewModel.moveFileListFocus(by: 1, extendingSelection: extendsSelection)
+        case 115:
+            focusedID = viewModel.moveFileListFocus(toIndex: 0, extendingSelection: extendsSelection)
+        case 119:
+            focusedID = viewModel.moveFileListFocus(
+                toIndex: viewModel.visibleItems.count - 1,
+                extendingSelection: extendsSelection
+            )
+        case 116:
+            focusedID = viewModel.moveFileListFocus(by: -pageSize, extendingSelection: extendsSelection)
+        case 121:
+            focusedID = viewModel.moveFileListFocus(by: pageSize, extendingSelection: extendsSelection)
+        default:
+            focusedID = nil
+        }
+
+        if focusedID != nil {
+            return true
+        }
+
+        let disallowedTypeAheadModifiers: NSEvent.ModifierFlags = [.command, .control, .option]
+        guard modifiers.intersection(disallowedTypeAheadModifiers).isEmpty,
+              let characters = event.characters,
+              !characters.isEmpty,
+              characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            return false
+        }
+
+        return viewModel.selectFileListItemByTypeAhead(characters) != nil
     }
 
     private func handleFileDrop(_ providers: [NSItemProvider], targetDirectory: URL) -> Bool {
@@ -1299,6 +1420,7 @@ private struct FilePaneRowView: View {
     let calculatedSizeText: String?
     let columnVisibility: FilePaneColumnVisibility
     let isSelected: Bool
+    let isKeyboardFocused: Bool
     let isPaneActive: Bool
     let paneSide: PaneSide?
     let isOperationInProgress: Bool
@@ -1351,6 +1473,10 @@ private struct FilePaneRowView: View {
                 : CatppuccinMochaTheme.surface1.opacity(0.58)
         }
 
+        if isKeyboardFocused {
+            return CatppuccinMochaTheme.accent.opacity(0.10)
+        }
+
         if isHovered {
             return CatppuccinMochaTheme.surface1.opacity(0.58)
         }
@@ -1366,6 +1492,10 @@ private struct FilePaneRowView: View {
             return CatppuccinMochaTheme.destructive.opacity(0.72)
         case .none:
             break
+        }
+
+        if isKeyboardFocused {
+            return CatppuccinMochaTheme.accentSecondary.opacity(0.92)
         }
 
         return isSelected ? CatppuccinMochaTheme.accent.opacity(0.45) : Color.clear
@@ -1423,7 +1553,12 @@ private struct FilePaneRowView: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
-                .stroke(rowBorder, lineWidth: isFileDropTargeted ? CatppuccinMochaTheme.paneBorderWidth : CatppuccinMochaTheme.hairlineBorderWidth)
+                .stroke(
+                    rowBorder,
+                    lineWidth: isFileDropTargeted || isKeyboardFocused
+                        ? CatppuccinMochaTheme.paneBorderWidth
+                        : CatppuccinMochaTheme.hairlineBorderWidth
+                )
         }
         .overlay(alignment: .leading) {
             if isFileDropTargeted {
@@ -1581,6 +1716,7 @@ extension FilePaneRowView: Equatable {
             lhs.calculatedSizeText == rhs.calculatedSizeText &&
             lhs.columnVisibility == rhs.columnVisibility &&
             lhs.isSelected == rhs.isSelected &&
+            lhs.isKeyboardFocused == rhs.isKeyboardFocused &&
             lhs.isPaneActive == rhs.isPaneActive &&
             lhs.paneSide == rhs.paneSide &&
             lhs.isOperationInProgress == rhs.isOperationInProgress
@@ -2015,6 +2151,91 @@ private struct FilePaneViewOptionsView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
+        }
+    }
+}
+
+private struct FileListKeyboardFocusView: NSViewRepresentable {
+    let focusRequest: Int
+    let isActive: Bool
+    let onFocusChange: (Bool) -> Void
+    let onKeyDown: (NSEvent) -> Bool
+
+    func makeNSView(context: Context) -> FileListKeyboardNSView {
+        let view = FileListKeyboardNSView()
+        view.onFocusChange = onFocusChange
+        view.onKeyDown = onKeyDown
+        return view
+    }
+
+    func updateNSView(_ nsView: FileListKeyboardNSView, context: Context) {
+        nsView.onFocusChange = onFocusChange
+        nsView.onKeyDown = onKeyDown
+        nsView.updateFocusRequest(focusRequest, isActive: isActive)
+    }
+}
+
+private final class FileListKeyboardNSView: NSView {
+    var onFocusChange: (Bool) -> Void = { _ in }
+    var onKeyDown: (NSEvent) -> Bool = { _ in false }
+
+    private var focusRequest = 0
+    private var fulfilledFocusRequest = -1
+    private var isActive = false
+
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        fulfillFocusRequestIfNeeded()
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let didBecomeFirstResponder = super.becomeFirstResponder()
+        if didBecomeFirstResponder {
+            onFocusChange(true)
+        }
+        return didBecomeFirstResponder
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let didResignFirstResponder = super.resignFirstResponder()
+        if didResignFirstResponder {
+            onFocusChange(false)
+        }
+        return didResignFirstResponder
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if !onKeyDown(event) {
+            super.keyDown(with: event)
+        }
+    }
+
+    func updateFocusRequest(_ focusRequest: Int, isActive: Bool) {
+        self.focusRequest = focusRequest
+        self.isActive = isActive
+        fulfillFocusRequestIfNeeded()
+    }
+
+    private func fulfillFocusRequestIfNeeded() {
+        guard isActive,
+              focusRequest != fulfilledFocusRequest,
+              let window else {
+            return
+        }
+
+        fulfilledFocusRequest = focusRequest
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self,
+                  self.isActive,
+                  self.focusRequest == self.fulfilledFocusRequest else {
+                return
+            }
+
+            window?.makeFirstResponder(self)
         }
     }
 }

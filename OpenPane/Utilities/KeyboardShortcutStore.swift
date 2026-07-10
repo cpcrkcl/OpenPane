@@ -5,6 +5,7 @@
 //  Created by Christopher Rego on 6/7/26.
 //
 
+import AppKit
 import Combine
 import SwiftUI
 
@@ -18,8 +19,11 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case copyToOtherPane
     case moveToOtherPane
     case newFolder
+    case open
     case rename
     case preview
+    case copyFiles
+    case pasteFiles
     case moveToTrash
 
     var id: String {
@@ -46,10 +50,16 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
             "Move to other pane"
         case .newFolder:
             "New folder"
+        case .open:
+            "Open focused item"
         case .rename:
             "Rename"
         case .preview:
             "Preview"
+        case .copyFiles:
+            "Copy selected files"
+        case .pasteFiles:
+            "Paste files"
         case .moveToTrash:
             "Move to Trash"
         }
@@ -221,8 +231,18 @@ final class KeyboardShortcutStore: ObservableObject {
 
         if let data = userDefaults.data(forKey: userDefaultsKey),
            let savedShortcuts = try? JSONDecoder().decode([String: OpenPaneKeyboardShortcut].self, from: data) {
-            shortcuts = Self.defaultShortcuts.merging(savedShortcuts.compactMapKeys(OpenPaneShortcutAction.init(rawValue:))) { _, saved in
+            var resolvedSavedShortcuts = savedShortcuts.compactMapKeys(OpenPaneShortcutAction.init(rawValue:))
+            let shouldMigrateLegacyReturnRename = resolvedSavedShortcuts[.open] == nil &&
+                resolvedSavedShortcuts[.rename] == Self.legacyRenameShortcut
+            if shouldMigrateLegacyReturnRename {
+                resolvedSavedShortcuts[.rename] = Self.defaultShortcuts[.rename]
+            }
+
+            shortcuts = Self.defaultShortcuts.merging(resolvedSavedShortcuts) { _, saved in
                 saved
+            }
+            if shouldMigrateLegacyReturnRename {
+                save()
             }
         } else {
             shortcuts = Self.defaultShortcuts
@@ -261,6 +281,14 @@ final class KeyboardShortcutStore: ObservableObject {
         usesControl: false
     )
 
+    private static let legacyRenameShortcut = OpenPaneKeyboardShortcut(
+        key: ShortcutKey(rawValue: "return"),
+        usesCommand: false,
+        usesShift: false,
+        usesOption: false,
+        usesControl: false
+    )
+
     private static let defaultShortcuts: [OpenPaneShortcutAction: OpenPaneKeyboardShortcut] = [
         .goBack: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "["), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .goForward: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "]"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
@@ -271,10 +299,45 @@ final class KeyboardShortcutStore: ObservableObject {
         .copyToOtherPane: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "c"), usesCommand: true, usesShift: false, usesOption: true, usesControl: false),
         .moveToOtherPane: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "m"), usesCommand: true, usesShift: false, usesOption: true, usesControl: false),
         .newFolder: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "n"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false),
-        .rename: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "return"), usesCommand: false, usesShift: false, usesOption: false, usesControl: false),
+        .open: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "return"), usesCommand: false, usesShift: false, usesOption: false, usesControl: false),
+        .rename: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "return"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .preview: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "space"), usesCommand: false, usesShift: false, usesOption: false, usesControl: false),
+        .copyFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "c"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
+        .pasteFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "v"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .moveToTrash: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "delete"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false)
     ]
+}
+
+extension OpenPaneKeyboardShortcut {
+    func matches(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let expectedFlags: NSEvent.ModifierFlags = [
+            usesCommand ? .command : [],
+            usesShift ? .shift : [],
+            usesOption ? .option : [],
+            usesControl ? .control : []
+        ].reduce(into: []) { $0.formUnion($1) }
+
+        return flags.intersection([.command, .shift, .option, .control]) == expectedFlags &&
+            key.matches(event)
+    }
+}
+
+private extension ShortcutKey {
+    func matches(_ event: NSEvent) -> Bool {
+        switch rawValue {
+        case "return":
+            return event.keyCode == 36 || event.keyCode == 76
+        case "delete":
+            return event.keyCode == 51 || event.keyCode == 117
+        case "upArrow":
+            return event.keyCode == 126
+        case "space":
+            return event.keyCode == 49
+        default:
+            return event.charactersIgnoringModifiers?.lowercased() == rawValue
+        }
+    }
 }
 
 private extension Dictionary {
