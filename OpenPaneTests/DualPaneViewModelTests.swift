@@ -251,6 +251,35 @@ struct DualPaneViewModelTests {
         #expect(viewModel.operationStatusMessage == "Copied 1 item to Destination.")
     }
 
+    @Test func partialCopyFailureRefreshesDestinationAndReportsCompletedCount() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createSourceFile(named: "first.txt", contents: "first")
+        let secondItem = try temporaryDirectory.createSourceFile(named: "second.txt", contents: "second")
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: PartialTransferFileOperationService(operation: .copy)
+        )
+        leftPane.items = [firstItem, secondItem]
+        leftPane.selectedItems = [firstItem, secondItem]
+
+        await viewModel.copySelectionToOtherPane()
+
+        #expect(rightPane.items.map(\.name) == ["first.txt"])
+        #expect(leftPane.items.map(\.name) == ["first.txt", "second.txt"])
+        #expect(viewModel.operationStatusMessage == "Copy failed. 1 of 2 completed.")
+        #expect(viewModel.errorMessage?.contains("Simulated failure") == true)
+        #expect(viewModel.isPerformingOperation == false)
+    }
+
     @Test func moveSelectionToOtherPaneShowsErrorWhenNothingIsSelected() async {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
@@ -283,6 +312,35 @@ struct DualPaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
         #expect(viewModel.isPerformingOperation == false)
         #expect(viewModel.operationStatusMessage == "Moved 1 item to Destination.")
+    }
+
+    @Test func partialMoveFailureRefreshesBothPanesAndReportsCompletedCount() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createSourceFile(named: "first.txt", contents: "first")
+        let secondItem = try temporaryDirectory.createSourceFile(named: "second.txt", contents: "second")
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: PartialTransferFileOperationService(operation: .move)
+        )
+        leftPane.items = [firstItem, secondItem]
+        leftPane.selectedItems = [firstItem, secondItem]
+
+        await viewModel.moveSelectionToOtherPane()
+
+        #expect(leftPane.items.map(\.name) == ["second.txt"])
+        #expect(rightPane.items.map(\.name) == ["first.txt"])
+        #expect(viewModel.operationStatusMessage == "Move failed. 1 of 2 completed.")
+        #expect(viewModel.errorMessage?.contains("Simulated failure") == true)
+        #expect(viewModel.isPerformingOperation == false)
     }
 
     @Test func moveSelectionUpdatesOriginalActivePaneWhenFocusChangesDuringOperation() async throws {
@@ -652,7 +710,7 @@ struct DualPaneViewModelTests {
     @Test func trashSelectionInActivePaneSurfacesErrors() async throws {
         let temporaryDirectory = try DualPaneTestTemporaryDirectory()
         let sourceItem = try temporaryDirectory.createSourceFile(named: "trash.txt", contents: "trash me")
-        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: EmptyFileBrowserService())
+        let leftPane = FilePaneViewModel(currentURL: temporaryDirectory.sourceURL, fileBrowserService: FileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: temporaryDirectory.destinationURL, fileBrowserService: EmptyFileBrowserService())
         let fileOperationService = MockFileOperationService(error: FileOperationError.trashFailed(sourceItem.url, "Trash is unavailable"))
         let viewModel = DualPaneViewModel(
@@ -666,8 +724,8 @@ struct DualPaneViewModelTests {
         await viewModel.trashSelectionInActivePane()
 
         #expect(fileOperationService.trashedItems == [sourceItem])
-        #expect(leftPane.items == [sourceItem])
-        #expect(leftPane.selectedItems == [sourceItem])
+        #expect(leftPane.items.map(\.name) == [sourceItem.name])
+        #expect(leftPane.selectedItems.map(\.name) == [sourceItem.name])
         #expect(viewModel.errorMessage == "Could not move trash.txt to Trash: Trash is unavailable")
         #expect(viewModel.isPerformingOperation == false)
         #expect(viewModel.operationStatusMessage == "Move to Trash failed.")
@@ -991,6 +1049,72 @@ private final class MockFileOperationService: FileOperationServicing, @unchecked
     func createFile(named name: String, in directory: URL) async throws -> URL {
         directory.appendingPathComponent(name, isDirectory: false)
     }
+}
+
+private final class PartialTransferFileOperationService: FileOperationServicing, @unchecked Sendable {
+    enum Operation {
+        case copy
+        case move
+    }
+
+    private let operation: Operation
+
+    init(operation: Operation) {
+        self.operation = operation
+    }
+
+    func copy(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution,
+        progressHandler: FileOperationProgressHandler?
+    ) async throws {
+        guard operation == .copy, let firstItem = items.first else {
+            return
+        }
+
+        progressHandler?(FileOperationProgress(completedItemCount: 0, totalItemCount: items.count))
+        try FileManager.default.copyItem(
+            at: firstItem.url,
+            to: destinationDirectory.appendingPathComponent(firstItem.name, isDirectory: firstItem.isDirectory)
+        )
+        progressHandler?(FileOperationProgress(completedItemCount: 1, totalItemCount: items.count))
+        throw FileOperationError.operationFailed("copy", items.dropFirst().first?.url ?? firstItem.url, "Simulated failure")
+    }
+
+    func move(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution,
+        progressHandler: FileOperationProgressHandler?
+    ) async throws {
+        guard operation == .move, let firstItem = items.first else {
+            return
+        }
+
+        progressHandler?(FileOperationProgress(completedItemCount: 0, totalItemCount: items.count))
+        try FileManager.default.moveItem(
+            at: firstItem.url,
+            to: destinationDirectory.appendingPathComponent(firstItem.name, isDirectory: firstItem.isDirectory)
+        )
+        progressHandler?(FileOperationProgress(completedItemCount: 1, totalItemCount: items.count))
+        throw FileOperationError.operationFailed("move", items.dropFirst().first?.url ?? firstItem.url, "Simulated failure")
+    }
+
+    func trash(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {}
+    func duplicate(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {}
+    func compress(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws -> URL {
+        URL(filePath: "/archive.zip")
+    }
+    func rename(item: FileItem, to newName: String) async throws -> URL { item.url }
+    func batchRename(
+        items: [FileItem],
+        baseName: String,
+        startingNumber: Int,
+        preserveExtensions: Bool
+    ) async throws -> [URL] { [] }
+    func createFolder(named name: String, in directory: URL) async throws -> URL { directory }
+    func createFile(named name: String, in directory: URL) async throws -> URL { directory }
 }
 
 private final class SuspendingMoveFileOperationService: FileOperationServicing, @unchecked Sendable {

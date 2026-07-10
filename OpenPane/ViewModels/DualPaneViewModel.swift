@@ -60,6 +60,8 @@ nonisolated struct FileOperationState: Equatable, Sendable {
 
 private final class OperationProgressSink: @unchecked Sendable {
     @MainActor private weak var viewModel: DualPaneViewModel?
+    private let lock = NSLock()
+    nonisolated(unsafe) private var protectedLatestProgress: FileOperationProgress?
 
     @MainActor
     init(viewModel: DualPaneViewModel) {
@@ -67,8 +69,17 @@ private final class OperationProgressSink: @unchecked Sendable {
     }
 
     nonisolated func report(_ progress: FileOperationProgress) {
+        lock.withLock {
+            protectedLatestProgress = progress
+        }
         Task { @MainActor [weak self] in
             self?.viewModel?.applyOperationProgress(progress)
+        }
+    }
+
+    nonisolated var latestProgress: FileOperationProgress? {
+        lock.withLock {
+            protectedLatestProgress
         }
     }
 }
@@ -296,13 +307,16 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "Copy failed.",
             totalItemCount: selectedItems.count,
             operationWithProgress: { [self] progressHandler in
-            try await fileOperationService.copy(
-                items: selectedItems,
-                to: destinationURL,
-                conflictResolution: conflictResolution,
-                progressHandler: progressHandler
-            )
-            await refreshPanes(showingAnyOf: [destinationURL])
+            try await performReconciledMutation {
+                try await fileOperationService.copy(
+                    items: selectedItems,
+                    to: destinationURL,
+                    conflictResolution: conflictResolution,
+                    progressHandler: progressHandler
+                )
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [destinationURL])
+            }
         })
     }
 
@@ -376,31 +390,33 @@ final class DualPaneViewModel: ObservableObject {
             operationWithProgress: { [self] progressHandler in
             let items = try uniqueFileURLs.map { try FileItem(url: $0) }
 
-            switch operation {
-            case .copy:
-                try await fileOperationService.copy(
-                    items: items,
-                    to: targetDirectory,
-                    conflictResolution: conflictResolution,
-                    progressHandler: progressHandler
-                )
-            case .move:
-                try await fileOperationService.move(
-                    items: items,
-                    to: targetDirectory,
-                    conflictResolution: conflictResolution,
-                    progressHandler: progressHandler
-                )
-            }
+            try await performReconciledMutation {
+                switch operation {
+                case .copy:
+                    try await fileOperationService.copy(
+                        items: items,
+                        to: targetDirectory,
+                        conflictResolution: conflictResolution,
+                        progressHandler: progressHandler
+                    )
+                case .move:
+                    try await fileOperationService.move(
+                        items: items,
+                        to: targetDirectory,
+                        conflictResolution: conflictResolution,
+                        progressHandler: progressHandler
+                    )
+                }
+            } reconcile: {
+                targetPane.markTabsDirty(showingAnyOf: [targetDirectory])
+                await targetPane.refresh()
 
-            targetPane.markTabsDirty(showingAnyOf: [targetDirectory])
-            await targetPane.refresh()
-
-            if let sourcePaneSide {
-                let sourcePane = pane(for: sourcePaneSide)
-                sourcePane.markTabsDirty(showingAnyOf: uniqueFileURLs.map { $0.deletingLastPathComponent() })
-                if operation == .move || sourcePane.currentURL == targetDirectory {
-                    await sourcePane.refresh()
+                if let sourcePaneSide {
+                    let sourcePane = pane(for: sourcePaneSide)
+                    sourcePane.markTabsDirty(showingAnyOf: uniqueFileURLs.map { $0.deletingLastPathComponent() })
+                    if operation == .move || sourcePane.currentURL == targetDirectory {
+                        await sourcePane.refresh()
+                    }
                 }
             }
         })
@@ -422,14 +438,17 @@ final class DualPaneViewModel: ObservableObject {
             totalItemCount: selectedItems.count,
             operationWithProgress: { [self] progressHandler in
             let sourceURL = sourcePane.currentURL
-            try await fileOperationService.move(
-                items: selectedItems,
-                to: destinationURL,
-                conflictResolution: conflictResolution,
-                progressHandler: progressHandler
-            )
-            sourcePane.selectedItems = []
-            await refreshPanes(showingAnyOf: [sourceURL, destinationURL])
+            try await performReconciledMutation {
+                try await fileOperationService.move(
+                    items: selectedItems,
+                    to: destinationURL,
+                    conflictResolution: conflictResolution,
+                    progressHandler: progressHandler
+                )
+                sourcePane.selectedItems = []
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [sourceURL, destinationURL])
+            }
         })
     }
 
@@ -447,9 +466,12 @@ final class DualPaneViewModel: ObservableObject {
             totalItemCount: selectedItems.count,
             operationWithProgress: { [self] progressHandler in
             let sourceURL = sourcePane.currentURL
-            try await fileOperationService.trash(items: selectedItems, progressHandler: progressHandler)
-            sourcePane.selectedItems = []
-            await refreshPanes(showingAnyOf: [sourceURL])
+            try await performReconciledMutation {
+                try await fileOperationService.trash(items: selectedItems, progressHandler: progressHandler)
+                sourcePane.selectedItems = []
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [sourceURL])
+            }
         })
     }
 
@@ -489,13 +511,17 @@ final class DualPaneViewModel: ObservableObject {
             totalItemCount: fileURLs.count,
             operationWithProgress: { [self] progressHandler in
             let items = try fileURLs.map { try FileItem(url: $0) }
-            try await fileOperationService.copy(
-                items: items,
-                to: pane.currentURL,
-                conflictResolution: .cancel,
-                progressHandler: progressHandler
-            )
-            await refreshPanes(showingAnyOf: [pane.currentURL])
+            let destinationURL = pane.currentURL
+            try await performReconciledMutation {
+                try await fileOperationService.copy(
+                    items: items,
+                    to: destinationURL,
+                    conflictResolution: .cancel,
+                    progressHandler: progressHandler
+                )
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [destinationURL])
+            }
         })
     }
 
@@ -509,8 +535,11 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "New folder failed.",
             totalItemCount: 1
         ) { [self] in
-            _ = try await fileOperationService.createFolder(named: name, in: currentURL)
-            await refreshPanes(showingAnyOf: [currentURL])
+            try await performReconciledMutation {
+                _ = try await fileOperationService.createFolder(named: name, in: currentURL)
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [currentURL])
+            }
         }
     }
 
@@ -524,8 +553,11 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "New file failed.",
             totalItemCount: 1
         ) { [self] in
-            _ = try await fileOperationService.createFile(named: name, in: currentURL)
-            await refreshPanes(showingAnyOf: [currentURL])
+            try await performReconciledMutation {
+                _ = try await fileOperationService.createFile(named: name, in: currentURL)
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [currentURL])
+            }
         }
     }
 
@@ -548,9 +580,12 @@ final class DualPaneViewModel: ObservableObject {
             totalItemCount: 1
         ) { [self] in
             let sourceURL = sourcePane.currentURL
-            _ = try await fileOperationService.rename(item: selectedItem, to: newName)
-            sourcePane.selectedItems = []
-            await refreshPanes(showingAnyOf: [sourceURL])
+            try await performReconciledMutation {
+                _ = try await fileOperationService.rename(item: selectedItem, to: newName)
+                sourcePane.selectedItems = []
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [sourceURL])
+            }
         }
     }
 
@@ -571,14 +606,17 @@ final class DualPaneViewModel: ObservableObject {
             totalItemCount: selectedItems.count
         ) { [self] in
             let sourceURL = sourcePane.currentURL
-            _ = try await fileOperationService.batchRename(
-                items: selectedItems,
-                baseName: baseName,
-                startingNumber: startingNumber,
-                preserveExtensions: true
-            )
-            sourcePane.selectedItems = []
-            await refreshPanes(showingAnyOf: [sourceURL])
+            try await performReconciledMutation {
+                _ = try await fileOperationService.batchRename(
+                    items: selectedItems,
+                    baseName: baseName,
+                    startingNumber: startingNumber,
+                    preserveExtensions: true
+                )
+                sourcePane.selectedItems = []
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [sourceURL])
+            }
         }
     }
 
@@ -589,8 +627,12 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "Duplicate failed.",
             totalItemCount: items.count,
             operationWithProgress: { [self] progressHandler in
-            try await fileOperationService.duplicate(items: items, progressHandler: progressHandler)
-            await refreshPanes(showingAnyOf: [pane.currentURL])
+            let directoryURL = pane.currentURL
+            try await performReconciledMutation {
+                try await fileOperationService.duplicate(items: items, progressHandler: progressHandler)
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [directoryURL])
+            }
         })
     }
 
@@ -601,8 +643,12 @@ final class DualPaneViewModel: ObservableObject {
             failureMessage: "Compress failed.",
             totalItemCount: items.count,
             operationWithProgress: { [self] progressHandler in
-            _ = try await fileOperationService.compress(items: items, progressHandler: progressHandler)
-            await refreshPanes(showingAnyOf: [pane.currentURL])
+            let directoryURL = pane.currentURL
+            try await performReconciledMutation {
+                _ = try await fileOperationService.compress(items: items, progressHandler: progressHandler)
+            } reconcile: {
+                await refreshPanes(showingAnyOf: [directoryURL])
+            }
         })
     }
 
@@ -669,9 +715,26 @@ final class DualPaneViewModel: ObservableObject {
             operationStatusMessage = "Operation cancelled."
             errorMessage = nil
         } catch {
-            operationStatusMessage = failureMessage
+            operationStatusMessage = Self.failureStatusMessage(
+                failureMessage,
+                progress: progressSink.latestProgress
+            )
             errorMessage = Self.userReadableError(for: error)
         }
+    }
+
+    private func performReconciledMutation(
+        operation: () async throws -> Void,
+        reconcile: () async -> Void
+    ) async throws {
+        do {
+            try await operation()
+        } catch {
+            await reconcile()
+            throw error
+        }
+
+        await reconcile()
     }
 
     fileprivate func applyOperationProgress(_ progress: FileOperationProgress) {
@@ -688,7 +751,10 @@ final class DualPaneViewModel: ObservableObject {
     }
 
     private func selectedItemsForOperation(in pane: FilePaneViewModel, verb: String) -> [FileItem]? {
-        let selectedItems = Array(pane.selectedItems)
+        let orderedSelectedItems = pane.orderedSelectedItems
+        let selectedItems = orderedSelectedItems.isEmpty
+            ? pane.selectedItems.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            : orderedSelectedItems
 
         guard !selectedItems.isEmpty else {
             errorMessage = "Select one or more items to \(verb)."
@@ -745,6 +811,19 @@ final class DualPaneViewModel: ObservableObject {
     private static func itemCountDescription(_ count: Int) -> String {
         let itemText = count == 1 ? "item" : "items"
         return "\(count) \(itemText)"
+    }
+
+    private static func failureStatusMessage(
+        _ failureMessage: String,
+        progress: FileOperationProgress?
+    ) -> String {
+        guard let progress,
+              progress.completedItemCount > 0,
+              progress.totalItemCount > progress.completedItemCount else {
+            return failureMessage
+        }
+
+        return "\(failureMessage) \(progress.completedItemCount) of \(progress.totalItemCount) completed."
     }
 
     private static func uniqueFileURLs(_ urls: [URL]) -> [URL] {

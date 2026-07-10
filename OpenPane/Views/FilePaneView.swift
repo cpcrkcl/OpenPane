@@ -1011,7 +1011,7 @@ struct FilePaneView: View {
             .overlay(alignment: .center) {
                 dropHint(
                     title: "Drop to copy here",
-                    subtitle: "Move available after drop",
+                    subtitle: "Copies into the target folder",
                     systemImage: "doc.on.doc",
                     tint: CatppuccinMochaTheme.accent
                 )

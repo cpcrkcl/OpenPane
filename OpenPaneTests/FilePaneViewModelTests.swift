@@ -1093,6 +1093,28 @@ struct FilePaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
     }
 
+    @Test func copySelectedItemsToPasteboardUsesVisibleSelectionOrder() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let firstItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let secondItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let workspaceService = MockWorkspaceService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [secondItem, firstItem]
+            ]),
+            workspaceService: workspaceService
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.selectedItems = [secondItem, firstItem]
+
+        let copiedItemCount = viewModel.copySelectedItemsToPasteboard()
+
+        #expect(copiedItemCount == 2)
+        #expect(workspaceService.copiedFileURLs == [firstItem.url, secondItem.url])
+        #expect(viewModel.errorMessage == nil)
+    }
+
     @Test func previewSelectedItemShowsErrorWhenNothingIsSelected() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let quickLookPreviewService = MockQuickLookPreviewService()

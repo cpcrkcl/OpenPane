@@ -22,7 +22,6 @@ struct DualPaneView: View {
     @State private var isShowingTrashConfirmation = false
     @State private var trashConfirmationItemCount = 0
     @State private var pendingConflictOperation: PendingConflictOperation?
-    @State private var pendingFileDrop: PendingFileDrop?
     @State private var leftPaneWidth: CGFloat?
     @State private var isCommandPalettePresented = false
     @FocusState private var focusedSheetField: SheetField?
@@ -180,33 +179,6 @@ struct DualPaneView: View {
             }
         } message: {
             Text(pendingConflictMessage)
-        }
-        .confirmationDialog(
-            "Drop Items",
-            isPresented: Binding {
-                pendingFileDrop != nil
-            } set: { isPresented in
-                if !isPresented {
-                    pendingFileDrop = nil
-                }
-            },
-            titleVisibility: .visible
-        ) {
-            Button("Copy Here") {
-                runPendingFileDrop(.copy)
-            }
-            .disabled(viewModel.isPerformingOperation)
-
-            Button("Move Here") {
-                runPendingFileDrop(.move)
-            }
-            .disabled(viewModel.isPerformingOperation)
-
-            Button("Cancel", role: .cancel) {
-                pendingFileDrop = nil
-            }
-        } message: {
-            Text(pendingFileDropMessage)
         }
     }
 
@@ -664,15 +636,6 @@ struct DualPaneView: View {
         return "Move \(trashConfirmationItemCount) selected \(itemText) to Trash?"
     }
 
-    private var pendingFileDropMessage: String {
-        guard let pendingFileDrop else {
-            return ""
-        }
-
-        let itemText = pendingFileDrop.fileURLs.count == 1 ? "item" : "items"
-        return "Choose how to place \(pendingFileDrop.fileURLs.count) \(itemText) into \(pendingFileDrop.targetDirectory.openPaneDisplayName). Move changes the original location."
-    }
-
     private var pendingConflictMessage: String {
         switch pendingConflictOperation {
         case .copySelection, .moveSelection:
@@ -695,30 +658,18 @@ struct DualPaneView: View {
         }
 
         viewModel.setActivePane(targetPaneSide)
-        pendingFileDrop = PendingFileDrop(
+        let drop = PendingFileDrop(
             fileURLs: fileURLs,
             sourcePaneSide: sourcePaneSide,
             targetDirectory: targetDirectory,
             targetPaneSide: targetPaneSide
         )
-        let itemText = fileURLs.count == 1 ? "item" : "items"
-        viewModel.showStatusMessage("Ready to drop \(fileURLs.count) \(itemText) into \(targetDirectory.openPaneDisplayName).")
-    }
-
-    private func runPendingFileDrop(_ operation: FileDropOperation) {
-        guard let pendingFileDrop else {
+        if hasPotentialConflict(in: drop) {
+            pendingConflictOperation = .fileDrop(drop, .copy)
             return
         }
 
-        self.pendingFileDrop = nil
-        viewModel.setActivePane(pendingFileDrop.targetPaneSide)
-
-        if hasPotentialConflict(in: pendingFileDrop) {
-            pendingConflictOperation = .fileDrop(pendingFileDrop, operation)
-            return
-        }
-
-        runFileDrop(pendingFileDrop, operation: operation, conflictResolution: .cancel)
+        runFileDrop(drop, operation: .copy, conflictResolution: .cancel)
     }
 
     private func runFileDrop(
