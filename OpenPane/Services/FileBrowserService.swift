@@ -49,7 +49,7 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
 
                 let fileURLs = try FileManager.default.contentsOfDirectory(
                     at: url,
-                    includingPropertiesForKeys: Array(FileItem.resourceKeys),
+                    includingPropertiesForKeys: Array(FileItem.essentialResourceKeys),
                     options: []
                 )
 
@@ -58,7 +58,7 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
 
                 for fileURL in fileURLs {
                     try Task.checkCancellation()
-                    let item = try FileItem(url: fileURL)
+                    let item = try FileItem(essentialURL: fileURL)
 
                     guard includeHiddenFiles || (!item.isHidden && !item.name.hasPrefix(".")) else {
                         continue

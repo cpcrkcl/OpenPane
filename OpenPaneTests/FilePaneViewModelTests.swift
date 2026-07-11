@@ -11,6 +11,37 @@ import Testing
 
 @MainActor
 struct FilePaneViewModelTests {
+    @Test func directoryLoadPublishesLightweightRowsBeforeMetadataEnrichment() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fullItem = try temporaryDirectory.createFileItem(named: "progressive.txt", contents: "metadata")
+        let lightweightItem = try FileItem(essentialURL: fullItem.url)
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [temporaryDirectory.url: [lightweightItem]]),
+            metadataEnricher: { items in
+                try await Task.sleep(nanoseconds: 50_000_000)
+                return try await FilePaneViewModel.enrichMetadata(in: items)
+            }
+        )
+
+        await viewModel.loadCurrentDirectory()
+
+        #expect(viewModel.items == [lightweightItem])
+        #expect(viewModel.visibleItems == [lightweightItem])
+        #expect(viewModel.items[0].hasExtendedMetadata == false)
+        #expect(viewModel.isLoading == false)
+
+        viewModel.selectFileListItem(lightweightItem, commandModifier: false, shiftModifier: false)
+        let focusedID = viewModel.focusedFileListItemID
+        await viewModel.waitForMetadataEnrichment()
+
+        #expect(viewModel.items[0].hasExtendedMetadata)
+        #expect(viewModel.items[0].size == fullItem.size)
+        #expect(viewModel.selectedItems.map(\.id) == [fullItem.id])
+        #expect(viewModel.focusedFileListItemID == focusedID)
+        #expect(viewModel.metadataEnrichmentPublicationCount == 1)
+    }
+
     @Test func defaultsToHomeDirectory() {
         let viewModel = FilePaneViewModel(fileBrowserService: MockFileBrowserService())
 

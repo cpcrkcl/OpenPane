@@ -15,6 +15,7 @@ struct FileInfoView: View {
     let onClose: () -> Void
 
     @State private var details: FileInfoDetails?
+    @State private var icon: NSImage?
 
     private let fileIconService = FileIconService.shared
 
@@ -46,13 +47,31 @@ struct FileInfoView: View {
         .task(id: item.id) {
             details = await FileInfoDetails.load(for: item.url)
         }
+        .task(id: item.id) {
+            let loadedIcon = await fileIconService.icon(for: item)
+            guard !Task.isCancelled else {
+                return
+            }
+            icon = loadedIcon
+        }
     }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
-            Image(nsImage: fileIconService.icon(for: item))
-                .resizable()
-                .frame(width: 48, height: 48)
+            Group {
+                if let icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                } else {
+                    Image(systemName: item.isDirectory ? "folder.fill" : "doc")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(
+                            item.isDirectory ? CatppuccinMochaTheme.lavender : CatppuccinMochaTheme.mutedText
+                        )
+                }
+            }
+            .frame(width: 48, height: 48)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Get Info")

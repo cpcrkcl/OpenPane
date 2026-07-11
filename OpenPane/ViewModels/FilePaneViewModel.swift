@@ -79,6 +79,8 @@ private nonisolated struct VisibleItemsComputation: Sendable {
     let visibleItems: [FileItem]
 }
 
+typealias FileMetadataEnricher = @Sendable ([FileItem]) async throws -> [FileItem]
+
 @MainActor
 final class FilePaneViewModel: ObservableObject {
     private enum DirectoryLoadPriority: Int {
@@ -167,6 +169,7 @@ final class FilePaneViewModel: ObservableObject {
     private let quickLookPreviewService: any QuickLookPreviewServicing
     private let directoryMonitorService: any DirectoryMonitorServicing
     private let folderSizeService: any FolderSizeServicing
+    private let metadataEnricher: FileMetadataEnricher
     private let directoryRefreshDebounceNanoseconds: UInt64
     private let visibleItemsSearchDebounceNanoseconds: UInt64
     private var directoryMonitorToken: (any DirectoryMonitorToken)?
@@ -174,6 +177,7 @@ final class FilePaneViewModel: ObservableObject {
     private var directoryLoadTask: Task<[FileItem], Error>?
     private var recursiveSearchTask: Task<[FileItem], Error>?
     private var visibleItemsTask: Task<Void, Never>?
+    private var metadataEnrichmentTask: Task<Void, Never>?
     private var folderSizeTasksByURL: [URL: Task<Void, Never>] = [:]
     private var hasPendingDirectoryMonitorRefresh = false
     private var hasPendingExplicitRefresh = false
@@ -192,6 +196,7 @@ final class FilePaneViewModel: ObservableObject {
     private(set) var visibleItemsPublicationCount = 0
     private(set) var itemsPublicationCount = 0
     private(set) var tabsPublicationCount = 0
+    private(set) var metadataEnrichmentPublicationCount = 0
     #endif
 
     private nonisolated static let defaultDirectoryRefreshDebounceNanoseconds: UInt64 = 250_000_000
@@ -229,7 +234,8 @@ final class FilePaneViewModel: ObservableObject {
         directoryMonitorService: (any DirectoryMonitorServicing)? = nil,
         folderSizeService: any FolderSizeServicing = FolderSizeService(),
         directoryRefreshDebounceNanoseconds: UInt64 = FilePaneViewModel.defaultDirectoryRefreshDebounceNanoseconds,
-        visibleItemsSearchDebounceNanoseconds: UInt64 = FilePaneViewModel.defaultVisibleItemsSearchDebounceNanoseconds
+        visibleItemsSearchDebounceNanoseconds: UInt64 = FilePaneViewModel.defaultVisibleItemsSearchDebounceNanoseconds,
+        metadataEnricher: @escaping FileMetadataEnricher = FilePaneViewModel.enrichMetadata
     ) {
         self.currentURL = currentURL
         self.items = []
@@ -259,6 +265,7 @@ final class FilePaneViewModel: ObservableObject {
         self.quickLookPreviewService = quickLookPreviewService ?? QuickLookPreviewService.shared
         self.directoryMonitorService = directoryMonitorService ?? Self.defaultDirectoryMonitorService()
         self.folderSizeService = folderSizeService
+        self.metadataEnricher = metadataEnricher
         self.directoryRefreshDebounceNanoseconds = directoryRefreshDebounceNanoseconds
         self.visibleItemsSearchDebounceNanoseconds = visibleItemsSearchDebounceNanoseconds
         scheduleVisibleItemsRecompute(invalidateSortedItems: true)
@@ -271,6 +278,7 @@ final class FilePaneViewModel: ObservableObject {
         directoryLoadTask?.cancel()
         recursiveSearchTask?.cancel()
         visibleItemsTask?.cancel()
+        metadataEnrichmentTask?.cancel()
         folderSizeTasksByURL.values.forEach { $0.cancel() }
     }
 
@@ -322,6 +330,12 @@ final class FilePaneViewModel: ObservableObject {
                 await waitForVisibleItemsUpdate()
             }
             setActiveTabDirty(false)
+            startMetadataEnrichmentIfNeeded(
+                for: loadedItems,
+                generation: generation,
+                tabID: requestTabID,
+                directoryURL: requestURL
+            )
         } catch is CancellationError {
             return
         } catch {
@@ -1133,6 +1147,80 @@ final class FilePaneViewModel: ObservableObject {
         await task?.value
     }
 
+    func waitForMetadataEnrichment() async {
+        let task = metadataEnrichmentTask
+        await task?.value
+    }
+
+    private func startMetadataEnrichmentIfNeeded(
+        for sourceItems: [FileItem],
+        generation: Int,
+        tabID: FilePaneTab.ID,
+        directoryURL: URL
+    ) {
+        metadataEnrichmentTask?.cancel()
+        guard sourceItems.contains(where: { !$0.hasExtendedMetadata }) else {
+            metadataEnrichmentTask = nil
+            return
+        }
+
+        metadataEnrichmentTask = Task(priority: .utility) { [weak self] in
+            do {
+                let enricher = self?.metadataEnricher
+                guard let enricher else {
+                    return
+                }
+                let enrichedItems = try await enricher(sourceItems)
+                try Task.checkCancellation()
+
+                guard let self,
+                      self.isCurrentRequest(generation, tabID: tabID, url: directoryURL) else {
+                    return
+                }
+
+                let selectedIDs = Set(self.selectedItems.map(\.id))
+                let didReplaceItems = self.replaceItemsIfChanged(enrichedItems)
+                self.selectedItems = Set(enrichedItems.filter { selectedIDs.contains($0.id) })
+                if didReplaceItems {
+                    await self.waitForVisibleItemsUpdate()
+                    #if DEBUG
+                    self.metadataEnrichmentPublicationCount += 1
+                    #endif
+                }
+                self.metadataEnrichmentTask = nil
+            } catch {
+                guard let self,
+                      self.isCurrentRequest(generation, tabID: tabID, url: directoryURL) else {
+                    return
+                }
+                self.metadataEnrichmentTask = nil
+            }
+        }
+    }
+
+    nonisolated static func enrichMetadata(
+        in sourceItems: [FileItem]
+    ) async throws -> [FileItem] {
+        var enrichedItems: [FileItem] = []
+        enrichedItems.reserveCapacity(sourceItems.count)
+
+        for (index, item) in sourceItems.enumerated() {
+            if index.isMultiple(of: 128) {
+                try Task.checkCancellation()
+            }
+
+            guard !item.hasExtendedMetadata else {
+                enrichedItems.append(item)
+                continue
+            }
+
+            enrichedItems.append((try? FileItem(url: item.url)) ?? item)
+        }
+
+        try Task.checkCancellation()
+        return enrichedItems
+    }
+
     private nonisolated static func computeVisibleItems(
         for request: VisibleItemsRequest
     ) async throws -> VisibleItemsComputation {
@@ -1415,6 +1503,7 @@ final class FilePaneViewModel: ObservableObject {
     private func nextRequestGeneration() -> Int {
         directoryLoadTask?.cancel()
         recursiveSearchTask?.cancel()
+        metadataEnrichmentTask?.cancel()
         activeDirectoryLoadPriority = nil
         requestGeneration += 1
         return requestGeneration
@@ -1423,8 +1512,10 @@ final class FilePaneViewModel: ObservableObject {
     private func invalidatePendingRequests() {
         directoryLoadTask?.cancel()
         recursiveSearchTask?.cancel()
+        metadataEnrichmentTask?.cancel()
         directoryLoadTask = nil
         recursiveSearchTask = nil
+        metadataEnrichmentTask = nil
         activeDirectoryLoadPriority = nil
         hasPendingExplicitRefresh = false
         hasPendingDirectoryMonitorRefresh = false

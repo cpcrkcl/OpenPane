@@ -19,6 +19,7 @@ struct FileBrowserServiceTests {
             .contentsOfDirectory(at: temporaryDirectory.url, includeHiddenFiles: false)
 
         #expect(Set(items.map(\.name)) == Set(["notes.txt", "photo.jpg"]))
+        #expect(items.allSatisfy { !$0.hasExtendedMetadata })
     }
 
     @Test func returnsDirectoriesAndFilesWithoutOwningDisplayOrder() async throws {
