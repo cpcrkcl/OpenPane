@@ -316,6 +316,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.searchText = "notes"
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.filteredItems == [notesItem])
     }
@@ -333,6 +334,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.searchText = "   "
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.filteredItems == [imageItem, notesItem])
     }
@@ -367,6 +369,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.sortOption = .size
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.filteredItems == [directoryItem, smallItem, largeItem])
     }
@@ -384,6 +387,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.directoriesFirst = false
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.filteredItems == [alphaItem, zebraItem])
     }
@@ -401,8 +405,60 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.searchText = "notes"
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [notesItem])
+    }
+
+    @Test func searchTextAssignmentDoesNotSynchronouslyFilterOrSort() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let betaItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [alphaItem, betaItem]
+            ]),
+            visibleItemsSearchDebounceNanoseconds: 20_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        let recomputeCount = viewModel.visibleItemsRecomputeCount
+
+        viewModel.searchText = "beta"
+
+        #expect(viewModel.visibleItems == [alphaItem, betaItem])
+        #expect(viewModel.visibleItemsRecomputeCount == recomputeCount)
+
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.visibleItems == [betaItem])
+        #expect(viewModel.visibleItemsRecomputeCount == recomputeCount + 1)
+    }
+
+    @Test func rapidSearchChangesPublishOnlyLatestResult() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let betaItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let gammaItem = try temporaryDirectory.createFileItem(named: "Gamma.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [alphaItem, betaItem, gammaItem]
+            ]),
+            visibleItemsSearchDebounceNanoseconds: 30_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        let recomputeCount = viewModel.visibleItemsRecomputeCount
+
+        viewModel.searchText = "alpha"
+        try await Task.sleep(nanoseconds: 5_000_000)
+        viewModel.searchText = "beta"
+        try await Task.sleep(nanoseconds: 5_000_000)
+        viewModel.searchText = "gamma"
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.visibleItems == [gammaItem])
+        #expect(viewModel.visibleItemsRecomputeCount == recomputeCount + 1)
     }
 
     @Test func visibleItemsUpdatesWhenSortOptionChanges() async throws {
@@ -418,6 +474,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.sortOption = .size
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [smallItem, largeItem])
     }
@@ -435,6 +492,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.directoriesFirst = false
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [alphaItem, zebraItem])
     }
@@ -452,6 +510,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.sortDirection = .descending
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [betaItem, alphaItem])
     }
@@ -470,6 +529,7 @@ struct FilePaneViewModelTests {
         await viewModel.loadCurrentDirectory()
         viewModel.recursiveSearchResults = [searchResult]
         viewModel.isShowingRecursiveSearchResults = true
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [searchResult])
     }
@@ -580,6 +640,7 @@ struct FilePaneViewModelTests {
         await viewModel.performRecursiveSearch()
 
         viewModel.clearRecursiveSearch()
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.recursiveSearchResults.isEmpty)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
@@ -609,6 +670,7 @@ struct FilePaneViewModelTests {
         try await Task.sleep(nanoseconds: 10_000_000)
         viewModel.clearRecursiveSearch()
         await searchTask.value
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.recursiveSearchResults.isEmpty)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
@@ -1394,6 +1456,32 @@ struct FilePaneViewModelTests {
         #expect(didRefresh)
         #expect(viewModel.items == [initialItem, addedItem])
         #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
+    }
+
+    @Test func noOpDirectoryMonitorRefreshDoesNotRepublishVisibleItems() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let item = try temporaryDirectory.createFileItem(named: "stable.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [item]
+        ])
+        let directoryMonitorService = MockDirectoryMonitorService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService,
+            directoryMonitorService: directoryMonitorService,
+            directoryRefreshDebounceNanoseconds: 10_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        let publicationCount = viewModel.visibleItemsPublicationCount
+
+        directoryMonitorService.emitChange(for: temporaryDirectory.url)
+        let didRefresh = try await waitUntil {
+            fileBrowserService.loadCount(for: temporaryDirectory.url) == 2 && !viewModel.isLoading
+        }
+
+        #expect(didRefresh)
+        #expect(viewModel.visibleItems == [item])
+        #expect(viewModel.visibleItemsPublicationCount == publicationCount)
     }
 
     @Test func directoryChangeRestartsDirectoryMonitor() async throws {

@@ -139,7 +139,7 @@ struct FilePaneView: View {
     }
 
     private var paneContentState: PaneContentState? {
-        if viewModel.isLoading {
+        if viewModel.isLoading && viewModel.visibleItems.isEmpty {
             return .loading
         }
 
@@ -442,6 +442,13 @@ struct FilePaneView: View {
                                 CatppuccinMochaTheme.accentSecondary.opacity(0.12),
                                 in: Capsule()
                             )
+                    }
+
+                    if viewModel.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(CatppuccinMochaTheme.accent)
+                            .accessibilityLabel("Loading folder")
                     }
                 }
 
