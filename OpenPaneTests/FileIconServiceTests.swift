@@ -34,6 +34,18 @@ struct FileIconServiceTests {
 
         #expect(firstIcon === secondIcon)
     }
+
+    @Test func cacheRemainsBoundedAcrossManyExtensions() throws {
+        let temporaryDirectory = try IconTestTemporaryDirectory()
+        let service = FileIconService(maximumCacheEntryCount: 8)
+
+        for index in 0..<40 {
+            let item = try temporaryDirectory.createFileItem(named: "file.type\(index)")
+            _ = service.icon(for: item)
+        }
+
+        #expect(service.cachedIconCount == 8)
+    }
 }
 
 private struct IconTestTemporaryDirectory {

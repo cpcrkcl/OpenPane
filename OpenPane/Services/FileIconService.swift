@@ -18,6 +18,16 @@ final class FileIconService: FileIconServicing {
     static let shared = FileIconService()
 
     private var cachedIconsByKey: [String: NSImage] = [:]
+    private var cacheKeysInInsertionOrder: [String] = []
+    private let maximumCacheEntryCount: Int
+
+    #if DEBUG
+    var cachedIconCount: Int { cachedIconsByKey.count }
+    #endif
+
+    init(maximumCacheEntryCount: Int = 256) {
+        self.maximumCacheEntryCount = max(1, maximumCacheEntryCount)
+    }
 
     func icon(for item: FileItem) -> NSImage {
         let key = cacheKey(for: item)
@@ -26,8 +36,18 @@ final class FileIconService: FileIconServicing {
             return cachedIcon
         }
 
+        #if DEBUG
+        PerformanceDiagnostics.shared.recordIconCacheMiss()
+        #endif
+
         let icon = resizedCopy(of: NSWorkspace.shared.icon(forFile: item.url.path))
+        if cachedIconsByKey.count >= maximumCacheEntryCount,
+           let oldestKey = cacheKeysInInsertionOrder.first {
+            cachedIconsByKey[oldestKey] = nil
+            cacheKeysInInsertionOrder.removeFirst()
+        }
         cachedIconsByKey[key] = icon
+        cacheKeysInInsertionOrder.append(key)
 
         return icon
     }

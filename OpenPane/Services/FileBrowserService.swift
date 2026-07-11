@@ -43,6 +43,10 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
                 try Self.validateDirectory(url)
                 try Task.checkCancellation()
 
+                #if DEBUG
+                PerformanceDiagnostics.shared.recordDirectoryEnumeration()
+                #endif
+
                 let fileURLs = try FileManager.default.contentsOfDirectory(
                     at: url,
                     includingPropertiesForKeys: Array(FileItem.resourceKeys),
@@ -64,7 +68,7 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
                 }
 
                 try Task.checkCancellation()
-                return items.sorted(by: Self.sortItems)
+                return items
             } catch let error as FileBrowserError {
                 throw error
             } catch is CancellationError {
@@ -83,14 +87,6 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
         } onCancel: {
             task.cancel()
         }
-    }
-
-    private nonisolated static func sortItems(_ lhs: FileItem, _ rhs: FileItem) -> Bool {
-        if lhs.isDirectory != rhs.isDirectory {
-            return lhs.isDirectory
-        }
-
-        return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
 
     private nonisolated static func validateDirectory(_ url: URL) throws {

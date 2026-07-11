@@ -6,11 +6,49 @@
 //
 
 import Foundation
+import Combine
 import Testing
 @testable import OpenPane
 
 @MainActor
 struct DualPaneViewModelTests {
+    @Test func selectionAndFilterChangesDoNotFanOutThroughDualPane() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let item = try temporaryDirectory.createSourceFile(named: "item.txt", contents: "item")
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: FileBrowserService()
+        )
+        await leftPane.loadCurrentDirectory()
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        let fanoutCount = viewModel.paneChangeFanoutCount
+
+        leftPane.selectedItems = [item]
+        leftPane.searchText = "item"
+        await leftPane.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.paneChangeFanoutCount == fanoutCount)
+    }
+
+    @Test func paneSortChangesStillTriggerSessionAutosaveSignal() {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        var signalCount = 0
+        let cancellable = viewModel.sessionStateDidChange.sink {
+            signalCount += 1
+        }
+
+        leftPane.sortOption = .size
+
+        #expect(signalCount == 1)
+        _ = cancellable
+    }
+
     @Test func ordinaryDropCopiesImmediatelyWithoutGenericChooser() {
         #expect(
             FileDropPreparationDecision.forOrdinaryDrop(

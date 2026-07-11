@@ -554,6 +554,45 @@ struct FilePaneViewModelTests {
         #expect(viewModel.visibleItemsRecomputeCount == recomputeCount)
     }
 
+    @Test func selectionChangesDoNotRepublishTabsArray() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let item = try temporaryDirectory.createFileItem(named: "Selected.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [temporaryDirectory.url: [item]])
+        )
+        await viewModel.loadCurrentDirectory()
+        let publicationCount = viewModel.tabsPublicationCount
+
+        viewModel.selectedItems = [item]
+
+        #expect(viewModel.tabsPublicationCount == publicationCount)
+    }
+
+    @Test func backgroundTabItemCachesAreBounded() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService()
+        )
+
+        for index in 0..<8 {
+            let item = try temporaryDirectory.createFileItem(named: "tab-\(index).txt")
+            viewModel.receiveTab(
+                FilePaneTab(
+                    currentURL: temporaryDirectory.url.appendingPathComponent("tab-\(index)", isDirectory: true),
+                    items: [item]
+                )
+            )
+        }
+
+        let cachedBackgroundTabs = viewModel.tabs.filter {
+            $0.id != viewModel.activeTabID && !$0.items.isEmpty
+        }
+        #expect(cachedBackgroundTabs.count <= 4)
+        #expect(viewModel.tabs.filter(\.isDirty).count >= 3)
+    }
+
     @Test func itemsForDragReturnsSelectedItemsWhenStartingItemIsSelected() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let firstItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
@@ -1473,6 +1512,7 @@ struct FilePaneViewModelTests {
         )
         await viewModel.loadCurrentDirectory()
         let publicationCount = viewModel.visibleItemsPublicationCount
+        let itemPublicationCount = viewModel.itemsPublicationCount
 
         directoryMonitorService.emitChange(for: temporaryDirectory.url)
         let didRefresh = try await waitUntil {
@@ -1482,6 +1522,7 @@ struct FilePaneViewModelTests {
         #expect(didRefresh)
         #expect(viewModel.visibleItems == [item])
         #expect(viewModel.visibleItemsPublicationCount == publicationCount)
+        #expect(viewModel.itemsPublicationCount == itemPublicationCount)
     }
 
     @Test func directoryChangeRestartsDirectoryMonitor() async throws {

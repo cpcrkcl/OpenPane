@@ -57,7 +57,7 @@ struct MainWindowView: View {
         }
         .preferredColorScheme(.dark)
         .frame(minWidth: 1000, minHeight: 650)
-        .onReceive(dualPaneViewModel.objectWillChange) { _ in
+        .onReceive(dualPaneViewModel.sessionStateDidChange) { _ in
             guard isSessionPersistenceEnabled else {
                 return
             }

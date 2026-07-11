@@ -18,10 +18,10 @@ struct FileBrowserServiceTests {
         let items = try await FileBrowserService()
             .contentsOfDirectory(at: temporaryDirectory.url, includeHiddenFiles: false)
 
-        #expect(items.map(\.name) == ["notes.txt", "photo.jpg"])
+        #expect(Set(items.map(\.name)) == Set(["notes.txt", "photo.jpg"]))
     }
 
-    @Test func sortsDirectoriesBeforeFiles() async throws {
+    @Test func returnsDirectoriesAndFilesWithoutOwningDisplayOrder() async throws {
         let temporaryDirectory = try ServiceTestTemporaryDirectory()
         try temporaryDirectory.createFile(named: "Alpha.txt")
         try temporaryDirectory.createDirectory(named: "Zoo")
@@ -29,11 +29,11 @@ struct FileBrowserServiceTests {
         let items = try await FileBrowserService()
             .contentsOfDirectory(at: temporaryDirectory.url, includeHiddenFiles: false)
 
-        #expect(items.map(\.name) == ["Zoo", "Alpha.txt"])
-        #expect(items.first?.isDirectory == true)
+        #expect(Set(items.map(\.name)) == Set(["Zoo", "Alpha.txt"]))
+        #expect(items.first(where: { $0.name == "Zoo" })?.isDirectory == true)
     }
 
-    @Test func sortsNamesAlphabetically() async throws {
+    @Test func returnsEveryEntryForViewModelSorting() async throws {
         let temporaryDirectory = try ServiceTestTemporaryDirectory()
         try temporaryDirectory.createFile(named: "Charlie.txt")
         try temporaryDirectory.createFile(named: "Alpha.txt")
@@ -42,7 +42,7 @@ struct FileBrowserServiceTests {
         let items = try await FileBrowserService()
             .contentsOfDirectory(at: temporaryDirectory.url, includeHiddenFiles: false)
 
-        #expect(items.map(\.name) == ["Alpha.txt", "Bravo.txt", "Charlie.txt"])
+        #expect(Set(items.map(\.name)) == Set(["Alpha.txt", "Bravo.txt", "Charlie.txt"]))
     }
 
     @Test func excludesHiddenFilesByDefault() async throws {
