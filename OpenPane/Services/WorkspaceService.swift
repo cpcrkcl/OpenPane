@@ -5,11 +5,11 @@
 //  Created by Christopher Rego on 6/5/26.
 //
 
-import AppKit
+@preconcurrency import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
-struct ApplicationOption: Identifiable {
+nonisolated struct ApplicationOption: Identifiable, @unchecked Sendable {
     let name: String
     let url: URL
     let icon: NSImage?
@@ -50,7 +50,7 @@ nonisolated protocol WorkspaceServicing: Sendable {
     func open(url: URL) -> Bool
 
     @MainActor
-    func appsAvailableToOpen(url: URL) -> [ApplicationOption]
+    func appsAvailableToOpen(url: URL) async -> [ApplicationOption]
 
     @MainActor
     func open(url: URL, withApplication applicationURL: URL) async throws
@@ -87,16 +87,17 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
     }
 
     @MainActor
-    func appsAvailableToOpen(url: URL) -> [ApplicationOption] {
-        NSWorkspace.shared.urlsForApplications(toOpen: url)
-            .reduce(into: [URL]()) { urls, applicationURL in
-                guard !urls.contains(applicationURL) else {
-                    return
-                }
+    func appsAvailableToOpen(url: URL) async -> [ApplicationOption] {
+        let task = Task.detached(priority: .utility) {
+            let applicationURLs = NSWorkspace.shared.urlsForApplications(toOpen: url)
+                .reduce(into: [URL]()) { (urls: inout [URL], applicationURL: URL) in
+                    guard !urls.contains(applicationURL) else {
+                        return
+                    }
 
-                urls.append(applicationURL)
-            }
-            .map { applicationURL in
+                    urls.append(applicationURL)
+                }
+            let options: [ApplicationOption] = applicationURLs.map { applicationURL in
                 let icon = Self.resizedIconCopy(
                     NSWorkspace.shared.icon(forFile: applicationURL.path)
                 )
@@ -107,9 +108,16 @@ nonisolated struct WorkspaceService: WorkspaceServicing {
                     icon: icon
                 )
             }
-            .sorted {
-                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            return options.sorted { lhs, rhs in
+                lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
+        }
+
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     @MainActor

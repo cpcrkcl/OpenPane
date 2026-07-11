@@ -9,6 +9,13 @@ import Foundation
 import UniformTypeIdentifiers
 
 nonisolated struct FileItem: Identifiable, Hashable, Sendable {
+    static var essentialResourceKeys: Set<URLResourceKey> {
+        [
+            .isDirectoryKey,
+            .isHiddenKey
+        ]
+    }
+
     static var resourceKeys: Set<URLResourceKey> {
         [
             .isDirectoryKey,
@@ -28,9 +35,24 @@ nonisolated struct FileItem: Identifiable, Hashable, Sendable {
     let modifiedDate: Date?
     let typeIdentifier: String?
     let isHidden: Bool
-    let formattedSize: String
-    let formattedModifiedDate: String
     let kindDescription: String
+    let hasExtendedMetadata: Bool
+
+    init(essentialURL url: URL) throws {
+        let resourceValues = try url.resourceValues(forKeys: Self.essentialResourceKeys)
+        let isDirectory = resourceValues.isDirectory ?? false
+
+        self.id = url
+        self.url = url
+        self.name = url.openPaneDisplayName
+        self.isDirectory = isDirectory
+        self.size = nil
+        self.modifiedDate = nil
+        self.typeIdentifier = nil
+        self.isHidden = resourceValues.isHidden ?? false
+        self.kindDescription = isDirectory ? "Folder" : "File"
+        self.hasExtendedMetadata = false
+    }
 
     init(url: URL) throws {
         let resourceValues = try url.resourceValues(forKeys: Self.resourceKeys)
@@ -47,13 +69,20 @@ nonisolated struct FileItem: Identifiable, Hashable, Sendable {
         self.modifiedDate = modifiedDate
         self.typeIdentifier = typeIdentifier
         self.isHidden = resourceValues.isHidden ?? false
-        self.formattedSize = Self.formattedSize(for: size, isDirectory: isDirectory)
-        self.formattedModifiedDate = Self.formattedModifiedDate(for: modifiedDate)
         self.kindDescription = Self.kindDescription(for: typeIdentifier, isDirectory: isDirectory)
+        self.hasExtendedMetadata = true
     }
 
     var displayName: String {
         name
+    }
+
+    var formattedSize: String {
+        Self.formattedSize(for: size, isDirectory: isDirectory)
+    }
+
+    var formattedModifiedDate: String {
+        Self.formattedModifiedDate(for: modifiedDate)
     }
 
     private static func formattedSize(for size: Int64?, isDirectory: Bool) -> String {

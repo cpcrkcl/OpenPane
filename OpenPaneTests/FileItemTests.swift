@@ -10,6 +10,21 @@ import Testing
 @testable import OpenPane
 
 struct FileItemTests {
+    @Test func essentialInitializerDefersOptionalMetadataAndFormatting() throws {
+        let temporaryDirectory = try TemporaryDirectory()
+        let fileURL = temporaryDirectory.url.appendingPathComponent("lightweight.txt")
+        try Data("contents".utf8).write(to: fileURL)
+
+        let item = try FileItem(essentialURL: fileURL)
+
+        #expect(item.name == "lightweight.txt")
+        #expect(!item.isDirectory)
+        #expect(!item.hasExtendedMetadata)
+        #expect(item.size == nil)
+        #expect(item.modifiedDate == nil)
+        #expect(item.kindDescription == "File")
+    }
+
     @Test func readsFileMetadata() throws {
         let temporaryDirectory = try TemporaryDirectory()
         let fileURL = temporaryDirectory.url.appendingPathComponent("example.txt")

@@ -139,7 +139,7 @@ struct FilePaneView: View {
     }
 
     private var paneContentState: PaneContentState? {
-        if viewModel.isLoading {
+        if viewModel.isLoading && viewModel.visibleItems.isEmpty {
             return .loading
         }
 
@@ -442,6 +442,13 @@ struct FilePaneView: View {
                                 CatppuccinMochaTheme.accentSecondary.opacity(0.12),
                                 in: Capsule()
                             )
+                    }
+
+                    if viewModel.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(CatppuccinMochaTheme.accent)
+                            .accessibilityLabel("Loading folder")
                     }
                 }
 
@@ -1772,8 +1779,16 @@ private struct FileIconImage: View {
         .opacity(item.isDirectory ? 1 : 0.92)
         .layoutPriority(1)
         .task(id: item.id) {
-            icon = nil
-            icon = FileIconService.shared.icon(for: item)
+            if let cachedIcon = FileIconService.shared.cachedIcon(for: item) {
+                icon = cachedIcon
+                return
+            }
+
+            let loadedIcon = await FileIconService.shared.icon(for: item)
+            guard !Task.isCancelled else {
+                return
+            }
+            icon = loadedIcon
         }
     }
 }

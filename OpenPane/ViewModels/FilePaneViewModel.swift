@@ -65,6 +65,22 @@ nonisolated enum FileSortDirection: String, CaseIterable, Codable, Identifiable,
     }
 }
 
+private nonisolated struct VisibleItemsRequest: Sendable {
+    let sourceItems: [FileItem]
+    let filterText: String?
+    let sortOption: FileSortOption
+    let sortDirection: FileSortDirection
+    let directoriesFirst: Bool
+    let shouldSortSourceItems: Bool
+}
+
+private nonisolated struct VisibleItemsComputation: Sendable {
+    let sortedSourceItems: [FileItem]
+    let visibleItems: [FileItem]
+}
+
+typealias FileMetadataEnricher = @Sendable ([FileItem]) async throws -> [FileItem]
+
 @MainActor
 final class FilePaneViewModel: ObservableObject {
     private enum DirectoryLoadPriority: Int {
@@ -83,57 +99,61 @@ final class FilePaneViewModel: ObservableObject {
 
     @Published var items: [FileItem] {
         didSet {
-            updateActiveTab { tab in
-                tab.items = items
-            }
-            recomputeVisibleItems()
+            #if DEBUG
+            itemsPublicationCount += 1
+            PerformanceDiagnostics.shared.recordItemArrayReplacement()
+            #endif
+            scheduleVisibleItemsRecompute(invalidateSortedItems: true)
         }
     }
 
     @Published var selectedItems: Set<FileItem> {
         didSet {
-            updateActiveTab { tab in
-                tab.selectedItems = selectedItems
-            }
             if !isApplyingFileListSelection {
                 synchronizeFileListSelection()
             }
         }
     }
 
-    @Published var tabs: [FilePaneTab]
+    @Published var tabs: [FilePaneTab] {
+        didSet {
+            #if DEBUG
+            tabsPublicationCount += 1
+            #endif
+        }
+    }
     @Published var activeTabID: FilePaneTab.ID
     @Published var isLoading: Bool
     @Published var errorMessage: String?
     @Published var includeHiddenFiles: Bool
     @Published var searchText: String {
         didSet {
-            recomputeVisibleItems()
+            scheduleVisibleItemsRecompute(debounce: true)
         }
     }
     @Published var sortOption: FileSortOption {
         didSet {
-            recomputeVisibleItems()
+            scheduleVisibleItemsRecompute(invalidateSortedItems: true, preferCachedSortInput: true)
         }
     }
     @Published var sortDirection: FileSortDirection {
         didSet {
-            recomputeVisibleItems()
+            scheduleVisibleItemsRecompute(invalidateSortedItems: true, preferCachedSortInput: true)
         }
     }
     @Published var directoriesFirst: Bool {
         didSet {
-            recomputeVisibleItems()
+            scheduleVisibleItemsRecompute(invalidateSortedItems: true, preferCachedSortInput: true)
         }
     }
     @Published var recursiveSearchResults: [FileItem] {
         didSet {
-            recomputeVisibleItems()
+            scheduleVisibleItemsRecompute(invalidateSortedItems: true)
         }
     }
     @Published var isShowingRecursiveSearchResults: Bool {
         didSet {
-            recomputeVisibleItems()
+            scheduleVisibleItemsRecompute(invalidateSortedItems: true)
         }
     }
     @Published private(set) var backStack: [URL]
@@ -142,6 +162,7 @@ final class FilePaneViewModel: ObservableObject {
     @Published private(set) var fileListSelection: FileListSelectionController
     @Published private(set) var calculatedFolderSizes: [URL: FolderSizeResult]
     @Published private(set) var calculatingFolderSizeURLs: Set<URL>
+    @Published private(set) var applicationOptionsCacheGeneration: Int
 
     private let fileBrowserService: any FileBrowserServicing
     private let fileSearchService: any FileSearchServicing
@@ -149,24 +170,48 @@ final class FilePaneViewModel: ObservableObject {
     private let quickLookPreviewService: any QuickLookPreviewServicing
     private let directoryMonitorService: any DirectoryMonitorServicing
     private let folderSizeService: any FolderSizeServicing
+    private let metadataEnricher: FileMetadataEnricher
     private let directoryRefreshDebounceNanoseconds: UInt64
+    private let visibleItemsSearchDebounceNanoseconds: UInt64
+    private let maximumApplicationOptionsCacheEntryCount: Int
     private var directoryMonitorToken: (any DirectoryMonitorToken)?
     private var directoryMonitorRefreshTask: Task<Void, Never>?
-    private var directoryLoadTask: Task<[FileItem], Error>?
+    private var directoryLoadTask: Task<DirectorySnapshot, Error>?
     private var recursiveSearchTask: Task<[FileItem], Error>?
+    private var visibleItemsTask: Task<Void, Never>?
+    private var metadataEnrichmentTask: Task<Void, Never>?
     private var folderSizeTasksByURL: [URL: Task<Void, Never>] = [:]
     private var hasPendingDirectoryMonitorRefresh = false
     private var hasPendingExplicitRefresh = false
+    private var currentDirectoryFingerprint: DirectoryFingerprint?
     private var activeDirectoryLoadPriority: DirectoryLoadPriority?
     private var requestGeneration = 0
+    private var visibleItemsGeneration = 0
+    private var sortedItemsSourceGeneration = 0
+    private var sortedItemsCacheGeneration = -1
+    private var sortedItemsCache: [FileItem] = []
+    private var tabCacheRecency: [FilePaneTab.ID]
     private var applicationOptionsByTypeKey: [String: [ApplicationOption]] = [:]
+    private var applicationOptionsKeysInRecencyOrder: [String] = []
+    private var applicationOptionsLoadTasksByTypeKey: [String: Task<Void, Never>] = [:]
     private var isApplyingFileListSelection = false
 
     #if DEBUG
     private(set) var visibleItemsRecomputeCount = 0
+    private(set) var visibleItemsPublicationCount = 0
+    private(set) var itemsPublicationCount = 0
+    private(set) var tabsPublicationCount = 0
+    private(set) var metadataEnrichmentPublicationCount = 0
+    private(set) var directoryFingerprintCheckCount = 0
+    private(set) var directoryFingerprintNoOpCount = 0
+    var cachedApplicationOptionsCount: Int { applicationOptionsByTypeKey.count }
     #endif
 
     private nonisolated static let defaultDirectoryRefreshDebounceNanoseconds: UInt64 = 250_000_000
+    private nonisolated static let defaultVisibleItemsSearchDebounceNanoseconds: UInt64 = 150_000_000
+    private nonisolated static let maximumCachedItemsPerTab = 5_000
+    private nonisolated static let maximumCachedBackgroundTabCount = 4
+    private nonisolated static let defaultMaximumApplicationOptionsCacheEntryCount = 64
 
     var canGoBack: Bool {
         !backStack.isEmpty
@@ -197,7 +242,10 @@ final class FilePaneViewModel: ObservableObject {
         quickLookPreviewService: (any QuickLookPreviewServicing)? = nil,
         directoryMonitorService: (any DirectoryMonitorServicing)? = nil,
         folderSizeService: any FolderSizeServicing = FolderSizeService(),
-        directoryRefreshDebounceNanoseconds: UInt64 = FilePaneViewModel.defaultDirectoryRefreshDebounceNanoseconds
+        directoryRefreshDebounceNanoseconds: UInt64 = FilePaneViewModel.defaultDirectoryRefreshDebounceNanoseconds,
+        visibleItemsSearchDebounceNanoseconds: UInt64 = FilePaneViewModel.defaultVisibleItemsSearchDebounceNanoseconds,
+        metadataEnricher: @escaping FileMetadataEnricher = FilePaneViewModel.enrichMetadata,
+        maximumApplicationOptionsCacheEntryCount: Int = FilePaneViewModel.defaultMaximumApplicationOptionsCacheEntryCount
     ) {
         self.currentURL = currentURL
         self.items = []
@@ -218,16 +266,21 @@ final class FilePaneViewModel: ObservableObject {
         self.forwardStack = []
         self.visibleItems = []
         self.fileListSelection = FileListSelectionController()
+        self.tabCacheRecency = [initialTab.id]
         self.calculatedFolderSizes = [:]
         self.calculatingFolderSizeURLs = []
+        self.applicationOptionsCacheGeneration = 0
         self.fileBrowserService = fileBrowserService
         self.fileSearchService = fileSearchService
         self.workspaceService = workspaceService
         self.quickLookPreviewService = quickLookPreviewService ?? QuickLookPreviewService.shared
         self.directoryMonitorService = directoryMonitorService ?? Self.defaultDirectoryMonitorService()
         self.folderSizeService = folderSizeService
+        self.metadataEnricher = metadataEnricher
         self.directoryRefreshDebounceNanoseconds = directoryRefreshDebounceNanoseconds
-        recomputeVisibleItems()
+        self.visibleItemsSearchDebounceNanoseconds = visibleItemsSearchDebounceNanoseconds
+        self.maximumApplicationOptionsCacheEntryCount = max(1, maximumApplicationOptionsCacheEntryCount)
+        scheduleVisibleItemsRecompute(invalidateSortedItems: true)
         restartDirectoryMonitor()
     }
 
@@ -236,6 +289,9 @@ final class FilePaneViewModel: ObservableObject {
         directoryMonitorRefreshTask?.cancel()
         directoryLoadTask?.cancel()
         recursiveSearchTask?.cancel()
+        visibleItemsTask?.cancel()
+        metadataEnrichmentTask?.cancel()
+        applicationOptionsLoadTasksByTypeKey.values.forEach { $0.cancel() }
         folderSizeTasksByURL.values.forEach { $0.cancel() }
     }
 
@@ -243,7 +299,10 @@ final class FilePaneViewModel: ObservableObject {
         await loadCurrentDirectory(priority: .explicitRefresh)
     }
 
-    private func loadCurrentDirectory(priority: DirectoryLoadPriority) async {
+    private func loadCurrentDirectory(
+        priority: DirectoryLoadPriority,
+        prefetchedSnapshot: DirectorySnapshot? = nil
+    ) async {
         if let activeDirectoryLoadPriority,
            activeDirectoryLoadPriority.rawValue > priority.rawValue {
             switch priority {
@@ -259,7 +318,9 @@ final class FilePaneViewModel: ObservableObject {
 
         let requestURL = currentURL
         let requestTabID = activeTabID
-        let generation = nextRequestGeneration()
+        let generation = nextRequestGeneration(
+            cancelDirectoryMonitorRefresh: priority != .monitorRefresh
+        )
         activeDirectoryLoadPriority = priority
         let wasDirty = activeTabIsDirty
         let selectedURLs = Set(selectedItems.map { $0.url.standardizedFileURL })
@@ -276,14 +337,46 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         do {
-            let loadedItems = try await loadDirectoryItems(at: requestURL)
+            let snapshot: DirectorySnapshot
+            if let prefetchedSnapshot {
+                snapshot = prefetchedSnapshot
+            } else {
+                snapshot = try await loadDirectorySnapshot(
+                    at: requestURL,
+                    includeFingerprint: false,
+                    priority: .userInitiated
+                )
+            }
             guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
                 return
             }
 
-            items = loadedItems
+            let loadedItems = snapshot.items
+            let didReplaceItems = replaceItemsIfChanged(loadedItems)
             selectedItems = Set(loadedItems.filter { selectedURLs.contains($0.url.standardizedFileURL) })
+            if didReplaceItems {
+                await waitForVisibleItemsUpdate()
+            }
+            let fingerprint: DirectoryFingerprint
+            if let snapshotFingerprint = snapshot.fingerprint {
+                fingerprint = snapshotFingerprint
+            } else {
+                fingerprint = await Self.directoryFingerprint(
+                    for: loadedItems,
+                    at: requestURL
+                )
+            }
+            guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
+                return
+            }
+            currentDirectoryFingerprint = fingerprint
             setActiveTabDirty(false)
+            startMetadataEnrichmentIfNeeded(
+                for: loadedItems,
+                generation: generation,
+                tabID: requestTabID,
+                directoryURL: requestURL
+            )
         } catch is CancellationError {
             return
         } catch {
@@ -291,8 +384,12 @@ final class FilePaneViewModel: ObservableObject {
                 return
             }
 
-            items = []
+            currentDirectoryFingerprint = nil
+            let didReplaceItems = replaceItemsIfChanged([])
             selectedItems = []
+            if didReplaceItems {
+                await waitForVisibleItemsUpdate()
+            }
             if wasDirty {
                 setActiveTabDirty(true)
             }
@@ -321,6 +418,7 @@ final class FilePaneViewModel: ObservableObject {
 
         let isClosingActiveTab = id == activeTabID
         tabs.remove(at: closingIndex)
+        tabCacheRecency.removeAll { $0 == id }
 
         guard isClosingActiveTab else {
             return
@@ -356,6 +454,7 @@ final class FilePaneViewModel: ObservableObject {
 
         saveActiveTabState()
         let removedTab = tabs.remove(at: index)
+        tabCacheRecency.removeAll { $0 == id }
 
         if activeTabID == id {
             let nextIndex = min(index, tabs.count - 1)
@@ -450,6 +549,7 @@ final class FilePaneViewModel: ObservableObject {
 
             recursiveSearchResults = searchResults
             isShowingRecursiveSearchResults = true
+            await waitForVisibleItemsUpdate()
         } catch is CancellationError {
             return
         } catch {
@@ -459,6 +559,7 @@ final class FilePaneViewModel: ObservableObject {
 
             recursiveSearchResults = []
             isShowingRecursiveSearchResults = false
+            await waitForVisibleItemsUpdate()
             errorMessage = Self.userReadableError(for: error, at: requestURL)
         }
     }
@@ -486,8 +587,18 @@ final class FilePaneViewModel: ObservableObject {
             return
         }
 
-        for index in tabs.indices where affectedDirectories.contains(tabs[index].currentURL.standardizedFileURL) {
-            tabs[index].isDirty = true
+        var updatedTabs = tabs
+        var didChange = false
+        for index in updatedTabs.indices where affectedDirectories.contains(updatedTabs[index].currentURL.standardizedFileURL) {
+            guard !updatedTabs[index].isDirty else {
+                continue
+            }
+            updatedTabs[index].isDirty = true
+            didChange = true
+        }
+
+        if didChange {
+            tabs = updatedTabs
         }
     }
 
@@ -696,12 +807,45 @@ final class FilePaneViewModel: ObservableObject {
         let cacheKey = Self.openWithCacheKey(for: item)
 
         if let cachedOptions = applicationOptionsByTypeKey[cacheKey] {
+            applicationOptionsKeysInRecencyOrder.removeAll { $0 == cacheKey }
+            applicationOptionsKeysInRecencyOrder.append(cacheKey)
             return cachedOptions
         }
 
-        let options = workspaceService.appsAvailableToOpen(url: item.url)
+        guard applicationOptionsLoadTasksByTypeKey[cacheKey] == nil else {
+            return []
+        }
+
+        let workspaceService = workspaceService
+        let itemURL = item.url
+        applicationOptionsLoadTasksByTypeKey[cacheKey] = Task { [weak self] in
+            let options = await workspaceService.appsAvailableToOpen(url: itemURL)
+            guard !Task.isCancelled,
+                  let self else {
+                return
+            }
+
+            self.applicationOptionsLoadTasksByTypeKey[cacheKey] = nil
+            self.storeApplicationOptions(options, for: cacheKey)
+        }
+        return []
+    }
+
+    private func storeApplicationOptions(
+        _ options: [ApplicationOption],
+        for cacheKey: String
+    ) {
         applicationOptionsByTypeKey[cacheKey] = options
-        return options
+        applicationOptionsKeysInRecencyOrder.removeAll { $0 == cacheKey }
+        applicationOptionsKeysInRecencyOrder.append(cacheKey)
+
+        while applicationOptionsByTypeKey.count > maximumApplicationOptionsCacheEntryCount,
+              let leastRecentlyUsedKey = applicationOptionsKeysInRecencyOrder.first {
+            applicationOptionsKeysInRecencyOrder.removeFirst()
+            applicationOptionsByTypeKey[leastRecentlyUsedKey] = nil
+        }
+
+        applicationOptionsCacheGeneration &+= 1
     }
 
     nonisolated static func openWithCacheKey(for item: FileItem) -> String {
@@ -889,38 +1033,38 @@ final class FilePaneViewModel: ObservableObject {
             return
         }
 
-        guard let newItems = await itemsForNavigation(to: url) else {
+        guard let snapshot = await snapshotForNavigation(to: url) else {
             return
         }
 
         backStack.append(currentURL)
         forwardStack.removeAll()
-        applyNavigation(to: url, items: newItems)
+        await applyNavigation(to: url, snapshot: snapshot)
     }
 
     func goBack() async {
         guard let destinationURL = backStack.last,
-              let newItems = await itemsForNavigation(to: destinationURL) else {
+              let snapshot = await snapshotForNavigation(to: destinationURL) else {
             return
         }
 
         backStack.removeLast()
         forwardStack.append(currentURL)
-        applyNavigation(to: destinationURL, items: newItems)
+        await applyNavigation(to: destinationURL, snapshot: snapshot)
     }
 
     func goForward() async {
         guard let destinationURL = forwardStack.last,
-              let newItems = await itemsForNavigation(to: destinationURL) else {
+              let snapshot = await snapshotForNavigation(to: destinationURL) else {
             return
         }
 
         forwardStack.removeLast()
         backStack.append(currentURL)
-        applyNavigation(to: destinationURL, items: newItems)
+        await applyNavigation(to: destinationURL, snapshot: snapshot)
     }
 
-    private func itemsForNavigation(to url: URL) async -> [FileItem]? {
+    private func snapshotForNavigation(to url: URL) async -> DirectorySnapshot? {
         let requestTabID = activeTabID
         let generation = nextRequestGeneration()
         activeDirectoryLoadPriority = .userNavigation
@@ -936,13 +1080,17 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         do {
-            let loadedItems = try await loadDirectoryItems(at: url)
+            let snapshot = try await loadDirectorySnapshot(
+                at: url,
+                includeFingerprint: false,
+                priority: .userInitiated
+            )
             guard generation == requestGeneration,
                   activeTabID == requestTabID else {
                 return nil
             }
 
-            return loadedItems
+            return snapshot
         } catch is CancellationError {
             return nil
         } catch {
@@ -956,23 +1104,51 @@ final class FilePaneViewModel: ObservableObject {
         }
     }
 
-    private func applyNavigation(to url: URL, items newItems: [FileItem]) {
+    private func applyNavigation(to url: URL, snapshot: DirectorySnapshot) async {
+        let generation = requestGeneration
+        let requestTabID = activeTabID
         fileListSelection.clear()
         currentURL = url
-        items = newItems
-        selectedItems = []
-        setActiveTabDirty(false)
         clearRecursiveSearch(clearSelection: false, invalidateRequests: false)
+        _ = replaceItemsIfChanged(snapshot.items)
+        selectedItems = []
+        await waitForVisibleItemsUpdate()
+        let fingerprint: DirectoryFingerprint
+        if let snapshotFingerprint = snapshot.fingerprint {
+            fingerprint = snapshotFingerprint
+        } else {
+            fingerprint = await Self.directoryFingerprint(
+                for: snapshot.items,
+                at: url
+            )
+        }
+        guard isCurrentRequest(generation, tabID: requestTabID, url: url) else {
+            return
+        }
+        currentDirectoryFingerprint = fingerprint
+        setActiveTabDirty(false)
         restartDirectoryMonitor()
+        startMetadataEnrichmentIfNeeded(
+            for: snapshot.items,
+            generation: requestGeneration,
+            tabID: activeTabID,
+            directoryURL: url
+        )
     }
 
-    private func loadDirectoryItems(at url: URL) async throws -> [FileItem] {
+    private func loadDirectorySnapshot(
+        at url: URL,
+        includeFingerprint: Bool,
+        priority: TaskPriority
+    ) async throws -> DirectorySnapshot {
         let fileBrowserService = fileBrowserService
         let includeHiddenFiles = includeHiddenFiles
         let task = Task {
-            try await fileBrowserService.contentsOfDirectory(
+            try await fileBrowserService.directorySnapshot(
                 at: url,
-                includeHiddenFiles: includeHiddenFiles
+                includeHiddenFiles: includeHiddenFiles,
+                includeFingerprint: includeFingerprint,
+                priority: priority
             )
         }
         directoryLoadTask = task
@@ -984,32 +1160,254 @@ final class FilePaneViewModel: ObservableObject {
         }
     }
 
-    private func recomputeVisibleItems() {
-        #if DEBUG
-        visibleItemsRecomputeCount += 1
-        #endif
+    private func scheduleVisibleItemsRecompute(
+        debounce: Bool = false,
+        invalidateSortedItems: Bool = false,
+        preferCachedSortInput: Bool = false
+    ) {
+        if invalidateSortedItems {
+            sortedItemsSourceGeneration += 1
+        }
+        visibleItemsGeneration += 1
+        let generation = visibleItemsGeneration
+        let sourceGeneration = sortedItemsSourceGeneration
+        visibleItemsTask?.cancel()
 
-        let sourceItems: [FileItem]
+        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldSortSourceItems = sortedItemsCacheGeneration != sourceGeneration
+        let unsortedSourceItems = isShowingRecursiveSearchResults ? recursiveSearchResults : items
+        let request = VisibleItemsRequest(
+            sourceItems: shouldSortSourceItems
+                ? (preferCachedSortInput && !sortedItemsCache.isEmpty ? sortedItemsCache : unsortedSourceItems)
+                : sortedItemsCache,
+            filterText: isShowingRecursiveSearchResults || trimmedSearchText.isEmpty ? nil : trimmedSearchText,
+            sortOption: sortOption,
+            sortDirection: sortDirection,
+            directoriesFirst: directoriesFirst,
+            shouldSortSourceItems: shouldSortSourceItems
+        )
+        let debounceNanoseconds = debounce ? visibleItemsSearchDebounceNanoseconds : 0
 
-        if isShowingRecursiveSearchResults {
-            sourceItems = recursiveSearchResults
-        } else {
-            let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if trimmedSearchText.isEmpty {
-                sourceItems = items
-            } else {
-                sourceItems = items.filter { item in
-                    item.name.localizedCaseInsensitiveContains(trimmedSearchText)
+        visibleItemsTask = Task(priority: .userInitiated) { [weak self] in
+            do {
+                if debounceNanoseconds > 0 {
+                    try await Task.sleep(nanoseconds: debounceNanoseconds)
                 }
+
+                let computation = try await Self.computeVisibleItems(for: request)
+                try Task.checkCancellation()
+
+                guard let self,
+                      generation == self.visibleItemsGeneration else {
+                    return
+                }
+
+                self.visibleItemsTask = nil
+                if request.shouldSortSourceItems {
+                    self.sortedItemsCache = computation.sortedSourceItems
+                    self.sortedItemsCacheGeneration = sourceGeneration
+                }
+                #if DEBUG
+                self.visibleItemsRecomputeCount += 1
+                PerformanceDiagnostics.shared.recordVisibleItemComputation()
+                #endif
+
+                guard computation.visibleItems != self.visibleItems else {
+                    return
+                }
+
+                #if DEBUG
+                self.visibleItemsPublicationCount += 1
+                PerformanceDiagnostics.shared.recordVisibleItemPublication()
+                #endif
+                self.visibleItems = computation.visibleItems
+                self.reconcileFileListSelection()
+            } catch is CancellationError {
+                guard let self,
+                      generation == self.visibleItemsGeneration else {
+                    return
+                }
+                self.visibleItemsTask = nil
+            } catch {
+                guard let self,
+                      generation == self.visibleItemsGeneration else {
+                    return
+                }
+                self.visibleItemsTask = nil
             }
         }
+    }
 
-        let nextVisibleItems = sortedItems(sourceItems)
+    @discardableResult
+    private func replaceItemsIfChanged(_ newItems: [FileItem]) -> Bool {
+        guard newItems != items else {
+            return false
+        }
 
-        if nextVisibleItems != visibleItems {
-            visibleItems = nextVisibleItems
-            reconcileFileListSelection()
+        items = newItems
+        return true
+    }
+
+    func waitForVisibleItemsUpdate() async {
+        let task = visibleItemsTask
+        await task?.value
+    }
+
+    func waitForMetadataEnrichment() async {
+        let task = metadataEnrichmentTask
+        await task?.value
+    }
+
+    private func startMetadataEnrichmentIfNeeded(
+        for sourceItems: [FileItem],
+        generation: Int,
+        tabID: FilePaneTab.ID,
+        directoryURL: URL
+    ) {
+        metadataEnrichmentTask?.cancel()
+        guard sourceItems.contains(where: { !$0.hasExtendedMetadata }) else {
+            metadataEnrichmentTask = nil
+            return
+        }
+
+        metadataEnrichmentTask = Task(priority: .utility) { [weak self] in
+            do {
+                let enricher = self?.metadataEnricher
+                guard let enricher else {
+                    return
+                }
+                let enrichedItems = try await enricher(sourceItems)
+                try Task.checkCancellation()
+
+                guard let self,
+                      self.isCurrentRequest(generation, tabID: tabID, url: directoryURL) else {
+                    return
+                }
+
+                let selectedIDs = Set(self.selectedItems.map(\.id))
+                let didReplaceItems = self.replaceItemsIfChanged(enrichedItems)
+                let enrichedSelection = Set(enrichedItems.filter { selectedIDs.contains($0.id) })
+                if enrichedSelection != self.selectedItems {
+                    self.selectedItems = enrichedSelection
+                }
+                if didReplaceItems {
+                    await self.waitForVisibleItemsUpdate()
+                    #if DEBUG
+                    self.metadataEnrichmentPublicationCount += 1
+                    #endif
+                }
+                self.metadataEnrichmentTask = nil
+            } catch {
+                guard let self,
+                      self.isCurrentRequest(generation, tabID: tabID, url: directoryURL) else {
+                    return
+                }
+                self.metadataEnrichmentTask = nil
+            }
+        }
+    }
+
+    nonisolated static func enrichMetadata(
+        in sourceItems: [FileItem]
+    ) async throws -> [FileItem] {
+        let task = Task.detached(priority: .utility) {
+            var enrichedItems: [FileItem] = []
+            enrichedItems.reserveCapacity(sourceItems.count)
+
+            for (index, item) in sourceItems.enumerated() {
+                if index.isMultiple(of: 128) {
+                    try Task.checkCancellation()
+                }
+
+                guard !item.hasExtendedMetadata else {
+                    enrichedItems.append(item)
+                    continue
+                }
+
+                enrichedItems.append((try? FileItem(url: item.url)) ?? item)
+            }
+
+            try Task.checkCancellation()
+            return enrichedItems
+        }
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private nonisolated static func directoryFingerprint(
+        for items: [FileItem],
+        at directoryURL: URL
+    ) async -> DirectoryFingerprint {
+        await DirectoryFingerprint.includingDirectoryModificationDate(
+            items: items,
+            directoryURL: directoryURL
+        )
+    }
+
+    private nonisolated static func computeVisibleItems(
+        for request: VisibleItemsRequest
+    ) async throws -> VisibleItemsComputation {
+        let task = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+
+            let sortedSourceItems: [FileItem]
+            if request.shouldSortSourceItems {
+                sortedSourceItems = request.sourceItems.sorted { lhs, rhs in
+                    if request.directoriesFirst,
+                       lhs.isDirectory != rhs.isDirectory {
+                        return lhs.isDirectory && !rhs.isDirectory
+                    }
+
+                    let comparison = compare(lhs, rhs, by: request.sortOption)
+
+                    if comparison != .orderedSame {
+                        return request.sortDirection == .ascending
+                            ? comparison == .orderedAscending
+                            : comparison == .orderedDescending
+                    }
+
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+                try Task.checkCancellation()
+            } else {
+                sortedSourceItems = request.sourceItems
+            }
+
+            let filteredItems: [FileItem]
+            if let filterText = request.filterText {
+                var matches: [FileItem] = []
+                matches.reserveCapacity(sortedSourceItems.count)
+
+                for (index, item) in sortedSourceItems.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try Task.checkCancellation()
+                    }
+
+                    if item.name.localizedCaseInsensitiveContains(filterText) {
+                        matches.append(item)
+                    }
+                }
+
+                filteredItems = matches
+            } else {
+                filteredItems = sortedSourceItems
+            }
+
+            try Task.checkCancellation()
+            return VisibleItemsComputation(
+                sortedSourceItems: sortedSourceItems,
+                visibleItems: filteredItems
+            )
+        }
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
         }
     }
 
@@ -1058,39 +1456,27 @@ final class FilePaneViewModel: ObservableObject {
         applyFileListSelectionToSelectedItems()
     }
 
-    private func sortedItems(_ items: [FileItem]) -> [FileItem] {
-        return items.sorted { lhs, rhs in
-            if directoriesFirst,
-               lhs.isDirectory != rhs.isDirectory {
-                return lhs.isDirectory && !rhs.isDirectory
-            }
-
-            let comparison = compare(lhs, rhs, by: sortOption)
-
-            if comparison != .orderedSame {
-                return sortDirection == .ascending
-                    ? comparison == .orderedAscending
-                    : comparison == .orderedDescending
-            }
-
-            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-        }
-    }
-
-    private func compare(_ lhs: FileItem, _ rhs: FileItem, by option: FileSortOption) -> ComparisonResult {
+    private nonisolated static func compare(
+        _ lhs: FileItem,
+        _ rhs: FileItem,
+        by option: FileSortOption
+    ) -> ComparisonResult {
         switch option {
         case .name:
             return lhs.name.localizedStandardCompare(rhs.name)
         case .size:
-            return compare(lhs.sortSize, rhs.sortSize)
+            return compareValues(lhs.sortSize, rhs.sortSize)
         case .modifiedDate:
-            return compare(lhs.sortModifiedDate, rhs.sortModifiedDate)
+            return compareValues(lhs.sortModifiedDate, rhs.sortModifiedDate)
         case .kind:
             return lhs.kindDescription.localizedStandardCompare(rhs.kindDescription)
         }
     }
 
-    private func compare<T: Comparable>(_ lhs: T, _ rhs: T) -> ComparisonResult {
+    private nonisolated static func compareValues<T: Comparable>(
+        _ lhs: T,
+        _ rhs: T
+    ) -> ComparisonResult {
         if lhs < rhs {
             return .orderedAscending
         }
@@ -1104,14 +1490,22 @@ final class FilePaneViewModel: ObservableObject {
 
     private func applyTab(_ tab: FilePaneTab) {
         invalidatePendingRequests()
+        currentDirectoryFingerprint = nil
+        visibleItemsTask?.cancel()
+        visibleItemsGeneration += 1
+        visibleItems = []
         fileListSelection.clear()
         activeTabID = tab.id
         recursiveSearchResults = []
         isShowingRecursiveSearchResults = false
         errorMessage = nil
         currentURL = tab.currentURL
-        items = tab.items
+        if !replaceItemsIfChanged(tab.items) {
+            scheduleVisibleItemsRecompute()
+        }
         selectedItems = tab.selectedItems
+        touchTabCache(tab.id)
+        trimBackgroundTabCaches()
         restartDirectoryMonitor()
     }
 
@@ -1164,7 +1558,49 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private func performDirectoryMonitorRefresh() async {
-        await loadCurrentDirectory(priority: .monitorRefresh)
+        let requestURL = currentURL
+        let requestTabID = activeTabID
+        let generation = requestGeneration
+        let includeHiddenFiles = includeHiddenFiles
+        let fileBrowserService = fileBrowserService
+
+        do {
+            let snapshot = try await fileBrowserService.directorySnapshot(
+                at: requestURL,
+                includeHiddenFiles: includeHiddenFiles,
+                includeFingerprint: true,
+                priority: .utility
+            )
+            try Task.checkCancellation()
+
+            guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
+                return
+            }
+
+            #if DEBUG
+            directoryFingerprintCheckCount += 1
+            PerformanceDiagnostics.shared.recordDirectoryFingerprintCheck()
+            #endif
+            guard snapshot.fingerprint != currentDirectoryFingerprint else {
+                #if DEBUG
+                directoryFingerprintNoOpCount += 1
+                PerformanceDiagnostics.shared.recordDirectoryFingerprintNoOp()
+                #endif
+                return
+            }
+
+            await loadCurrentDirectory(
+                priority: .monitorRefresh,
+                prefetchedSnapshot: snapshot
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isCurrentRequest(generation, tabID: requestTabID, url: requestURL) else {
+                return
+            }
+            await loadCurrentDirectory(priority: .monitorRefresh)
+        }
     }
 
     private func schedulePendingDirectoryRefreshIfNeeded() {
@@ -1186,11 +1622,50 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private func saveActiveTabState() {
-        updateActiveTab { tab in
-            tab.currentURL = currentURL
-            tab.items = items
-            tab.selectedItems = selectedItems
+        guard let index = tabs.firstIndex(where: { $0.id == activeTabID }) else {
+            return
         }
+
+        var updatedTabs = tabs
+        updatedTabs[index].currentURL = currentURL
+        if items.count <= Self.maximumCachedItemsPerTab {
+            updatedTabs[index].items = items
+            updatedTabs[index].selectedItems = selectedItems
+        } else {
+            updatedTabs[index].items = []
+            updatedTabs[index].selectedItems = []
+            updatedTabs[index].isDirty = true
+        }
+
+        if updatedTabs != tabs {
+            tabs = updatedTabs
+        }
+        touchTabCache(activeTabID)
+        trimBackgroundTabCaches()
+    }
+
+    private func touchTabCache(_ id: FilePaneTab.ID) {
+        tabCacheRecency.removeAll { $0 == id }
+        tabCacheRecency.append(id)
+    }
+
+    private func trimBackgroundTabCaches() {
+        let cachedBackgroundIDs = tabCacheRecency.filter { id in
+            id != activeTabID && tabs.first(where: { $0.id == id })?.items.isEmpty == false
+        }
+        let excessCount = cachedBackgroundIDs.count - Self.maximumCachedBackgroundTabCount
+        guard excessCount > 0 else {
+            return
+        }
+
+        let evictedIDs = Set(cachedBackgroundIDs.prefix(excessCount))
+        var updatedTabs = tabs
+        for index in updatedTabs.indices where evictedIDs.contains(updatedTabs[index].id) {
+            updatedTabs[index].items = []
+            updatedTabs[index].selectedItems = []
+            updatedTabs[index].isDirty = true
+        }
+        tabs = updatedTabs
     }
 
     private var activeTabIsDirty: Bool {
@@ -1203,9 +1678,15 @@ final class FilePaneViewModel: ObservableObject {
         }
     }
 
-    private func nextRequestGeneration() -> Int {
+    private func nextRequestGeneration(
+        cancelDirectoryMonitorRefresh: Bool = true
+    ) -> Int {
+        if cancelDirectoryMonitorRefresh {
+            directoryMonitorRefreshTask?.cancel()
+        }
         directoryLoadTask?.cancel()
         recursiveSearchTask?.cancel()
+        metadataEnrichmentTask?.cancel()
         activeDirectoryLoadPriority = nil
         requestGeneration += 1
         return requestGeneration
@@ -1214,8 +1695,10 @@ final class FilePaneViewModel: ObservableObject {
     private func invalidatePendingRequests() {
         directoryLoadTask?.cancel()
         recursiveSearchTask?.cancel()
+        metadataEnrichmentTask?.cancel()
         directoryLoadTask = nil
         recursiveSearchTask = nil
+        metadataEnrichmentTask = nil
         activeDirectoryLoadPriority = nil
         hasPendingExplicitRefresh = false
         hasPendingDirectoryMonitorRefresh = false
@@ -1234,7 +1717,15 @@ final class FilePaneViewModel: ObservableObject {
             return
         }
 
-        update(&tabs[index])
+        var updatedTab = tabs[index]
+        update(&updatedTab)
+        guard updatedTab != tabs[index] else {
+            return
+        }
+
+        var updatedTabs = tabs
+        updatedTabs[index] = updatedTab
+        tabs = updatedTabs
     }
 
     private func boundedTabInsertionIndex(_ index: Int) -> Int {
@@ -1289,7 +1780,9 @@ final class FilePaneViewModel: ObservableObject {
         tabs = safeTabs
         activeTabID = activeID
         currentURL = activeTab.currentURL
-        items = []
+        currentDirectoryFingerprint = nil
+        _ = replaceItemsIfChanged([])
+        visibleItems = []
         selectedItems = []
         includeHiddenFiles = state.includeHiddenFiles
         searchText = ""

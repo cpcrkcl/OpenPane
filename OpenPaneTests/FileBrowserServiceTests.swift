@@ -18,10 +18,11 @@ struct FileBrowserServiceTests {
         let items = try await FileBrowserService()
             .contentsOfDirectory(at: temporaryDirectory.url, includeHiddenFiles: false)
 
-        #expect(items.map(\.name) == ["notes.txt", "photo.jpg"])
+        #expect(Set(items.map(\.name)) == Set(["notes.txt", "photo.jpg"]))
+        #expect(items.allSatisfy { !$0.hasExtendedMetadata })
     }
 
-    @Test func sortsDirectoriesBeforeFiles() async throws {
+    @Test func returnsDirectoriesAndFilesWithoutOwningDisplayOrder() async throws {
         let temporaryDirectory = try ServiceTestTemporaryDirectory()
         try temporaryDirectory.createFile(named: "Alpha.txt")
         try temporaryDirectory.createDirectory(named: "Zoo")
@@ -29,11 +30,11 @@ struct FileBrowserServiceTests {
         let items = try await FileBrowserService()
             .contentsOfDirectory(at: temporaryDirectory.url, includeHiddenFiles: false)
 
-        #expect(items.map(\.name) == ["Zoo", "Alpha.txt"])
-        #expect(items.first?.isDirectory == true)
+        #expect(Set(items.map(\.name)) == Set(["Zoo", "Alpha.txt"]))
+        #expect(items.first(where: { $0.name == "Zoo" })?.isDirectory == true)
     }
 
-    @Test func sortsNamesAlphabetically() async throws {
+    @Test func returnsEveryEntryForViewModelSorting() async throws {
         let temporaryDirectory = try ServiceTestTemporaryDirectory()
         try temporaryDirectory.createFile(named: "Charlie.txt")
         try temporaryDirectory.createFile(named: "Alpha.txt")
@@ -42,7 +43,37 @@ struct FileBrowserServiceTests {
         let items = try await FileBrowserService()
             .contentsOfDirectory(at: temporaryDirectory.url, includeHiddenFiles: false)
 
-        #expect(items.map(\.name) == ["Alpha.txt", "Bravo.txt", "Charlie.txt"])
+        #expect(Set(items.map(\.name)) == Set(["Alpha.txt", "Bravo.txt", "Charlie.txt"]))
+    }
+
+    @Test func directorySnapshotFingerprintChangesWhenEntriesChange() async throws {
+        let temporaryDirectory = try ServiceTestTemporaryDirectory()
+        try temporaryDirectory.createFile(named: "stable.txt")
+        let service = FileBrowserService()
+
+        let initialSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+        let unchangedSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+        try temporaryDirectory.createFile(named: "added.txt")
+        let changedSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+
+        #expect(initialSnapshot.fingerprint == unchangedSnapshot.fingerprint)
+        #expect(initialSnapshot.fingerprint != changedSnapshot.fingerprint)
+        #expect(Set(changedSnapshot.items.map(\.name)) == Set(["stable.txt", "added.txt"]))
     }
 
     @Test func excludesHiddenFilesByDefault() async throws {

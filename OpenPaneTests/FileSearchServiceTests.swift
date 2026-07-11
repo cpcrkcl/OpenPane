@@ -73,6 +73,30 @@ struct FileSearchServiceTests {
         #expect(results.count == 2)
     }
 
+    @Test func searchBuildsExtendedMetadataOnlyForFilenameMatches() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        for index in 0..<50 {
+            _ = try temporaryDirectory.createFile(
+                named: "unrelated-\(index).txt",
+                contents: "nope"
+            )
+        }
+        _ = try temporaryDirectory.createFile(named: "needle-one.txt", contents: "one")
+        _ = try temporaryDirectory.createFile(named: "needle-two.txt", contents: "two")
+        let itemBuilder = CountingSearchItemBuilder()
+
+        let results = try await FileSearchService(itemBuilder: itemBuilder.build).search(
+            root: temporaryDirectory.url,
+            query: "needle",
+            includeHiddenFiles: false,
+            limit: 500
+        )
+
+        #expect(results.count == 2)
+        #expect(itemBuilder.buildCount == 2)
+        #expect(results.allSatisfy { $0.hasExtendedMetadata })
+    }
+
     @Test func searchThroughSymlinkedRootReturnsDisplayRootURLs() async throws {
         let realDirectory = try SearchTestTemporaryDirectory()
         let linkedRoot = try SearchTestTemporaryDirectory.symlink(to: realDirectory.url)
@@ -180,6 +204,20 @@ struct FileSearchServiceTests {
         await #expect(throws: CancellationError.self) {
             _ = try await task.value
         }
+    }
+}
+
+nonisolated private final class CountingSearchItemBuilder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var protectedBuildCount = 0
+
+    nonisolated var buildCount: Int {
+        lock.withLock { protectedBuildCount }
+    }
+
+    nonisolated func build(_ url: URL) throws -> FileItem {
+        lock.withLock { protectedBuildCount += 1 }
+        return try FileItem(url: url)
     }
 }
 

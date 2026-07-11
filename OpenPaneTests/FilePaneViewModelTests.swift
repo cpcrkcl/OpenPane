@@ -11,6 +11,64 @@ import Testing
 
 @MainActor
 struct FilePaneViewModelTests {
+    @Test func directoryNavigationAlsoEnrichesLightweightRowsAfterFirstPublish() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let fullItem = try temporaryDirectory.createFileItem(
+            named: "Child/navigated.txt",
+            contents: "metadata"
+        )
+        let lightweightItem = try FileItem(essentialURL: fullItem.url)
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                childDirectory.url: [lightweightItem]
+            ]),
+            metadataEnricher: { items in
+                try await Task.sleep(nanoseconds: 50_000_000)
+                return try await FilePaneViewModel.enrichMetadata(in: items)
+            }
+        )
+
+        await viewModel.setDirectory(childDirectory.url)
+
+        #expect(viewModel.items == [lightweightItem])
+        #expect(viewModel.items.first?.hasExtendedMetadata == false)
+        await viewModel.waitForMetadataEnrichment()
+        #expect(viewModel.items.first?.hasExtendedMetadata == true)
+    }
+
+    @Test func directoryLoadPublishesLightweightRowsBeforeMetadataEnrichment() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fullItem = try temporaryDirectory.createFileItem(named: "progressive.txt", contents: "metadata")
+        let lightweightItem = try FileItem(essentialURL: fullItem.url)
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [temporaryDirectory.url: [lightweightItem]]),
+            metadataEnricher: { items in
+                try await Task.sleep(nanoseconds: 50_000_000)
+                return try await FilePaneViewModel.enrichMetadata(in: items)
+            }
+        )
+
+        await viewModel.loadCurrentDirectory()
+
+        #expect(viewModel.items == [lightweightItem])
+        #expect(viewModel.visibleItems == [lightweightItem])
+        #expect(viewModel.items[0].hasExtendedMetadata == false)
+        #expect(viewModel.isLoading == false)
+
+        viewModel.selectFileListItem(lightweightItem, commandModifier: false, shiftModifier: false)
+        let focusedID = viewModel.focusedFileListItemID
+        await viewModel.waitForMetadataEnrichment()
+
+        #expect(viewModel.items[0].hasExtendedMetadata)
+        #expect(viewModel.items[0].size == fullItem.size)
+        #expect(viewModel.selectedItems.map(\.id) == [fullItem.id])
+        #expect(viewModel.focusedFileListItemID == focusedID)
+        #expect(viewModel.metadataEnrichmentPublicationCount == 1)
+    }
+
     @Test func defaultsToHomeDirectory() {
         let viewModel = FilePaneViewModel(fileBrowserService: MockFileBrowserService())
 
@@ -316,6 +374,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.searchText = "notes"
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.filteredItems == [notesItem])
     }
@@ -333,6 +392,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.searchText = "   "
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.filteredItems == [imageItem, notesItem])
     }
@@ -367,6 +427,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.sortOption = .size
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.filteredItems == [directoryItem, smallItem, largeItem])
     }
@@ -384,6 +445,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.directoriesFirst = false
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.filteredItems == [alphaItem, zebraItem])
     }
@@ -401,8 +463,60 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.searchText = "notes"
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [notesItem])
+    }
+
+    @Test func searchTextAssignmentDoesNotSynchronouslyFilterOrSort() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let betaItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [alphaItem, betaItem]
+            ]),
+            visibleItemsSearchDebounceNanoseconds: 20_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        let recomputeCount = viewModel.visibleItemsRecomputeCount
+
+        viewModel.searchText = "beta"
+
+        #expect(viewModel.visibleItems == [alphaItem, betaItem])
+        #expect(viewModel.visibleItemsRecomputeCount == recomputeCount)
+
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.visibleItems == [betaItem])
+        #expect(viewModel.visibleItemsRecomputeCount == recomputeCount + 1)
+    }
+
+    @Test func rapidSearchChangesPublishOnlyLatestResult() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let betaItem = try temporaryDirectory.createFileItem(named: "Beta.txt")
+        let gammaItem = try temporaryDirectory.createFileItem(named: "Gamma.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [alphaItem, betaItem, gammaItem]
+            ]),
+            visibleItemsSearchDebounceNanoseconds: 30_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        let recomputeCount = viewModel.visibleItemsRecomputeCount
+
+        viewModel.searchText = "alpha"
+        try await Task.sleep(nanoseconds: 5_000_000)
+        viewModel.searchText = "beta"
+        try await Task.sleep(nanoseconds: 5_000_000)
+        viewModel.searchText = "gamma"
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.visibleItems == [gammaItem])
+        #expect(viewModel.visibleItemsRecomputeCount == recomputeCount + 1)
     }
 
     @Test func visibleItemsUpdatesWhenSortOptionChanges() async throws {
@@ -418,6 +532,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.sortOption = .size
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [smallItem, largeItem])
     }
@@ -435,6 +550,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.directoriesFirst = false
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [alphaItem, zebraItem])
     }
@@ -452,6 +568,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
         viewModel.sortDirection = .descending
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [betaItem, alphaItem])
     }
@@ -470,6 +587,7 @@ struct FilePaneViewModelTests {
         await viewModel.loadCurrentDirectory()
         viewModel.recursiveSearchResults = [searchResult]
         viewModel.isShowingRecursiveSearchResults = true
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.visibleItems == [searchResult])
     }
@@ -492,6 +610,45 @@ struct FilePaneViewModelTests {
 
         #expect(viewModel.visibleItems == [firstItem, secondItem])
         #expect(viewModel.visibleItemsRecomputeCount == recomputeCount)
+    }
+
+    @Test func selectionChangesDoNotRepublishTabsArray() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let item = try temporaryDirectory.createFileItem(named: "Selected.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [temporaryDirectory.url: [item]])
+        )
+        await viewModel.loadCurrentDirectory()
+        let publicationCount = viewModel.tabsPublicationCount
+
+        viewModel.selectedItems = [item]
+
+        #expect(viewModel.tabsPublicationCount == publicationCount)
+    }
+
+    @Test func backgroundTabItemCachesAreBounded() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService()
+        )
+
+        for index in 0..<8 {
+            let item = try temporaryDirectory.createFileItem(named: "tab-\(index).txt")
+            viewModel.receiveTab(
+                FilePaneTab(
+                    currentURL: temporaryDirectory.url.appendingPathComponent("tab-\(index)", isDirectory: true),
+                    items: [item]
+                )
+            )
+        }
+
+        let cachedBackgroundTabs = viewModel.tabs.filter {
+            $0.id != viewModel.activeTabID && !$0.items.isEmpty
+        }
+        #expect(cachedBackgroundTabs.count <= 4)
+        #expect(viewModel.tabs.filter(\.isDirty).count >= 3)
     }
 
     @Test func itemsForDragReturnsSelectedItemsWhenStartingItemIsSelected() async throws {
@@ -580,6 +737,7 @@ struct FilePaneViewModelTests {
         await viewModel.performRecursiveSearch()
 
         viewModel.clearRecursiveSearch()
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.recursiveSearchResults.isEmpty)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
@@ -609,6 +767,7 @@ struct FilePaneViewModelTests {
         try await Task.sleep(nanoseconds: 10_000_000)
         viewModel.clearRecursiveSearch()
         await searchTask.value
+        await viewModel.waitForVisibleItemsUpdate()
 
         #expect(viewModel.recursiveSearchResults.isEmpty)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
@@ -819,7 +978,7 @@ struct FilePaneViewModelTests {
 
         directoryMonitorService.emitChange(for: rootURL)
         let monitorLoadStarted = try await waitUntil {
-            viewModel.isLoading && fileBrowserService.loadCount(for: rootURL) == 1
+            fileBrowserService.loadCount(for: rootURL) == 1
         }
         #expect(monitorLoadStarted)
 
@@ -1104,12 +1263,49 @@ struct FilePaneViewModelTests {
         )
 
         let firstOptions = viewModel.applicationsAvailableToOpen(firstItem)
+        let didLoadOptions = try await waitUntil {
+            viewModel.applicationsAvailableToOpen(firstItem).map(\.url) == [textEditOption.url]
+        }
         let secondOptions = viewModel.applicationsAvailableToOpen(secondItem)
 
-        #expect(firstOptions.map(\.url) == [textEditOption.url])
+        #expect(firstOptions.isEmpty)
+        #expect(didLoadOptions)
         #expect(secondOptions.map(\.url) == [textEditOption.url])
         #expect(workspaceService.appsAvailableURLs == [firstItem.url])
         #expect(FilePaneViewModel.openWithCacheKey(for: firstItem) == FilePaneViewModel.openWithCacheKey(for: secondItem))
+    }
+
+    @Test func applicationOptionsCacheIsBounded() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fullItems = try [
+            temporaryDirectory.createFileItem(named: "first.cache-one"),
+            temporaryDirectory.createFileItem(named: "second.cache-two"),
+            temporaryDirectory.createFileItem(named: "third.cache-three")
+        ]
+        let items = try fullItems.map { try FileItem(essentialURL: $0.url) }
+        let workspaceService = MockWorkspaceService()
+        workspaceService.applicationOptions = [
+            ApplicationOption(
+                name: "Example",
+                url: URL(filePath: "/Applications/Example.app"),
+                icon: nil
+            )
+        ]
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService,
+            maximumApplicationOptionsCacheEntryCount: 2
+        )
+
+        items.forEach { _ = viewModel.applicationsAvailableToOpen($0) }
+        let didLoadAllOptions = try await waitUntil {
+            workspaceService.appsAvailableURLs.count == items.count &&
+                viewModel.cachedApplicationOptionsCount == 2
+        }
+
+        #expect(didLoadAllOptions)
+        #expect(viewModel.cachedApplicationOptionsCount == 2)
     }
 
     @Test func applicationsAvailableToOpenSkipsWorkspaceLookupForDirectories() async throws {
@@ -1364,6 +1560,8 @@ struct FilePaneViewModelTests {
         #expect(didRefresh)
         #expect(viewModel.items == [initialItem, addedItem])
         #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
+        #expect(viewModel.directoryFingerprintCheckCount == 1)
+        #expect(viewModel.directoryFingerprintNoOpCount == 0)
     }
 
     @Test func directoryMonitorRapidChangesCoalesceIntoOneRefresh() async throws {
@@ -1394,6 +1592,40 @@ struct FilePaneViewModelTests {
         #expect(didRefresh)
         #expect(viewModel.items == [initialItem, addedItem])
         #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
+        #expect(viewModel.directoryFingerprintCheckCount == 1)
+        #expect(viewModel.directoryFingerprintNoOpCount == 0)
+    }
+
+    @Test func noOpDirectoryMonitorRefreshDoesNotRepublishVisibleItems() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let item = try temporaryDirectory.createFileItem(named: "stable.txt")
+        let fileBrowserService = MutableMockFileBrowserService(itemsByURL: [
+            temporaryDirectory.url: [item]
+        ])
+        let directoryMonitorService = MockDirectoryMonitorService()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: fileBrowserService,
+            directoryMonitorService: directoryMonitorService,
+            directoryRefreshDebounceNanoseconds: 10_000_000
+        )
+        await viewModel.loadCurrentDirectory()
+        let publicationCount = viewModel.visibleItemsPublicationCount
+        let itemPublicationCount = viewModel.itemsPublicationCount
+
+        directoryMonitorService.emitChange(for: temporaryDirectory.url)
+        let didRefresh = try await waitUntil {
+            fileBrowserService.loadCount(for: temporaryDirectory.url) == 2 &&
+                viewModel.directoryFingerprintCheckCount == 1 &&
+                !viewModel.isLoading
+        }
+
+        #expect(didRefresh)
+        #expect(viewModel.visibleItems == [item])
+        #expect(viewModel.visibleItemsPublicationCount == publicationCount)
+        #expect(viewModel.itemsPublicationCount == itemPublicationCount)
+        #expect(viewModel.directoryFingerprintCheckCount == 1)
+        #expect(viewModel.directoryFingerprintNoOpCount == 1)
     }
 
     @Test func directoryChangeRestartsDirectoryMonitor() async throws {
@@ -1523,7 +1755,7 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
         return openResult
     }
 
-    func appsAvailableToOpen(url: URL) -> [ApplicationOption] {
+    func appsAvailableToOpen(url: URL) async -> [ApplicationOption] {
         appsAvailableURLs.append(url)
         return applicationOptions
     }

@@ -16,8 +16,17 @@ nonisolated protocol FileSearchServicing: Sendable {
     ) async throws -> [FileItem]
 }
 
+typealias FileSearchItemBuilder = @Sendable (URL) throws -> FileItem
+
 nonisolated struct FileSearchService: FileSearchServicing {
     static let defaultLimit = 500
+    private let itemBuilder: FileSearchItemBuilder
+
+    nonisolated init(
+        itemBuilder: @escaping FileSearchItemBuilder = FileSearchService.makeFileItem
+    ) {
+        self.itemBuilder = itemBuilder
+    }
 
     nonisolated func search(
         root: URL,
@@ -25,7 +34,8 @@ nonisolated struct FileSearchService: FileSearchServicing {
         includeHiddenFiles: Bool,
         limit: Int = Self.defaultLimit
     ) async throws -> [FileItem] {
-        try await Self.runUserInitiated {
+        let itemBuilder = itemBuilder
+        return try await Self.runSearch {
             try Task.checkCancellation()
             let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -43,7 +53,7 @@ nonisolated struct FileSearchService: FileSearchServicing {
 
                 guard let enumerator = FileManager.default.enumerator(
                     at: enumerationRoot,
-                    includingPropertiesForKeys: Array(FileItem.resourceKeys),
+                    includingPropertiesForKeys: Array(FileItem.essentialResourceKeys),
                     options: options,
                     errorHandler: { _, _ in
                         true
@@ -58,28 +68,28 @@ nonisolated struct FileSearchService: FileSearchServicing {
                     try Task.checkCancellation()
 
                     do {
-                        let enumeratedItem = try FileItem(url: itemURL)
-                        let resultURL = Self.url(
-                            itemURL,
-                            preservingRoot: root,
-                            displayRoot: displayRoot,
-                            resolvedRoot: resolvedRoot,
-                            isDirectory: enumeratedItem.isDirectory
-                        )
-                        let item = resultURL == itemURL ? enumeratedItem : try FileItem(url: resultURL)
+                        let essentialItem = try FileItem(essentialURL: itemURL)
 
-                        if !includeHiddenFiles && (item.isHidden || item.name.hasPrefix(".")) {
-                            if item.isDirectory {
+                        if !includeHiddenFiles &&
+                            (essentialItem.isHidden || essentialItem.name.hasPrefix(".")) {
+                            if essentialItem.isDirectory {
                                 enumerator.skipDescendants()
                             }
                             continue
                         }
 
-                        guard item.name.localizedCaseInsensitiveContains(trimmedQuery) else {
+                        guard essentialItem.name.localizedCaseInsensitiveContains(trimmedQuery) else {
                             continue
                         }
 
-                        results.append(item)
+                        let resultURL = Self.url(
+                            itemURL,
+                            preservingRoot: root,
+                            displayRoot: displayRoot,
+                            resolvedRoot: resolvedRoot,
+                            isDirectory: essentialItem.isDirectory
+                        )
+                        results.append(try itemBuilder(resultURL))
 
                         if results.count >= limit {
                             break
@@ -91,7 +101,7 @@ nonisolated struct FileSearchService: FileSearchServicing {
                     }
                 }
 
-                return results.sorted(by: Self.sortItems)
+                return results
             } catch let error as FileBrowserError {
                 throw error
             } catch is CancellationError {
@@ -106,11 +116,11 @@ nonisolated struct FileSearchService: FileSearchServicing {
         }
     }
 
-    private nonisolated static func runUserInitiated<T: Sendable>(
+    private nonisolated static func runSearch<T: Sendable>(
         _ operation: @escaping @Sendable () throws -> T
     ) async throws -> T {
         try Task.checkCancellation()
-        let task = Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .utility) {
             try operation()
         }
 
@@ -164,17 +174,8 @@ nonisolated struct FileSearchService: FileSearchServicing {
         return root.appendingPathComponent(relativePath, isDirectory: isDirectory)
     }
 
-    private nonisolated static func sortItems(_ lhs: FileItem, _ rhs: FileItem) -> Bool {
-        if lhs.isDirectory != rhs.isDirectory {
-            return lhs.isDirectory
-        }
-
-        let nameComparison = lhs.name.localizedStandardCompare(rhs.name)
-        if nameComparison != .orderedSame {
-            return nameComparison == .orderedAscending
-        }
-
-        return lhs.url.path.localizedStandardCompare(rhs.url.path) == .orderedAscending
+    private nonisolated static func makeFileItem(at url: URL) throws -> FileItem {
+        try FileItem(url: url)
     }
 
     private nonisolated static func validateDirectory(_ url: URL) throws {

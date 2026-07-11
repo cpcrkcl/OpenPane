@@ -127,16 +127,30 @@ private final class OperationProgressSink: @unchecked Sendable {
 final class DualPaneViewModel: ObservableObject {
     @Published var leftPane: FilePaneViewModel
     @Published var rightPane: FilePaneViewModel
-    @Published var activePaneSide: PaneSide
+    @Published var activePaneSide: PaneSide {
+        didSet {
+            sessionStateChangeSubject.send()
+        }
+    }
     @Published var errorMessage: String?
     @Published var isPerformingOperation: Bool
     @Published var operationStatusMessage: String?
-    @Published var splitLeftPaneFraction: Double?
+    @Published var splitLeftPaneFraction: Double? {
+        didSet {
+            sessionStateChangeSubject.send()
+        }
+    }
     @Published private(set) var operationState: FileOperationState
 
     private let fileOperationService: any FileOperationServicing
-    private var paneObservationCancellables: Set<AnyCancellable> = []
+    private let sessionStateChangeSubject = PassthroughSubject<Void, Never>()
+    private var paneVisualObservationCancellables: Set<AnyCancellable> = []
+    private var paneSessionObservationCancellables: Set<AnyCancellable> = []
     private var currentOperationTask: Task<Void, Error>?
+
+    #if DEBUG
+    private(set) var paneChangeFanoutCount = 0
+    #endif
 
     var activePane: FilePaneViewModel {
         activePaneSide == .left ? leftPane : rightPane
@@ -144,6 +158,10 @@ final class DualPaneViewModel: ObservableObject {
 
     var inactivePane: FilePaneViewModel {
         activePaneSide == .left ? rightPane : leftPane
+    }
+
+    var sessionStateDidChange: AnyPublisher<Void, Never> {
+        sessionStateChangeSubject.eraseToAnyPublisher()
     }
 
     convenience init() {
@@ -902,19 +920,52 @@ final class DualPaneViewModel: ObservableObject {
     }
 
     private func observePaneChanges() {
-        paneObservationCancellables.removeAll()
+        paneVisualObservationCancellables.removeAll()
+        paneSessionObservationCancellables.removeAll()
 
-        leftPane.objectWillChange
+        let visualPublishers: [AnyPublisher<Void, Never>] = [
+            leftPane.$currentURL.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$backStack.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$forwardStack.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$includeHiddenFiles.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$tabs.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$currentURL.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$backStack.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$forwardStack.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$includeHiddenFiles.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$tabs.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        ]
+
+        Publishers.MergeMany(visualPublishers)
             .sink { [weak self] in
+                #if DEBUG
+                self?.paneChangeFanoutCount += 1
+                PerformanceDiagnostics.shared.recordDualPaneChangeFanout()
+                #endif
                 self?.objectWillChange.send()
             }
-            .store(in: &paneObservationCancellables)
+            .store(in: &paneVisualObservationCancellables)
 
-        rightPane.objectWillChange
+        let sessionPublishers: [AnyPublisher<Void, Never>] = [
+            leftPane.$currentURL.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$tabs.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$includeHiddenFiles.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$sortOption.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$sortDirection.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            leftPane.$directoriesFirst.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$currentURL.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$tabs.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$includeHiddenFiles.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$sortOption.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$sortDirection.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            rightPane.$directoriesFirst.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        ]
+
+        Publishers.MergeMany(sessionPublishers)
             .sink { [weak self] in
-                self?.objectWillChange.send()
+                self?.sessionStateChangeSubject.send()
             }
-            .store(in: &paneObservationCancellables)
+            .store(in: &paneSessionObservationCancellables)
     }
 
     private static func userReadableError(for error: Error) -> String {
