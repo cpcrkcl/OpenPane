@@ -103,6 +103,7 @@ struct FilePaneView: View {
     var onMoveTab: @MainActor @Sendable (FilePaneTab.ID, PaneSide, PaneSide, Int?) -> Void = { _, _, _, _ in }
     var onRenameSelected: () -> Void = {}
     var onTrashSelected: () -> Void = {}
+    var onDuplicateSelected: () -> Void = {}
     var onDuplicate: (FileItem) -> Void = { _ in }
     var onCompress: (FileItem) -> Void = { _ in }
     var onCreateFolder: () -> Void = {}
@@ -1144,11 +1145,18 @@ struct FilePaneView: View {
             return true
         }
 
-        if modifiers.contains(.command),
-           !modifiers.contains(.option),
-           !modifiers.contains(.control),
-           event.charactersIgnoringModifiers?.lowercased() == "a" {
+        if keyboardShortcutStore.shortcut(for: .selectAllFiles).matches(event) {
             viewModel.selectAllVisibleItems()
+            return true
+        }
+
+        if keyboardShortcutStore.shortcut(for: .duplicateFiles).matches(event) {
+            onDuplicateSelected()
+            return true
+        }
+
+        if keyboardShortcutStore.shortcut(for: .newFile).matches(event) {
+            onCreateFile()
             return true
         }
 

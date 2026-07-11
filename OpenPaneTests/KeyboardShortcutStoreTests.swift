@@ -27,6 +27,9 @@ struct KeyboardShortcutStoreTests {
         #expect(store.shortcut(for: .rename).usesCommand)
         #expect(store.shortcut(for: .copyFiles).displayText == "⌘C")
         #expect(store.shortcut(for: .pasteFiles).displayText == "⌘V")
+        #expect(store.shortcut(for: .selectAllFiles).displayText == "⌘A")
+        #expect(store.shortcut(for: .duplicateFiles).displayText == "⌘D")
+        #expect(store.shortcut(for: .newFile).displayText == "⌥⌘N")
     }
 
     @Test func savedCustomShortcutsArePreservedWhileNewDefaultsAreMerged() throws {
@@ -51,6 +54,9 @@ struct KeyboardShortcutStoreTests {
         #expect(store.shortcut(for: .rename) == customRename)
         #expect(store.shortcut(for: .open).key.rawValue == "return")
         #expect(store.shortcut(for: .copyFiles).displayText == "⌘C")
+        #expect(store.shortcut(for: .selectAllFiles).displayText == "⌘A")
+        #expect(store.shortcut(for: .duplicateFiles).displayText == "⌘D")
+        #expect(store.shortcut(for: .newFile).displayText == "⌥⌘N")
     }
 
     @Test func legacyBareReturnRenameMigratesToCommandReturn() throws {

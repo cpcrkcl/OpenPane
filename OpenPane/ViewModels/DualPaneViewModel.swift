@@ -18,6 +18,45 @@ nonisolated enum FileDropOperation: Equatable, Sendable {
     case move
 }
 
+nonisolated enum DefaultFileDropAction: String, CaseIterable, Identifiable, Sendable {
+    case copy
+    case ask
+    case move
+
+    static let userDefaultsKey = "OpenPaneDefaultFileDropAction"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .copy:
+            "Copy"
+        case .ask:
+            "Ask"
+        case .move:
+            "Move"
+        }
+    }
+}
+
+nonisolated enum FileDropPreparationDecision: Equatable, Sendable {
+    case perform(FileDropOperation)
+    case ask
+    case resolveConflicts(FileDropOperation)
+
+    static func forOrdinaryDrop(
+        defaultAction: DefaultFileDropAction,
+        hasPotentialConflict: Bool
+    ) -> Self {
+        guard defaultAction != .ask else {
+            return .ask
+        }
+
+        let operation: FileDropOperation = defaultAction == .copy ? .copy : .move
+        return hasPotentialConflict ? .resolveConflicts(operation) : .perform(operation)
+    }
+}
+
 nonisolated struct FileOperationState: Equatable, Sendable {
     let isRunning: Bool
     let label: String

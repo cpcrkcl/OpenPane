@@ -10,16 +10,18 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
+    @AppStorage(DefaultFileDropAction.userDefaultsKey) private var defaultFileDropActionRawValue = DefaultFileDropAction.copy.rawValue
     @State private var recordingAction: OpenPaneShortcutAction?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
             settingsShortcutNote
+            fileDropSection
             shortcutsSection
         }
         .padding(24)
-        .frame(width: 540, height: 540, alignment: .topLeading)
+        .frame(width: 540, height: 600, alignment: .topLeading)
         .background(CatppuccinMochaTheme.appBackground)
         .preferredColorScheme(.dark)
     }
@@ -112,6 +114,40 @@ struct SettingsView: View {
                 RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
                     .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
             }
+        }
+    }
+
+    private var fileDropSection: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Default drop action")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+                Text("Ask shows the Copy or Move chooser for every drop.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+            }
+
+            Spacer()
+
+            Picker("Default drop action", selection: $defaultFileDropActionRawValue) {
+                ForEach(DefaultFileDropAction.allCases) { action in
+                    Text(action.title).tag(action.rawValue)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 110)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            CatppuccinMochaTheme.mantle,
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+                .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
         }
     }
 

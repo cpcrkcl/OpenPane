@@ -21,6 +21,7 @@ Screenshots will be added for the initial GitHub release.
 - Copy and move between panes
 - Clipboard copy/paste with `Command-C` and `Command-V`
 - Drag-and-drop copies by default, with conflict handling when needed
+- Configurable default drop action (`Copy`, `Ask`, or `Move`) in Settings
 - Conflict handling: cancel, skip, replace, and keep both
 - Rename and batch rename
 - New folder
@@ -126,6 +127,8 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 - `Space`: Quick Look preview
 - `Command-C`: Copy selected files to the clipboard
 - `Command-V`: Paste files into the active pane
+- `Command-D`: Duplicate selected files
+- `Command-Option-N`: New file
 - `Command-Delete`: Move selection to Trash
 
 ## Roadmap

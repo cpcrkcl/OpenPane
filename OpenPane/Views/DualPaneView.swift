@@ -12,6 +12,7 @@ import SwiftUI
 struct DualPaneView: View {
     @ObservedObject var viewModel: DualPaneViewModel
     @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
+    @AppStorage(DefaultFileDropAction.userDefaultsKey) private var defaultFileDropActionRawValue = DefaultFileDropAction.copy.rawValue
 
     @State private var newFolderName = "Untitled Folder"
     @State private var newFileName = "Untitled.txt"
@@ -22,6 +23,7 @@ struct DualPaneView: View {
     @State private var isShowingTrashConfirmation = false
     @State private var trashConfirmationItemCount = 0
     @State private var pendingConflictOperation: PendingConflictOperation?
+    @State private var pendingFileDrop: PendingFileDrop?
     @State private var leftPaneWidth: CGFloat?
     @State private var isCommandPalettePresented = false
     @FocusState private var focusedSheetField: SheetField?
@@ -180,6 +182,33 @@ struct DualPaneView: View {
         } message: {
             Text(pendingConflictMessage)
         }
+        .confirmationDialog(
+            "Drop Items",
+            isPresented: Binding {
+                pendingFileDrop != nil
+            } set: { isPresented in
+                if !isPresented {
+                    pendingFileDrop = nil
+                }
+            },
+            titleVisibility: .visible
+        ) {
+            Button("Copy") {
+                runPendingFileDrop(.copy)
+            }
+            .disabled(viewModel.isPerformingOperation)
+
+            Button("Move") {
+                runPendingFileDrop(.move)
+            }
+            .disabled(viewModel.isPerformingOperation)
+
+            Button("Cancel", role: .cancel) {
+                pendingFileDrop = nil
+            }
+        } message: {
+            Text(pendingFileDropMessage)
+        }
     }
 
     private var horizontalDivider: some View {
@@ -255,6 +284,10 @@ struct DualPaneView: View {
             prepareRenameSheet()
         } onTrashSelected: {
             prepareTrashConfirmation()
+        } onDuplicateSelected: {
+            Task {
+                await viewModel.duplicateSelectionInActivePane()
+            }
         } onDuplicate: { item in
             viewModel.setActivePane(side)
             Task {
@@ -332,6 +365,16 @@ struct DualPaneView: View {
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .newFolder))
             .disabled(viewModel.isPerformingOperation)
             .accessibilityIdentifier("toolbar-new-folder-button")
+
+            Button {
+                prepareNewFileSheet()
+            } label: {
+                Label("New File", systemImage: "doc.badge.plus")
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .newFile))
+            .disabled(viewModel.isPerformingOperation)
+            .accessibilityIdentifier("toolbar-new-file-button")
 
             Button {
                 prepareRenameSheet()
@@ -515,6 +558,54 @@ struct DualPaneView: View {
                 prepareNewFolderSheet()
             },
             CommandPaletteCommand(
+                id: "new-file",
+                title: "New File",
+                systemImage: "doc.badge.plus"
+            ) {
+                prepareNewFileSheet()
+            },
+            CommandPaletteCommand(
+                id: "copy-files",
+                title: "Copy Selected Files",
+                systemImage: "doc.on.doc",
+                disabledReason: selectedItemCount > 0 ? nil : "Select one or more items"
+            ) {
+                let copiedItemCount = viewModel.activePane.copySelectedItemsToPasteboard()
+                if copiedItemCount > 0 {
+                    viewModel.showStatusMessage(
+                        copiedItemCount == 1
+                            ? "Copied 1 item to the clipboard."
+                            : "Copied \(copiedItemCount) items to the clipboard."
+                    )
+                }
+            },
+            CommandPaletteCommand(
+                id: "paste-files",
+                title: "Paste Files",
+                systemImage: "doc.on.clipboard"
+            ) {
+                Task {
+                    await viewModel.pasteIntoPane(viewModel.activePane)
+                }
+            },
+            CommandPaletteCommand(
+                id: "select-all-files",
+                title: "Select All Files",
+                systemImage: "checkmark.circle"
+            ) {
+                viewModel.activePane.selectAllVisibleItems()
+            },
+            CommandPaletteCommand(
+                id: "duplicate-files",
+                title: "Duplicate Selected Files",
+                systemImage: "plus.square.on.square",
+                disabledReason: selectedItemCount > 0 ? nil : "Select one or more items"
+            ) {
+                Task {
+                    await viewModel.duplicateSelectionInActivePane()
+                }
+            },
+            CommandPaletteCommand(
                 id: "rename",
                 title: "Rename",
                 systemImage: "pencil",
@@ -647,6 +738,19 @@ struct DualPaneView: View {
         }
     }
 
+    private var pendingFileDropMessage: String {
+        guard let pendingFileDrop else {
+            return ""
+        }
+
+        let itemText = pendingFileDrop.fileURLs.count == 1 ? "item" : "items"
+        return "Choose how to place \(pendingFileDrop.fileURLs.count) \(itemText) into \(pendingFileDrop.targetDirectory.openPaneDisplayName). Move changes the original location."
+    }
+
+    private var defaultFileDropAction: DefaultFileDropAction {
+        DefaultFileDropAction(rawValue: defaultFileDropActionRawValue) ?? .copy
+    }
+
     private func prepareFileDrop(
         fileURLs: [URL],
         sourcePaneSide: PaneSide?,
@@ -664,12 +768,31 @@ struct DualPaneView: View {
             targetDirectory: targetDirectory,
             targetPaneSide: targetPaneSide
         )
-        if hasPotentialConflict(in: drop) {
-            pendingConflictOperation = .fileDrop(drop, .copy)
+        switch FileDropPreparationDecision.forOrdinaryDrop(
+            defaultAction: defaultFileDropAction,
+            hasPotentialConflict: hasPotentialConflict(in: drop)
+        ) {
+        case .ask:
+            pendingFileDrop = drop
+        case .resolveConflicts(let operation):
+            pendingConflictOperation = .fileDrop(drop, operation)
+        case .perform(let operation):
+            runFileDrop(drop, operation: operation, conflictResolution: .cancel)
+        }
+    }
+
+    private func runPendingFileDrop(_ operation: FileDropOperation) {
+        guard let pendingFileDrop else {
             return
         }
 
-        runFileDrop(drop, operation: .copy, conflictResolution: .cancel)
+        self.pendingFileDrop = nil
+        if hasPotentialConflict(in: pendingFileDrop) {
+            pendingConflictOperation = .fileDrop(pendingFileDrop, operation)
+            return
+        }
+
+        runFileDrop(pendingFileDrop, operation: operation, conflictResolution: .cancel)
     }
 
     private func runFileDrop(

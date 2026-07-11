@@ -11,6 +11,48 @@ import Testing
 
 @MainActor
 struct DualPaneViewModelTests {
+    @Test func ordinaryDropCopiesImmediatelyWithoutGenericChooser() {
+        #expect(
+            FileDropPreparationDecision.forOrdinaryDrop(
+                defaultAction: .copy,
+                hasPotentialConflict: false
+            ) == .perform(.copy)
+        )
+    }
+
+    @Test func ordinaryDropOnlyPromptsWhenConflictResolutionIsNeeded() {
+        #expect(
+            FileDropPreparationDecision.forOrdinaryDrop(
+                defaultAction: .copy,
+                hasPotentialConflict: true
+            ) == .resolveConflicts(.copy)
+        )
+    }
+
+    @Test func askDropPreferenceShowsGenericChooser() {
+        #expect(
+            FileDropPreparationDecision.forOrdinaryDrop(
+                defaultAction: .ask,
+                hasPotentialConflict: false
+            ) == .ask
+        )
+    }
+
+    @Test func moveDropPreferenceMovesImmediatelyAndPreservesConflictHandling() {
+        #expect(
+            FileDropPreparationDecision.forOrdinaryDrop(
+                defaultAction: .move,
+                hasPotentialConflict: false
+            ) == .perform(.move)
+        )
+        #expect(
+            FileDropPreparationDecision.forOrdinaryDrop(
+                defaultAction: .move,
+                hasPotentialConflict: true
+            ) == .resolveConflicts(.move)
+        )
+    }
+
     @Test func defaultsToLeftActivePane() {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
@@ -338,6 +380,7 @@ struct DualPaneViewModelTests {
 
         #expect(leftPane.items.map(\.name) == ["second.txt"])
         #expect(rightPane.items.map(\.name) == ["first.txt"])
+        #expect(leftPane.selectedItems.map(\.name) == ["second.txt"])
         #expect(viewModel.operationStatusMessage == "Move failed. 1 of 2 completed.")
         #expect(viewModel.errorMessage?.contains("Simulated failure") == true)
         #expect(viewModel.isPerformingOperation == false)

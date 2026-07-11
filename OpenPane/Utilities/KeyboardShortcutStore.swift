@@ -24,6 +24,9 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case preview
     case copyFiles
     case pasteFiles
+    case selectAllFiles
+    case duplicateFiles
+    case newFile
     case moveToTrash
 
     var id: String {
@@ -60,6 +63,12 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
             "Copy selected files"
         case .pasteFiles:
             "Paste files"
+        case .selectAllFiles:
+            "Select all files"
+        case .duplicateFiles:
+            "Duplicate selected files"
+        case .newFile:
+            "New file"
         case .moveToTrash:
             "Move to Trash"
         }
@@ -304,6 +313,9 @@ final class KeyboardShortcutStore: ObservableObject {
         .preview: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "space"), usesCommand: false, usesShift: false, usesOption: false, usesControl: false),
         .copyFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "c"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .pasteFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "v"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
+        .selectAllFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "a"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
+        .duplicateFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "d"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
+        .newFile: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "n"), usesCommand: true, usesShift: false, usesOption: true, usesControl: false),
         .moveToTrash: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "delete"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false)
     ]
 }
