@@ -28,10 +28,12 @@ struct PerformanceBenchmarkTests {
             #expect(FileManager.default.createFile(atPath: fileURL.path, contents: nil))
         }
 
+        let directoryMonitorService = BenchmarkDirectoryMonitorService()
         let viewModel = FilePaneViewModel(
             currentURL: directoryURL,
             fileBrowserService: FileBrowserService(),
-            directoryMonitorService: NoopDirectoryMonitoringService(),
+            directoryMonitorService: directoryMonitorService,
+            directoryRefreshDebounceNanoseconds: 10_000_000,
             visibleItemsSearchDebounceNanoseconds: 0
         )
         let start = ProcessInfo.processInfo.systemUptime
@@ -47,12 +49,34 @@ struct PerformanceBenchmarkTests {
         await viewModel.waitForMetadataEnrichment()
         let metadataReadyMilliseconds = milliseconds(since: start)
 
+        let itemPublicationCount = viewModel.itemsPublicationCount
+        let monitorStart = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<5 {
+            directoryMonitorService.emitChange()
+        }
+        try await waitUntil { viewModel.directoryFingerprintCheckCount == 1 }
+        let noOpMonitorMilliseconds = milliseconds(since: monitorStart)
+
+        let searchStart = ProcessInfo.processInfo.systemUptime
+        let searchResults = try await FileSearchService().search(
+            root: directoryURL,
+            query: "sample-09999",
+            includeHiddenFiles: false,
+            limit: 500
+        )
+        let singleMatchSearchMilliseconds = milliseconds(since: searchStart)
+
         #expect(viewModel.items.count == fileCount)
         #expect(viewModel.items.allSatisfy { $0.hasExtendedMetadata })
+        #expect(viewModel.directoryFingerprintNoOpCount == 1)
+        #expect(viewModel.itemsPublicationCount == itemPublicationCount)
+        #expect(searchResults.map(\.name) == ["sample-09999.txt"])
         let metrics = [
             "first_items_ms": firstItemsMilliseconds,
             "first_visible_ms": firstVisibleItemsMilliseconds,
-            "metadata_ready_ms": metadataReadyMilliseconds
+            "metadata_ready_ms": metadataReadyMilliseconds,
+            "noop_monitor_burst_ms": noOpMonitorMilliseconds,
+            "recursive_single_match_ms": singleMatchSearchMilliseconds
         ]
         let metricsData = try JSONSerialization.data(
             withJSONObject: metrics,
@@ -66,7 +90,9 @@ struct PerformanceBenchmarkTests {
             "OPENPANE_BENCHMARK " +
             "first_items_ms=\(format(firstItemsMilliseconds)) " +
             "first_visible_ms=\(format(firstVisibleItemsMilliseconds)) " +
-            "metadata_ready_ms=\(format(metadataReadyMilliseconds))"
+            "metadata_ready_ms=\(format(metadataReadyMilliseconds)) " +
+            "noop_monitor_burst_ms=\(format(noOpMonitorMilliseconds)) " +
+            "recursive_single_match_ms=\(format(singleMatchSearchMilliseconds))"
         )
     }
 
@@ -91,4 +117,26 @@ struct PerformanceBenchmarkTests {
     private func format(_ value: Double) -> String {
         String(format: "%.2f", value)
     }
+}
+
+nonisolated private final class BenchmarkDirectoryMonitorService: DirectoryMonitorServicing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var onChange: (@Sendable () -> Void)?
+
+    nonisolated func monitorDirectory(
+        at url: URL,
+        onChange: @escaping @Sendable () -> Void
+    ) -> any DirectoryMonitorToken {
+        lock.withLock { self.onChange = onChange }
+        return BenchmarkDirectoryMonitorToken()
+    }
+
+    nonisolated func emitChange() {
+        let callback = lock.withLock { onChange }
+        callback?()
+    }
+}
+
+nonisolated private final class BenchmarkDirectoryMonitorToken: DirectoryMonitorToken, @unchecked Sendable {
+    nonisolated func cancel() {}
 }
