@@ -801,6 +801,100 @@ struct FilePaneViewModelTests {
         #expect(viewModel.isLoading == false)
     }
 
+    @Test func monitorRefreshInFlightCannotBlockSubsequentUserNavigation() async throws {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)
+        let childItem = try PaneTestTemporaryDirectory().createFileItem(named: "child.txt")
+        let fileBrowserService = MutableMockFileBrowserService(
+            itemsByURL: [childURL: [childItem]],
+            delayNanosecondsByURL: [rootURL: 300_000_000]
+        )
+        let directoryMonitorService = MockDirectoryMonitorService()
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: fileBrowserService,
+            directoryMonitorService: directoryMonitorService,
+            directoryRefreshDebounceNanoseconds: 1_000_000
+        )
+
+        directoryMonitorService.emitChange(for: rootURL)
+        let monitorLoadStarted = try await waitUntil {
+            viewModel.isLoading && fileBrowserService.loadCount(for: rootURL) == 1
+        }
+        #expect(monitorLoadStarted)
+
+        await viewModel.setDirectory(childURL)
+
+        #expect(viewModel.currentURL == childURL)
+        #expect(viewModel.items == [childItem])
+        #expect(viewModel.backStack == [rootURL])
+        #expect(viewModel.isLoading == false)
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test func explicitRefreshQueuesBehindUserNavigation() async throws {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)
+        let childItem = try PaneTestTemporaryDirectory().createFileItem(named: "child.txt")
+        let fileBrowserService = MutableMockFileBrowserService(
+            itemsByURL: [childURL: [childItem]],
+            delayNanosecondsByURL: [childURL: 80_000_000]
+        )
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: fileBrowserService
+        )
+
+        let navigation = Task { @MainActor in
+            await viewModel.setDirectory(childURL)
+        }
+        let navigationStarted = try await waitUntil {
+            viewModel.isLoading && fileBrowserService.loadCount(for: childURL) == 1
+        }
+        #expect(navigationStarted)
+
+        await viewModel.refresh()
+        await navigation.value
+        let queuedRefreshCompleted = try await waitUntil {
+            viewModel.currentURL == childURL &&
+                fileBrowserService.loadCount(for: childURL) == 2 &&
+                !viewModel.isLoading
+        }
+
+        #expect(queuedRefreshCompleted)
+        #expect(viewModel.currentURL == childURL)
+        #expect(viewModel.items == [childItem])
+        #expect(viewModel.backStack == [rootURL])
+        #expect(fileBrowserService.loadCount(for: rootURL) == 0)
+        #expect(viewModel.isLoading == false)
+    }
+
+    @Test func cancelledDirectoryLoadDoesNotLeaveLoadingStateStuck() async throws {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let fileBrowserService = MutableMockFileBrowserService(
+            delayNanosecondsByURL: [rootURL: 300_000_000]
+        )
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: fileBrowserService
+        )
+
+        let load = Task { @MainActor in
+            await viewModel.loadCurrentDirectory()
+        }
+        let loadStarted = try await waitUntil {
+            viewModel.isLoading && fileBrowserService.loadCount(for: rootURL) == 1
+        }
+        #expect(loadStarted)
+
+        load.cancel()
+        await load.value
+
+        #expect(viewModel.isLoading == false)
+        #expect(viewModel.currentURL == rootURL)
+        #expect(viewModel.errorMessage == nil)
+    }
+
     @Test func refreshDoesNotChangeNavigationHistory() async {
         let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
         let childURL = URL(filePath: "/root/child", directoryHint: .isDirectory)
@@ -1511,21 +1605,28 @@ nonisolated private final class MutableMockFileBrowserService: FileBrowserServic
     private let queue = DispatchQueue(label: "com.openpane.tests.mutable-file-browser")
     private var itemsByURL: [URL: [FileItem]]
     private var errorByURL: [URL: any Error & Sendable]
+    private var delayNanosecondsByURL: [URL: UInt64]
     private var loadCountsByURL: [URL: Int]
 
     init(
         itemsByURL: [URL: [FileItem]] = [:],
-        errorByURL: [URL: any Error & Sendable] = [:]
+        errorByURL: [URL: any Error & Sendable] = [:],
+        delayNanosecondsByURL: [URL: UInt64] = [:]
     ) {
         self.itemsByURL = itemsByURL
         self.errorByURL = errorByURL
+        self.delayNanosecondsByURL = delayNanosecondsByURL
         self.loadCountsByURL = [:]
     }
 
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
-        let response = queue.sync { () -> (items: [FileItem], error: (any Error & Sendable)?) in
+        let response = queue.sync { () -> (items: [FileItem], error: (any Error & Sendable)?, delay: UInt64?) in
             loadCountsByURL[url, default: 0] += 1
-            return (itemsByURL[url] ?? [], errorByURL[url])
+            return (itemsByURL[url] ?? [], errorByURL[url], delayNanosecondsByURL[url])
+        }
+
+        if let delay = response.delay {
+            try await Task.sleep(nanoseconds: delay)
         }
 
         if let error = response.error {

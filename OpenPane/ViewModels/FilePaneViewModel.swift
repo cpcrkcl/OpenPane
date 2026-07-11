@@ -67,6 +67,12 @@ nonisolated enum FileSortDirection: String, CaseIterable, Codable, Identifiable,
 
 @MainActor
 final class FilePaneViewModel: ObservableObject {
+    private enum DirectoryLoadPriority: Int {
+        case monitorRefresh
+        case explicitRefresh
+        case userNavigation
+    }
+
     @Published var currentURL: URL {
         didSet {
             updateActiveTab { tab in
@@ -150,6 +156,8 @@ final class FilePaneViewModel: ObservableObject {
     private var recursiveSearchTask: Task<[FileItem], Error>?
     private var folderSizeTasksByURL: [URL: Task<Void, Never>] = [:]
     private var hasPendingDirectoryMonitorRefresh = false
+    private var hasPendingExplicitRefresh = false
+    private var activeDirectoryLoadPriority: DirectoryLoadPriority?
     private var requestGeneration = 0
     private var applicationOptionsByTypeKey: [String: [ApplicationOption]] = [:]
     private var isApplyingFileListSelection = false
@@ -232,9 +240,27 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     func loadCurrentDirectory() async {
+        await loadCurrentDirectory(priority: .explicitRefresh)
+    }
+
+    private func loadCurrentDirectory(priority: DirectoryLoadPriority) async {
+        if let activeDirectoryLoadPriority,
+           activeDirectoryLoadPriority.rawValue > priority.rawValue {
+            switch priority {
+            case .monitorRefresh:
+                hasPendingDirectoryMonitorRefresh = true
+            case .explicitRefresh:
+                hasPendingExplicitRefresh = true
+            case .userNavigation:
+                break
+            }
+            return
+        }
+
         let requestURL = currentURL
         let requestTabID = activeTabID
         let generation = nextRequestGeneration()
+        activeDirectoryLoadPriority = priority
         let wasDirty = activeTabIsDirty
         let selectedURLs = Set(selectedItems.map { $0.url.standardizedFileURL })
         isLoading = true
@@ -243,8 +269,9 @@ final class FilePaneViewModel: ObservableObject {
         defer {
             if generation == requestGeneration {
                 directoryLoadTask = nil
+                activeDirectoryLoadPriority = nil
                 isLoading = false
-                schedulePendingDirectoryMonitorRefreshIfNeeded()
+                schedulePendingDirectoryRefreshIfNeeded()
             }
         }
 
@@ -283,7 +310,7 @@ final class FilePaneViewModel: ObservableObject {
         let tab = FilePaneTab(currentURL: currentURL)
         tabs.append(tab)
         applyTab(tab)
-        await loadCurrentDirectory()
+        await loadCurrentDirectory(priority: .userNavigation)
     }
 
     func closeTab(_ id: FilePaneTab.ID) async {
@@ -303,7 +330,7 @@ final class FilePaneViewModel: ObservableObject {
         applyTab(tabs[nextIndex])
 
         if items.isEmpty || activeTabIsDirty {
-            await loadCurrentDirectory()
+            await loadCurrentDirectory(priority: .userNavigation)
         }
     }
 
@@ -317,7 +344,7 @@ final class FilePaneViewModel: ObservableObject {
         applyTab(tab)
 
         if items.isEmpty || activeTabIsDirty {
-            await loadCurrentDirectory()
+            await loadCurrentDirectory(priority: .userNavigation)
         }
     }
 
@@ -374,6 +401,10 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     func performRecursiveSearch(limit: Int = FileSearchService.defaultLimit) async {
+        guard activeDirectoryLoadPriority != .userNavigation else {
+            return
+        }
+
         let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedSearchText.isEmpty else {
@@ -892,13 +923,15 @@ final class FilePaneViewModel: ObservableObject {
     private func itemsForNavigation(to url: URL) async -> [FileItem]? {
         let requestTabID = activeTabID
         let generation = nextRequestGeneration()
+        activeDirectoryLoadPriority = .userNavigation
         isLoading = true
         errorMessage = nil
         defer {
             if generation == requestGeneration {
                 directoryLoadTask = nil
+                activeDirectoryLoadPriority = nil
                 isLoading = false
-                schedulePendingDirectoryMonitorRefreshIfNeeded()
+                schedulePendingDirectoryRefreshIfNeeded()
             }
         }
 
@@ -1131,15 +1164,19 @@ final class FilePaneViewModel: ObservableObject {
     }
 
     private func performDirectoryMonitorRefresh() async {
-        guard !isLoading else {
-            hasPendingDirectoryMonitorRefresh = true
+        await loadCurrentDirectory(priority: .monitorRefresh)
+    }
+
+    private func schedulePendingDirectoryRefreshIfNeeded() {
+        if hasPendingExplicitRefresh {
+            hasPendingExplicitRefresh = false
+            hasPendingDirectoryMonitorRefresh = false
+            Task { [weak self] in
+                await self?.loadCurrentDirectory(priority: .explicitRefresh)
+            }
             return
         }
 
-        await loadCurrentDirectory()
-    }
-
-    private func schedulePendingDirectoryMonitorRefreshIfNeeded() {
         guard hasPendingDirectoryMonitorRefresh else {
             return
         }
@@ -1169,6 +1206,7 @@ final class FilePaneViewModel: ObservableObject {
     private func nextRequestGeneration() -> Int {
         directoryLoadTask?.cancel()
         recursiveSearchTask?.cancel()
+        activeDirectoryLoadPriority = nil
         requestGeneration += 1
         return requestGeneration
     }
@@ -1178,6 +1216,9 @@ final class FilePaneViewModel: ObservableObject {
         recursiveSearchTask?.cancel()
         directoryLoadTask = nil
         recursiveSearchTask = nil
+        activeDirectoryLoadPriority = nil
+        hasPendingExplicitRefresh = false
+        hasPendingDirectoryMonitorRefresh = false
         requestGeneration += 1
         isLoading = false
     }
