@@ -11,6 +11,33 @@ import Testing
 
 @MainActor
 struct FilePaneViewModelTests {
+    @Test func directoryNavigationAlsoEnrichesLightweightRowsAfterFirstPublish() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let fullItem = try temporaryDirectory.createFileItem(
+            named: "Child/navigated.txt",
+            contents: "metadata"
+        )
+        let lightweightItem = try FileItem(essentialURL: fullItem.url)
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                childDirectory.url: [lightweightItem]
+            ]),
+            metadataEnricher: { items in
+                try await Task.sleep(nanoseconds: 50_000_000)
+                return try await FilePaneViewModel.enrichMetadata(in: items)
+            }
+        )
+
+        await viewModel.setDirectory(childDirectory.url)
+
+        #expect(viewModel.items == [lightweightItem])
+        #expect(viewModel.items.first?.hasExtendedMetadata == false)
+        await viewModel.waitForMetadataEnrichment()
+        #expect(viewModel.items.first?.hasExtendedMetadata == true)
+    }
+
     @Test func directoryLoadPublishesLightweightRowsBeforeMetadataEnrichment() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let fullItem = try temporaryDirectory.createFileItem(named: "progressive.txt", contents: "metadata")
@@ -951,7 +978,7 @@ struct FilePaneViewModelTests {
 
         directoryMonitorService.emitChange(for: rootURL)
         let monitorLoadStarted = try await waitUntil {
-            viewModel.isLoading && fileBrowserService.loadCount(for: rootURL) == 1
+            fileBrowserService.loadCount(for: rootURL) == 1
         }
         #expect(monitorLoadStarted)
 
@@ -1236,12 +1263,49 @@ struct FilePaneViewModelTests {
         )
 
         let firstOptions = viewModel.applicationsAvailableToOpen(firstItem)
+        let didLoadOptions = try await waitUntil {
+            viewModel.applicationsAvailableToOpen(firstItem).map(\.url) == [textEditOption.url]
+        }
         let secondOptions = viewModel.applicationsAvailableToOpen(secondItem)
 
-        #expect(firstOptions.map(\.url) == [textEditOption.url])
+        #expect(firstOptions.isEmpty)
+        #expect(didLoadOptions)
         #expect(secondOptions.map(\.url) == [textEditOption.url])
         #expect(workspaceService.appsAvailableURLs == [firstItem.url])
         #expect(FilePaneViewModel.openWithCacheKey(for: firstItem) == FilePaneViewModel.openWithCacheKey(for: secondItem))
+    }
+
+    @Test func applicationOptionsCacheIsBounded() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fullItems = try [
+            temporaryDirectory.createFileItem(named: "first.cache-one"),
+            temporaryDirectory.createFileItem(named: "second.cache-two"),
+            temporaryDirectory.createFileItem(named: "third.cache-three")
+        ]
+        let items = try fullItems.map { try FileItem(essentialURL: $0.url) }
+        let workspaceService = MockWorkspaceService()
+        workspaceService.applicationOptions = [
+            ApplicationOption(
+                name: "Example",
+                url: URL(filePath: "/Applications/Example.app"),
+                icon: nil
+            )
+        ]
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            workspaceService: workspaceService,
+            maximumApplicationOptionsCacheEntryCount: 2
+        )
+
+        items.forEach { _ = viewModel.applicationsAvailableToOpen($0) }
+        let didLoadAllOptions = try await waitUntil {
+            workspaceService.appsAvailableURLs.count == items.count &&
+                viewModel.cachedApplicationOptionsCount == 2
+        }
+
+        #expect(didLoadAllOptions)
+        #expect(viewModel.cachedApplicationOptionsCount == 2)
     }
 
     @Test func applicationsAvailableToOpenSkipsWorkspaceLookupForDirectories() async throws {
@@ -1496,6 +1560,8 @@ struct FilePaneViewModelTests {
         #expect(didRefresh)
         #expect(viewModel.items == [initialItem, addedItem])
         #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
+        #expect(viewModel.directoryFingerprintCheckCount == 1)
+        #expect(viewModel.directoryFingerprintNoOpCount == 0)
     }
 
     @Test func directoryMonitorRapidChangesCoalesceIntoOneRefresh() async throws {
@@ -1526,6 +1592,8 @@ struct FilePaneViewModelTests {
         #expect(didRefresh)
         #expect(viewModel.items == [initialItem, addedItem])
         #expect(fileBrowserService.loadCount(for: temporaryDirectory.url) == 2)
+        #expect(viewModel.directoryFingerprintCheckCount == 1)
+        #expect(viewModel.directoryFingerprintNoOpCount == 0)
     }
 
     @Test func noOpDirectoryMonitorRefreshDoesNotRepublishVisibleItems() async throws {
@@ -1547,13 +1615,17 @@ struct FilePaneViewModelTests {
 
         directoryMonitorService.emitChange(for: temporaryDirectory.url)
         let didRefresh = try await waitUntil {
-            fileBrowserService.loadCount(for: temporaryDirectory.url) == 2 && !viewModel.isLoading
+            fileBrowserService.loadCount(for: temporaryDirectory.url) == 2 &&
+                viewModel.directoryFingerprintCheckCount == 1 &&
+                !viewModel.isLoading
         }
 
         #expect(didRefresh)
         #expect(viewModel.visibleItems == [item])
         #expect(viewModel.visibleItemsPublicationCount == publicationCount)
         #expect(viewModel.itemsPublicationCount == itemPublicationCount)
+        #expect(viewModel.directoryFingerprintCheckCount == 1)
+        #expect(viewModel.directoryFingerprintNoOpCount == 1)
     }
 
     @Test func directoryChangeRestartsDirectoryMonitor() async throws {
@@ -1683,7 +1755,7 @@ private final class MockWorkspaceService: WorkspaceServicing, @unchecked Sendabl
         return openResult
     }
 
-    func appsAvailableToOpen(url: URL) -> [ApplicationOption] {
+    func appsAvailableToOpen(url: URL) async -> [ApplicationOption] {
         appsAvailableURLs.append(url)
         return applicationOptions
     }

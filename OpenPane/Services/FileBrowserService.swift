@@ -33,11 +33,119 @@ enum FileBrowserError: LocalizedError, Equatable, Sendable {
 
 nonisolated protocol FileBrowserServicing: Sendable {
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem]
+    nonisolated func directorySnapshot(
+        at url: URL,
+        includeHiddenFiles: Bool,
+        includeFingerprint: Bool,
+        priority: TaskPriority
+    ) async throws -> DirectorySnapshot
+}
+
+/// Constant-size, order-independent signature over the presented entries.
+/// Count plus two commutative 64-bit accumulators keeps monitor comparison O(n)
+/// without retaining or sorting a second directory-sized array.
+nonisolated struct DirectoryFingerprint: Equatable, Sendable {
+    let entryCount: Int
+    let entryHashXOR: UInt64
+    let entryHashSum: UInt64
+    let directoryModificationDate: Date?
+
+    init(items: [FileItem], directoryModificationDate: Date? = nil) {
+        var hashXOR: UInt64 = 0
+        var hashSum: UInt64 = 0
+        for item in items {
+            let entryHash = Self.stableEntryHash(for: item)
+            hashXOR ^= entryHash
+            hashSum &+= entryHash
+        }
+
+        entryCount = items.count
+        entryHashXOR = hashXOR
+        entryHashSum = hashSum
+        self.directoryModificationDate = directoryModificationDate
+    }
+
+    private static func stableEntryHash(for item: FileItem) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in item.url.path.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        hash ^= item.isDirectory ? 0xD1 : 0xF1
+        hash &*= 1_099_511_628_211
+        hash ^= item.isHidden ? 0xA1 : 0xB1
+        hash &*= 1_099_511_628_211
+        return hash
+    }
+
+    static func includingDirectoryModificationDate(
+        items: [FileItem],
+        directoryURL: URL
+    ) async -> DirectoryFingerprint {
+        let task = Task.detached(priority: .utility) {
+            let directoryModificationDate = try? directoryURL.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ).contentModificationDate
+            return DirectoryFingerprint(
+                items: items,
+                directoryModificationDate: directoryModificationDate
+            )
+        }
+
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+}
+
+nonisolated struct DirectorySnapshot: Sendable {
+    let items: [FileItem]
+    let fingerprint: DirectoryFingerprint?
+}
+
+extension FileBrowserServicing {
+    nonisolated func directorySnapshot(
+        at url: URL,
+        includeHiddenFiles: Bool,
+        includeFingerprint: Bool,
+        priority: TaskPriority
+    ) async throws -> DirectorySnapshot {
+        let items = try await contentsOfDirectory(
+            at: url,
+            includeHiddenFiles: includeHiddenFiles
+        )
+        let fingerprint: DirectoryFingerprint?
+        if includeFingerprint {
+            fingerprint = await DirectoryFingerprint.includingDirectoryModificationDate(
+                items: items,
+                directoryURL: url
+            )
+        } else {
+            fingerprint = nil
+        }
+        return DirectorySnapshot(items: items, fingerprint: fingerprint)
+    }
 }
 
 nonisolated struct FileBrowserService: FileBrowserServicing {
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
-        let task = Task.detached(priority: .userInitiated) {
+        try await directorySnapshot(
+            at: url,
+            includeHiddenFiles: includeHiddenFiles,
+            includeFingerprint: false,
+            priority: .userInitiated
+        ).items
+    }
+
+    nonisolated func directorySnapshot(
+        at url: URL,
+        includeHiddenFiles: Bool,
+        includeFingerprint: Bool,
+        priority: TaskPriority
+    ) async throws -> DirectorySnapshot {
+        let task = Task.detached(priority: priority) {
             do {
                 try Task.checkCancellation()
                 try Self.validateDirectory(url)
@@ -68,7 +176,22 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
                 }
 
                 try Task.checkCancellation()
-                return items
+                let fingerprint: DirectoryFingerprint?
+                if includeFingerprint {
+                    let directoryModificationDate = try? url.resourceValues(
+                        forKeys: [.contentModificationDateKey]
+                    ).contentModificationDate
+                    fingerprint = DirectoryFingerprint(
+                        items: items,
+                        directoryModificationDate: directoryModificationDate
+                    )
+                } else {
+                    fingerprint = nil
+                }
+                return DirectorySnapshot(
+                    items: items,
+                    fingerprint: fingerprint
+                )
             } catch let error as FileBrowserError {
                 throw error
             } catch is CancellationError {

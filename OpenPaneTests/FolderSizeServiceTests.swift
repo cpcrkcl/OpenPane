@@ -68,6 +68,38 @@ struct FolderSizeServiceTests {
         #expect(cachedResult.byteCount == 4)
         #expect(recalculatedResult.byteCount == 9)
     }
+
+    @Test func cacheUsesBoundedLRUEviction() async throws {
+        let temporaryDirectory = try FolderSizeTestTemporaryDirectory()
+        let firstURL = try temporaryDirectory.createDirectory(named: "First")
+        let secondURL = try temporaryDirectory.createDirectory(named: "Second")
+        let thirdURL = try temporaryDirectory.createDirectory(named: "Third")
+        try temporaryDirectory.writeFile(named: "First/file.bin", byteCount: 1)
+        try temporaryDirectory.writeFile(named: "Second/file.bin", byteCount: 2)
+        try temporaryDirectory.writeFile(named: "Third/file.bin", byteCount: 3)
+        let service = FolderSizeService(maximumCacheEntryCount: 2)
+
+        _ = try await service.size(of: firstURL)
+        _ = try await service.size(of: secondURL)
+        _ = try await service.size(of: thirdURL)
+
+        #expect(service.cachedResultCount == 2)
+        #expect(service.cachedSize(of: firstURL) == nil)
+        #expect(service.cachedSize(of: secondURL)?.byteCount == 2)
+        #expect(service.cachedSize(of: thirdURL)?.byteCount == 3)
+    }
+
+    @Test func cachedReadDoesNotRequireTheFolderToStillExist() async throws {
+        let temporaryDirectory = try FolderSizeTestTemporaryDirectory()
+        let cachedDirectoryURL = try temporaryDirectory.createDirectory(named: "Cached")
+        try temporaryDirectory.writeFile(named: "Cached/file.bin", byteCount: 5)
+        let service = FolderSizeService()
+
+        _ = try await service.size(of: cachedDirectoryURL)
+        try FileManager.default.removeItem(at: cachedDirectoryURL)
+
+        #expect(service.cachedSize(of: cachedDirectoryURL)?.byteCount == 5)
+    }
 }
 
 private struct FolderSizeTestTemporaryDirectory {

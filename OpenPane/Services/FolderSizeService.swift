@@ -35,51 +35,61 @@ nonisolated protocol FolderSizeServicing: Sendable {
 }
 
 nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Sendable {
-    private struct CacheKey: Hashable {
-        let url: URL
-        let modificationTimestamp: TimeInterval?
+    private struct CacheEntry {
+        let result: FolderSizeResult
+        let insertionUptime: TimeInterval
     }
 
     private let lock = NSLock()
-    private var cachedResultsByKey: [CacheKey: FolderSizeResult] = [:]
+    private let maximumCacheEntryCount: Int
+    private let cacheTTL: TimeInterval
+    private var cachedResultsByURL: [URL: CacheEntry] = [:]
+    private var cacheURLsInRecencyOrder: [URL] = []
 
-    nonisolated init() {}
+    #if DEBUG
+    nonisolated var cachedResultCount: Int {
+        lock.withLock { cachedResultsByURL.count }
+    }
+    #endif
+
+    /// Cache key: standardized folder URL. Results expire after 30 seconds by
+    /// default, are explicitly invalidated after OpenPane operations, and use
+    /// LRU eviction above 128 entries. Cache reads never touch the filesystem.
+    nonisolated init(
+        maximumCacheEntryCount: Int = 128,
+        cacheTTL: TimeInterval = 30
+    ) {
+        self.maximumCacheEntryCount = max(1, maximumCacheEntryCount)
+        self.cacheTTL = max(0, cacheTTL)
+    }
 
     nonisolated func size(of folderURL: URL) async throws -> FolderSizeResult {
         try Task.checkCancellation()
 
-        let cacheKey = try Self.cacheKey(for: folderURL)
+        let standardizedURL = folderURL.standardizedFileURL
 
-        if let cachedResult = cachedResult(for: cacheKey) {
+        if let cachedResult = cachedResult(for: standardizedURL) {
             return cachedResult
         }
 
         try Task.checkCancellation()
 
         let result = try await Self.calculateSize(of: folderURL)
-        store(result, for: cacheKey)
+        store(result, for: standardizedURL)
 
         return result
     }
 
     nonisolated func cachedSize(of folderURL: URL) -> FolderSizeResult? {
-        guard let cacheKey = try? Self.cacheKey(for: folderURL) else {
-            return nil
-        }
-
-        lock.lock()
-        defer { lock.unlock() }
-
-        return cachedResultsByKey[cacheKey]
+        cachedResult(for: folderURL.standardizedFileURL)
     }
 
     nonisolated func invalidate(_ folderURL: URL) {
         let standardizedURL = folderURL.standardizedFileURL
 
         lock.lock()
-        cachedResultsByKey = cachedResultsByKey.filter {
-            $0.key.url != standardizedURL
-        }
+        cachedResultsByURL[standardizedURL] = nil
+        cacheURLsInRecencyOrder.removeAll { $0 == standardizedURL }
         lock.unlock()
     }
 
@@ -87,16 +97,16 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
         let standardizedDirectoryURL = directoryURL.standardizedFileURL
 
         lock.lock()
-        cachedResultsByKey = cachedResultsByKey.filter {
-            let cachedURL = $0.key.url
-            return cachedURL != standardizedDirectoryURL &&
-                !cachedURL.isDescendant(of: standardizedDirectoryURL)
+        let invalidatedURLs = cachedResultsByURL.keys.filter {
+            $0 == standardizedDirectoryURL || $0.isDescendant(of: standardizedDirectoryURL)
         }
+        invalidatedURLs.forEach { cachedResultsByURL[$0] = nil }
+        cacheURLsInRecencyOrder.removeAll { invalidatedURLs.contains($0) }
         lock.unlock()
     }
 
     private nonisolated static func calculateSize(of folderURL: URL) async throws -> FolderSizeResult {
-        try await Task.detached(priority: .utility) {
+        let task = Task.detached(priority: .utility) {
             try Task.checkCancellation()
 
             var isDirectory: ObjCBool = false
@@ -167,21 +177,13 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
             }
 
             return FolderSizeResult(byteCount: byteCount, skippedItemCount: skippedItemCount)
-        }.value
-    }
-
-    private nonisolated static func cacheKey(for url: URL) throws -> CacheKey {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
-            throw FolderSizeError.notDirectory(url)
         }
 
-        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-        return CacheKey(
-            url: url.standardizedFileURL,
-            modificationTimestamp: values?.contentModificationDate?.timeIntervalSince1970
-        )
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private nonisolated static func fileResourceIdentity(for url: URL) -> FileResourceIdentity? {
@@ -204,16 +206,39 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
         )
     }
 
-    private nonisolated func cachedResult(for cacheKey: CacheKey) -> FolderSizeResult? {
+    private nonisolated func cachedResult(for url: URL) -> FolderSizeResult? {
         lock.lock()
         defer { lock.unlock() }
 
-        return cachedResultsByKey[cacheKey]
+        guard let entry = cachedResultsByURL[url] else {
+            return nil
+        }
+
+        guard ProcessInfo.processInfo.systemUptime - entry.insertionUptime <= cacheTTL else {
+            cachedResultsByURL[url] = nil
+            cacheURLsInRecencyOrder.removeAll { $0 == url }
+            return nil
+        }
+
+        cacheURLsInRecencyOrder.removeAll { $0 == url }
+        cacheURLsInRecencyOrder.append(url)
+        return entry.result
     }
 
-    private nonisolated func store(_ result: FolderSizeResult, for cacheKey: CacheKey) {
+    private nonisolated func store(_ result: FolderSizeResult, for url: URL) {
         lock.lock()
-        cachedResultsByKey[cacheKey] = result
+        cachedResultsByURL[url] = CacheEntry(
+            result: result,
+            insertionUptime: ProcessInfo.processInfo.systemUptime
+        )
+        cacheURLsInRecencyOrder.removeAll { $0 == url }
+        cacheURLsInRecencyOrder.append(url)
+
+        while cachedResultsByURL.count > maximumCacheEntryCount,
+              let leastRecentlyUsedURL = cacheURLsInRecencyOrder.first {
+            cacheURLsInRecencyOrder.removeFirst()
+            cachedResultsByURL[leastRecentlyUsedURL] = nil
+        }
         lock.unlock()
     }
 }

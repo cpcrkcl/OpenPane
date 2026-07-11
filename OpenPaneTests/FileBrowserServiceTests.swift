@@ -46,6 +46,36 @@ struct FileBrowserServiceTests {
         #expect(Set(items.map(\.name)) == Set(["Alpha.txt", "Bravo.txt", "Charlie.txt"]))
     }
 
+    @Test func directorySnapshotFingerprintChangesWhenEntriesChange() async throws {
+        let temporaryDirectory = try ServiceTestTemporaryDirectory()
+        try temporaryDirectory.createFile(named: "stable.txt")
+        let service = FileBrowserService()
+
+        let initialSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+        let unchangedSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+        try temporaryDirectory.createFile(named: "added.txt")
+        let changedSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+
+        #expect(initialSnapshot.fingerprint == unchangedSnapshot.fingerprint)
+        #expect(initialSnapshot.fingerprint != changedSnapshot.fingerprint)
+        #expect(Set(changedSnapshot.items.map(\.name)) == Set(["stable.txt", "added.txt"]))
+    }
+
     @Test func excludesHiddenFilesByDefault() async throws {
         let temporaryDirectory = try ServiceTestTemporaryDirectory()
         try temporaryDirectory.createFile(named: "visible.txt")

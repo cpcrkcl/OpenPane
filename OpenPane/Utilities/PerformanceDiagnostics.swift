@@ -10,6 +10,8 @@ nonisolated struct PerformanceDiagnosticsSnapshot: Equatable, Sendable {
     let visibleItemComputations: Int
     let visibleItemPublications: Int
     let directoryEnumerations: Int
+    let directoryFingerprintChecks: Int
+    let directoryFingerprintNoOps: Int
     let iconCacheMisses: Int
     let itemArrayReplacements: Int
     let dualPaneChangeFanouts: Int
@@ -22,6 +24,8 @@ nonisolated final class PerformanceDiagnostics: @unchecked Sendable {
     private var visibleItemComputations = 0
     private var visibleItemPublications = 0
     private var directoryEnumerations = 0
+    private var directoryFingerprintChecks = 0
+    private var directoryFingerprintNoOps = 0
     private var iconCacheMisses = 0
     private var itemArrayReplacements = 0
     private var dualPaneChangeFanouts = 0
@@ -38,6 +42,14 @@ nonisolated final class PerformanceDiagnostics: @unchecked Sendable {
 
     func recordDirectoryEnumeration() {
         lock.withLock { directoryEnumerations += 1 }
+    }
+
+    func recordDirectoryFingerprintCheck() {
+        lock.withLock { directoryFingerprintChecks += 1 }
+    }
+
+    func recordDirectoryFingerprintNoOp() {
+        lock.withLock { directoryFingerprintNoOps += 1 }
     }
 
     func recordIconCacheMiss() {
@@ -57,6 +69,8 @@ nonisolated final class PerformanceDiagnostics: @unchecked Sendable {
             visibleItemComputations = 0
             visibleItemPublications = 0
             directoryEnumerations = 0
+            directoryFingerprintChecks = 0
+            directoryFingerprintNoOps = 0
             iconCacheMisses = 0
             itemArrayReplacements = 0
             dualPaneChangeFanouts = 0
@@ -69,6 +83,8 @@ nonisolated final class PerformanceDiagnostics: @unchecked Sendable {
                 visibleItemComputations: visibleItemComputations,
                 visibleItemPublications: visibleItemPublications,
                 directoryEnumerations: directoryEnumerations,
+                directoryFingerprintChecks: directoryFingerprintChecks,
+                directoryFingerprintNoOps: directoryFingerprintNoOps,
                 iconCacheMisses: iconCacheMisses,
                 itemArrayReplacements: itemArrayReplacements,
                 dualPaneChangeFanouts: dualPaneChangeFanouts

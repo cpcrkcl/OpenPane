@@ -936,7 +936,7 @@ private final class PasteboardWorkspaceService: WorkspaceServicing, @unchecked S
     }
 
     func open(url: URL) -> Bool { true }
-    func appsAvailableToOpen(url: URL) -> [ApplicationOption] { [] }
+    func appsAvailableToOpen(url: URL) async -> [ApplicationOption] { [] }
     func open(url: URL, withApplication applicationURL: URL) async throws {}
     func chooseApplicationAndOpen(url: URL) {}
     func revealInFinder(urls: [URL]) {}
