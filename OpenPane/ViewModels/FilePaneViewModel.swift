@@ -49,7 +49,13 @@ nonisolated enum FileSortOption: String, CaseIterable, Codable, Identifiable, Se
 
 nonisolated enum FilePaneSearchMode: String, CaseIterable, Identifiable, Sendable {
     case filter
-    case subtree
+    case names
+    case contents
+
+    /// Source-compatible spelling for the original recursive filename mode.
+    static var subtree: Self {
+        .names
+    }
 
     var id: Self {
         self
@@ -59,8 +65,10 @@ nonisolated enum FilePaneSearchMode: String, CaseIterable, Identifiable, Sendabl
         switch self {
         case .filter:
             return "Filter"
-        case .subtree:
-            return "Search Subtree"
+        case .names:
+            return "Names"
+        case .contents:
+            return "Contents"
         }
     }
 
@@ -68,8 +76,25 @@ nonisolated enum FilePaneSearchMode: String, CaseIterable, Identifiable, Sendabl
         switch self {
         case .filter:
             return "Filter"
-        case .subtree:
-            return "Search subtree"
+        case .names:
+            return "Search names"
+        case .contents:
+            return "Search contents"
+        }
+    }
+
+    var isSubtreeSearch: Bool {
+        self != .filter
+    }
+
+    var fileSearchKind: FileSearchKind? {
+        switch self {
+        case .filter:
+            nil
+        case .names:
+            .filename
+        case .contents:
+            .contents
         }
     }
 }
@@ -215,6 +240,8 @@ final class FilePaneViewModel: ObservableObject {
             scheduleVisibleItemsRecompute(invalidateSortedItems: true)
         }
     }
+    @Published private(set) var recursiveSearchContentMatches: [FileItem.ID: FileContentMatch]
+    @Published private(set) var recursiveSearchSkippedFileCount: Int
     @Published var isShowingRecursiveSearchResults: Bool {
         didSet {
             scheduleVisibleItemsRecompute(invalidateSortedItems: true)
@@ -242,7 +269,7 @@ final class FilePaneViewModel: ObservableObject {
     private var directoryMonitorToken: (any DirectoryMonitorToken)?
     private var directoryMonitorRefreshTask: Task<Void, Never>?
     private var directoryLoadTask: Task<DirectorySnapshot, Error>?
-    private var recursiveSearchTask: Task<[FileItem], Error>?
+    private var recursiveSearchTask: Task<FileSearchResponse, Error>?
     private var visibleItemsTask: Task<Void, Never>?
     private var metadataEnrichmentTask: Task<Void, Never>?
     private var folderSizeTasksByURL: [URL: Task<Void, Never>] = [:]
@@ -347,6 +374,8 @@ final class FilePaneViewModel: ObservableObject {
         self.sortOption = .name
         self.sortDirection = .ascending
         self.recursiveSearchResults = []
+        self.recursiveSearchContentMatches = [:]
+        self.recursiveSearchSkippedFileCount = 0
         self.isShowingRecursiveSearchResults = false
         self.backStack = []
         self.forwardStack = []
@@ -613,7 +642,19 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         let count = recursiveSearchResults.count
-        return count == 1 ? "1 result" : "\(count) results"
+        let resultText = count == 1 ? "1 result" : "\(count) results"
+        guard recursiveSearchSkippedFileCount > 0 else {
+            return resultText
+        }
+
+        let skippedText = recursiveSearchSkippedFileCount == 1
+            ? "1 file skipped"
+            : "\(recursiveSearchSkippedFileCount) files skipped"
+        return "\(resultText) • \(skippedText)"
+    }
+
+    var isShowingContentSearchResults: Bool {
+        isShowingRecursiveSearchResults && !recursiveSearchContentMatches.isEmpty
     }
 
     func performRecursiveSearch(limit: Int = FileSearchService.defaultLimit) async {
@@ -639,15 +680,21 @@ final class FilePaneViewModel: ObservableObject {
             return
         }
 
+        // Keep the original programmatic/action behavior compatible: an
+        // explicit recursive search from Filter mode is a filename search.
+        // The Contents mode remains opt-in through the segmented control.
+        let kind = searchMode.fileSearchKind ?? .filename
+
         await executeSubtreeSearch(
             root: requestURL,
             query: trimmedSearchText,
+            kind: kind,
             limit: limit
         )
     }
 
     func triggerSubtreeSearch() async {
-        searchMode = .subtree
+        searchMode = .names
         await performRecursiveSearch()
     }
 
@@ -679,7 +726,12 @@ final class FilePaneViewModel: ObservableObject {
         return fileURL?.standardizedFileURL == destinationURL && errorMessage == nil
     }
 
-    private func executeSubtreeSearch(root requestURL: URL, query trimmedSearchText: String, limit: Int) async {
+    private func executeSubtreeSearch(
+        root requestURL: URL,
+        query trimmedSearchText: String,
+        kind: FileSearchKind,
+        limit: Int
+    ) async {
         let requestTabID = activeTabID
         let generation = nextRecursiveSearchGeneration()
         isSearchingSubtree = true
@@ -699,12 +751,13 @@ final class FilePaneViewModel: ObservableObject {
                 try await fileSearchService.search(
                     root: requestURL,
                     query: trimmedSearchText,
+                    kind: kind,
                     includeHiddenFiles: includeHiddenFiles,
                     limit: limit
                 )
             }
             recursiveSearchTask = task
-            let searchResults = try await withTaskCancellationHandler {
+            let searchResponse = try await withTaskCancellationHandler {
                 try await task.value
             } onCancel: {
                 task.cancel()
@@ -715,7 +768,13 @@ final class FilePaneViewModel: ObservableObject {
                 return
             }
 
-            recursiveSearchResults = searchResults
+            recursiveSearchResults = searchResponse.results.map(\.item)
+            recursiveSearchContentMatches = Dictionary(
+                uniqueKeysWithValues: searchResponse.results.compactMap { result in
+                    result.contentMatch.map { (result.item.id, $0) }
+                }
+            )
+            recursiveSearchSkippedFileCount = searchResponse.skippedFileCount
             isShowingRecursiveSearchResults = true
             await waitForVisibleItemsUpdate()
         } catch is CancellationError {
@@ -726,6 +785,8 @@ final class FilePaneViewModel: ObservableObject {
             }
 
             recursiveSearchResults = []
+            recursiveSearchContentMatches = [:]
+            recursiveSearchSkippedFileCount = 0
             isShowingRecursiveSearchResults = false
             await waitForVisibleItemsUpdate()
             errorMessage = Self.userReadableError(for: error, at: requestURL)
@@ -767,11 +828,41 @@ final class FilePaneViewModel: ObservableObject {
         }
 
         recursiveSearchResults = []
+        recursiveSearchContentMatches = [:]
+        recursiveSearchSkippedFileCount = 0
         isShowingRecursiveSearchResults = false
 
         if clearSelection {
             selectedItems = []
         }
+    }
+
+    func recursiveSearchContentMatch(for item: FileItem) -> FileContentMatch? {
+        recursiveSearchContentMatches[item.id]
+    }
+
+    func recursiveSearchContentDescription(for item: FileItem) -> String? {
+        guard let match = recursiveSearchContentMatch(for: item) else {
+            return nil
+        }
+
+        let relativePath: String
+        if let rootURL = fileURL {
+            let rootComponents = rootURL.standardizedFileURL.pathComponents
+            let itemComponents = item.url.standardizedFileURL.pathComponents
+            if itemComponents.starts(with: rootComponents) {
+                relativePath = itemComponents
+                    .dropFirst(rootComponents.count)
+                    .joined(separator: "/")
+            } else {
+                relativePath = item.url.path
+            }
+        } else {
+            relativePath = item.url.path
+        }
+
+        let displayPath = relativePath.isEmpty ? item.name : relativePath
+        return "\(displayPath) • Line \(match.lineNumber): \(match.excerpt)"
     }
 
     private func cancelRecursiveSearchRequests() {
@@ -1356,6 +1447,8 @@ final class FilePaneViewModel: ObservableObject {
         visibleItems = []
         fileListSelection.clear()
         recursiveSearchResults = []
+        recursiveSearchContentMatches = [:]
+        recursiveSearchSkippedFileCount = 0
         isShowingRecursiveSearchResults = false
         errorMessage = nil
         isLoading = false
@@ -1377,6 +1470,8 @@ final class FilePaneViewModel: ObservableObject {
         visibleItems = []
         fileListSelection.clear()
         recursiveSearchResults = []
+        recursiveSearchContentMatches = [:]
+        recursiveSearchSkippedFileCount = 0
         isShowingRecursiveSearchResults = false
         _ = replaceItemsIfChanged([])
         selectedItems = []
@@ -1520,7 +1615,7 @@ final class FilePaneViewModel: ObservableObject {
             sourceItems: shouldSortSourceItems
                 ? (preferCachedSortInput && !sortedItemsCache.isEmpty ? sortedItemsCache : unsortedSourceItems)
                 : sortedItemsCache,
-            filterText: isShowingRecursiveSearchResults || searchMode == .subtree || trimmedSearchText.isEmpty
+            filterText: isShowingRecursiveSearchResults || searchMode.isSubtreeSearch || trimmedSearchText.isEmpty
                 ? nil
                 : trimmedSearchText,
             sortOption: sortOption,
@@ -1842,6 +1937,8 @@ final class FilePaneViewModel: ObservableObject {
         fileListSelection.clear()
         activeTabID = tab.id
         recursiveSearchResults = []
+        recursiveSearchContentMatches = [:]
+        recursiveSearchSkippedFileCount = 0
         isShowingRecursiveSearchResults = false
         errorMessage = nil
         currentLocation = tab.location
@@ -2165,6 +2262,8 @@ final class FilePaneViewModel: ObservableObject {
         sortOption = state.sortOption
         sortDirection = state.sortDirection
         recursiveSearchResults = []
+        recursiveSearchContentMatches = [:]
+        recursiveSearchSkippedFileCount = 0
         isShowingRecursiveSearchResults = false
         backStack = []
         forwardStack = []

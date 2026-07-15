@@ -22,7 +22,7 @@ struct FileOperationServiceTests {
         #expect(copiedContents == "copy me")
     }
 
-    @Test func copyReportsProgressAsItemsComplete() async throws {
+    @Test func copyReportsByteAndItemProgress() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "one")
         let secondFile = try temporaryDirectory.createFile(named: "second.txt", contents: "two")
@@ -37,13 +37,81 @@ struct FileOperationServiceTests {
             }
         )
 
-        #expect(progressRecorder.progresses == [
-            FileOperationProgress(completedItemCount: 0, totalItemCount: 2),
-            FileOperationProgress(completedItemCount: 0, totalItemCount: 2, currentItemName: "first.txt"),
-            FileOperationProgress(completedItemCount: 1, totalItemCount: 2, currentItemName: "first.txt"),
-            FileOperationProgress(completedItemCount: 1, totalItemCount: 2, currentItemName: "second.txt"),
-            FileOperationProgress(completedItemCount: 2, totalItemCount: 2, currentItemName: "second.txt")
-        ])
+        #expect(progressRecorder.progresses.first?.totalByteCount == 6)
+        #expect(progressRecorder.progresses.contains {
+            $0.currentItemName == "first.txt" && $0.completedByteCount == 3
+        })
+        #expect(progressRecorder.progresses.last == FileOperationProgress(
+            completedItemCount: 2,
+            totalItemCount: 2,
+            currentItemName: "second.txt",
+            completedByteCount: 6,
+            totalByteCount: 6
+        ))
+    }
+
+    @Test func crossVolumeMoveUsesByteTransferAndPublishesBeforeRemovingSource() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "move.txt", contents: "abcdef")
+        let progressRecorder = ProgressRecorder()
+        let transferService = SimulatedTransferService(intermediateByteCount: 2)
+
+        try await FileOperationService(
+            fileTransferService: transferService,
+            volumeIdentityProvider: FixedVolumeIdentityProvider(isSameVolume: false)
+        ).move(
+            items: [sourceFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .cancel,
+            progressHandler: progressRecorder.append
+        )
+
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("move.txt")
+        #expect(FileManager.default.fileExists(atPath: destinationURL.path))
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path) == false)
+        #expect(progressRecorder.progresses.contains { $0.completedByteCount == 2 && $0.totalByteCount == 6 })
+        #expect(progressRecorder.progresses.last?.completedByteCount == 6)
+    }
+
+    @Test func sameVolumeMoveKeepsItemProgressAndSkipsByteTransfer() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "move.txt", contents: "abcdef")
+        let progressRecorder = ProgressRecorder()
+        let transferService = SimulatedTransferService(intermediateByteCount: 2)
+
+        try await FileOperationService(
+            fileTransferService: transferService,
+            volumeIdentityProvider: FixedVolumeIdentityProvider(isSameVolume: true)
+        ).move(
+            items: [sourceFile],
+            to: temporaryDirectory.destinationURL,
+            conflictResolution: .cancel,
+            progressHandler: progressRecorder.append
+        )
+
+        #expect(transferService.copyCount == 0)
+        #expect(progressRecorder.progresses.allSatisfy { $0.completedByteCount == nil && $0.totalByteCount == nil })
+    }
+
+    @Test func cancellationRemovesOnlyCurrentStagingDestination() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "first")
+        let secondFile = try temporaryDirectory.createFile(named: "second.txt", contents: "second")
+        let transferService = CancellingTransferService(cancelOnCopyNumber: 2)
+
+        await #expect(throws: CancellationError.self) {
+            try await FileOperationService(fileTransferService: transferService).copy(
+                items: [firstFile, secondFile],
+                to: temporaryDirectory.destinationURL,
+                conflictResolution: .cancel,
+                progressHandler: nil
+            )
+        }
+
+        #expect(FileManager.default.fileExists(atPath: temporaryDirectory.destinationURL.appendingPathComponent("first.txt").path))
+        #expect(FileManager.default.fileExists(atPath: temporaryDirectory.destinationURL.appendingPathComponent("second.txt").path) == false)
+        #expect(FileManager.default.fileExists(atPath: secondFile.url.path))
+        #expect(try temporaryDirectory.transferStagingURLs().isEmpty)
     }
 
     @Test func emptyItemOperationsFailInsteadOfReportingFalseSuccess() async {
@@ -1006,6 +1074,76 @@ private final class ProgressRecorder: @unchecked Sendable {
     }
 }
 
+private final class SimulatedTransferService: FileTransferServicing, @unchecked Sendable {
+    private let lock = NSLock()
+    private let intermediateByteCount: Int64
+    private var protectedCopyCount = 0
+
+    init(intermediateByteCount: Int64) {
+        self.intermediateByteCount = intermediateByteCount
+    }
+
+    var copyCount: Int {
+        lock.withLock { protectedCopyCount }
+    }
+
+    func copyItem(
+        at sourceURL: URL,
+        to destinationURL: URL,
+        progressHandler: @escaping @Sendable (Int64) -> Void,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) throws {
+        lock.withLock { protectedCopyCount += 1 }
+        progressHandler(intermediateByteCount)
+        if isCancelled() {
+            throw CancellationError()
+        }
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        let byteCount = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        progressHandler(Int64(byteCount))
+    }
+}
+
+private final class CancellingTransferService: FileTransferServicing, @unchecked Sendable {
+    private let lock = NSLock()
+    private let cancelOnCopyNumber: Int
+    private var protectedCopyCount = 0
+
+    init(cancelOnCopyNumber: Int) {
+        self.cancelOnCopyNumber = cancelOnCopyNumber
+    }
+
+    func copyItem(
+        at sourceURL: URL,
+        to destinationURL: URL,
+        progressHandler: @escaping @Sendable (Int64) -> Void,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) throws {
+        let copyNumber = lock.withLock { () -> Int in
+            protectedCopyCount += 1
+            return protectedCopyCount
+        }
+
+        if copyNumber == cancelOnCopyNumber {
+            try Data("partial".utf8).write(to: destinationURL)
+            progressHandler(1)
+            throw CancellationError()
+        }
+
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        let byteCount = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        progressHandler(Int64(byteCount))
+    }
+}
+
+private struct FixedVolumeIdentityProvider: VolumeIdentityProviding {
+    let isSameVolume: Bool
+
+    func isSameVolume(sourceURL: URL, destinationDirectoryURL: URL) -> Bool {
+        isSameVolume
+    }
+}
+
 private struct FailingArchiveProcessRunner: ArchiveProcessRunning {
     let error: any Error & Sendable
     let partialArchiveContents: String?
@@ -1249,6 +1387,14 @@ private struct OperationTestTemporaryDirectory {
             includingPropertiesForKeys: nil
         )
         .filter { $0.lastPathComponent.hasPrefix(".openpane-replace-") }
+    }
+
+    func transferStagingURLs() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: destinationURL,
+            includingPropertiesForKeys: nil,
+            options: []
+        ).filter { $0.lastPathComponent.hasPrefix(".openpane-transfer-") }
     }
 
     private func createFile(at url: URL, contents: String) throws -> FileItem {

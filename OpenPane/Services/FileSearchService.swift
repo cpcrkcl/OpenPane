@@ -7,6 +7,32 @@
 
 import Foundation
 
+nonisolated enum FileSearchKind: Sendable {
+    case filename
+    case contents
+}
+
+nonisolated struct FileContentMatch: Equatable, Hashable, Sendable {
+    let lineNumber: Int
+    let excerpt: String
+}
+
+nonisolated struct FileSearchResult: Identifiable, Equatable, Sendable {
+    let item: FileItem
+    let contentMatch: FileContentMatch?
+
+    var id: FileItem.ID {
+        item.id
+    }
+}
+
+nonisolated struct FileSearchResponse: Equatable, Sendable {
+    let results: [FileSearchResult]
+    let skippedFileCount: Int
+
+    static let empty = FileSearchResponse(results: [], skippedFileCount: 0)
+}
+
 nonisolated protocol FileSearchServicing: Sendable {
     nonisolated func search(
         root: URL,
@@ -14,6 +40,39 @@ nonisolated protocol FileSearchServicing: Sendable {
         includeHiddenFiles: Bool,
         limit: Int
     ) async throws -> [FileItem]
+
+    nonisolated func search(
+        root: URL,
+        query: String,
+        kind: FileSearchKind,
+        includeHiddenFiles: Bool,
+        limit: Int
+    ) async throws -> FileSearchResponse
+}
+
+extension FileSearchServicing {
+    nonisolated func search(
+        root: URL,
+        query: String,
+        kind: FileSearchKind,
+        includeHiddenFiles: Bool,
+        limit: Int
+    ) async throws -> FileSearchResponse {
+        guard kind == .filename else {
+            return .empty
+        }
+
+        let items = try await search(
+            root: root,
+            query: query,
+            includeHiddenFiles: includeHiddenFiles,
+            limit: limit
+        )
+        return FileSearchResponse(
+            results: items.map { FileSearchResult(item: $0, contentMatch: nil) },
+            skippedFileCount: 0
+        )
+    }
 }
 
 typealias FileSearchItemBuilder = @Sendable (URL) throws -> FileItem
@@ -34,19 +93,39 @@ nonisolated struct FileSearchService: FileSearchServicing {
         includeHiddenFiles: Bool,
         limit: Int = Self.defaultLimit
     ) async throws -> [FileItem] {
+        let response = try await search(
+            root: root,
+            query: query,
+            kind: .filename,
+            includeHiddenFiles: includeHiddenFiles,
+            limit: limit
+        )
+        return response.results.map(\.item)
+    }
+
+    nonisolated func search(
+        root: URL,
+        query: String,
+        kind: FileSearchKind,
+        includeHiddenFiles: Bool,
+        limit: Int = Self.defaultLimit
+    ) async throws -> FileSearchResponse {
         let itemBuilder = itemBuilder
         return try await Self.runSearch {
             try Task.checkCancellation()
             let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
             guard !trimmedQuery.isEmpty, limit > 0 else {
-                return []
+                return .empty
             }
 
             do {
                 try Self.validateDirectory(root)
 
-                let options: FileManager.DirectoryEnumerationOptions = includeHiddenFiles ? [] : [.skipsHiddenFiles]
+                var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+                if !includeHiddenFiles {
+                    options.insert(.skipsHiddenFiles)
+                }
                 let displayRoot = root.standardizedFileURL
                 let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
                 let enumerationRoot = Self.isSymbolicLink(root) ? resolvedRoot : root
@@ -62,7 +141,8 @@ nonisolated struct FileSearchService: FileSearchServicing {
                     throw FileBrowserError.unreadableDirectory(root, "The folder could not be searched.")
                 }
 
-                var results: [FileItem] = []
+                var results: [FileSearchResult] = []
+                var skippedFileCount = 0
 
                 while let itemURL = enumerator.nextObject() as? URL {
                     try Task.checkCancellation()
@@ -78,18 +158,56 @@ nonisolated struct FileSearchService: FileSearchServicing {
                             continue
                         }
 
-                        guard essentialItem.name.localizedCaseInsensitiveContains(trimmedQuery) else {
-                            continue
-                        }
+                        switch kind {
+                        case .filename:
+                            guard essentialItem.name.localizedCaseInsensitiveContains(trimmedQuery) else {
+                                continue
+                            }
 
-                        let resultURL = Self.url(
-                            itemURL,
-                            preservingRoot: root,
-                            displayRoot: displayRoot,
-                            resolvedRoot: resolvedRoot,
-                            isDirectory: essentialItem.isDirectory
-                        )
-                        results.append(try itemBuilder(resultURL))
+                            let resultURL = Self.url(
+                                itemURL,
+                                preservingRoot: root,
+                                displayRoot: displayRoot,
+                                resolvedRoot: resolvedRoot,
+                                isDirectory: essentialItem.isDirectory
+                            )
+                            results.append(
+                                FileSearchResult(
+                                    item: try itemBuilder(resultURL),
+                                    contentMatch: nil
+                                )
+                            )
+
+                        case .contents:
+                            let resourceValues = try itemURL.resourceValues(
+                                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                            )
+                            guard resourceValues.isRegularFile == true,
+                                  resourceValues.isSymbolicLink != true else {
+                                continue
+                            }
+
+                            switch try Self.contentMatch(in: itemURL, query: trimmedQuery) {
+                            case .match(let contentMatch):
+                                let resultURL = Self.url(
+                                    itemURL,
+                                    preservingRoot: root,
+                                    displayRoot: displayRoot,
+                                    resolvedRoot: resolvedRoot,
+                                    isDirectory: false
+                                )
+                                results.append(
+                                    FileSearchResult(
+                                        item: try itemBuilder(resultURL),
+                                        contentMatch: contentMatch
+                                    )
+                                )
+                            case .noMatch:
+                                continue
+                            case .skipped:
+                                skippedFileCount += 1
+                            }
+                        }
 
                         if results.count >= limit {
                             break
@@ -97,11 +215,17 @@ nonisolated struct FileSearchService: FileSearchServicing {
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
+                        if kind == .contents {
+                            skippedFileCount += 1
+                        }
                         continue
                     }
                 }
 
-                return results
+                return FileSearchResponse(
+                    results: results,
+                    skippedFileCount: skippedFileCount
+                )
             } catch let error as FileBrowserError {
                 throw error
             } catch is CancellationError {
@@ -176,6 +300,132 @@ nonisolated struct FileSearchService: FileSearchServicing {
 
     private nonisolated static func makeFileItem(at url: URL) throws -> FileItem {
         try FileItem(url: url)
+    }
+
+    private nonisolated enum ContentMatchOutcome {
+        case match(FileContentMatch)
+        case noMatch
+        case skipped
+    }
+
+    private nonisolated static func contentMatch(
+        in url: URL,
+        query: String
+    ) throws -> ContentMatchOutcome {
+        let fileHandle = try FileHandle(forReadingFrom: url)
+        defer { try? fileHandle.close() }
+
+        let chunkSize = 64 * 1_024
+        let retainedCharacterCount = max(query.count + 256, 1_024)
+        var pendingBytes = Data()
+        var carry = ""
+        var carryStartLine = 1
+        var isFirstChunk = true
+        var firstMatch: FileContentMatch?
+
+        while let chunk = try fileHandle.read(upToCount: chunkSize), !chunk.isEmpty {
+            try Task.checkCancellation()
+
+            if isFirstChunk {
+                isFirstChunk = false
+                guard !chunk.contains(0) else {
+                    return .skipped
+                }
+            }
+
+            pendingBytes.append(chunk)
+            guard let decodedChunk = try decodeCompleteUTF8Prefix(from: &pendingBytes) else {
+                return .skipped
+            }
+
+            let searchableText = carry + decodedChunk
+            if firstMatch == nil, let range = searchableText.range(
+                of: query,
+                options: .caseInsensitive,
+                locale: Locale(identifier: "en_US_POSIX")
+            ) {
+                let lineNumber = carryStartLine + searchableText[..<range.lowerBound]
+                    .reduce(into: 0) { count, character in
+                        if character == "\n" {
+                            count += 1
+                        }
+                    }
+                firstMatch = FileContentMatch(
+                    lineNumber: lineNumber,
+                    excerpt: excerpt(in: searchableText, around: range)
+                )
+            }
+
+            guard searchableText.count > retainedCharacterCount else {
+                carry = searchableText
+                continue
+            }
+
+            let carryStartIndex = searchableText.index(
+                searchableText.endIndex,
+                offsetBy: -retainedCharacterCount
+            )
+            carryStartLine += searchableText[..<carryStartIndex]
+                .reduce(into: 0) { count, character in
+                    if character == "\n" {
+                        count += 1
+                    }
+                }
+            carry = String(searchableText[carryStartIndex...])
+        }
+
+        guard pendingBytes.isEmpty else {
+            return .skipped
+        }
+
+        return firstMatch.map(ContentMatchOutcome.match) ?? .noMatch
+    }
+
+    private nonisolated static func decodeCompleteUTF8Prefix(from data: inout Data) throws -> String? {
+        let maximumTrailingByteCount = min(3, data.count)
+        for trailingByteCount in 0...maximumTrailingByteCount {
+            let prefixLength = data.count - trailingByteCount
+            let prefix = data.prefix(prefixLength)
+            guard let decoded = String(data: prefix, encoding: .utf8) else {
+                continue
+            }
+
+            data = Data(data.suffix(trailingByteCount))
+            return decoded
+        }
+
+        return nil
+    }
+
+    private nonisolated static func excerpt(
+        in text: String,
+        around range: Range<String.Index>,
+        maximumCharacterCount: Int = 180
+    ) -> String {
+        let lineStart = text[..<range.lowerBound].lastIndex(of: "\n")
+            .map { text.index(after: $0) } ?? text.startIndex
+        let lineEnd = text[range.upperBound...].firstIndex(of: "\n") ?? text.endIndex
+        let line = text[lineStart..<lineEnd]
+        let leadingCharacterCount = max(0, maximumCharacterCount / 2)
+        let excerptStart = line.index(
+            range.lowerBound,
+            offsetBy: -leadingCharacterCount,
+            limitedBy: line.startIndex
+        ) ?? line.startIndex
+        let excerptEnd = line.index(
+            range.upperBound,
+            offsetBy: leadingCharacterCount,
+            limitedBy: line.endIndex
+        ) ?? line.endIndex
+        let isTruncatedAtStart = excerptStart > line.startIndex
+        let isTruncatedAtEnd = excerptEnd < line.endIndex
+        let normalized = line[excerptStart..<excerptEnd]
+            .replacingOccurrences(of: "\r", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return (isTruncatedAtStart ? "…" : "") +
+            normalized +
+            (isTruncatedAtEnd ? "…" : "")
     }
 
     private nonisolated static func validateDirectory(_ url: URL) throws {

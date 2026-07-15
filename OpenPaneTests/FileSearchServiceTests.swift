@@ -97,6 +97,108 @@ struct FileSearchServiceTests {
         #expect(results.allSatisfy { $0.hasExtendedMetadata })
     }
 
+    @Test func contentsSearchFindsCaseInsensitiveNestedMatchWithLineAndExcerpt() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        let matchingFile = try temporaryDirectory.createFile(
+            named: "Nested/notes.txt",
+            contents: "first line\nA Needle appears here\nlast line"
+        )
+        _ = try temporaryDirectory.createFile(named: "Nested/other.txt", contents: "nothing here")
+
+        let response = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "needle",
+            kind: .contents,
+            includeHiddenFiles: false,
+            limit: 500
+        )
+
+        #expect(response.results.map { canonicalFileURL($0.item.url) } == [canonicalFileURL(matchingFile.url)])
+        #expect(response.results.first?.contentMatch?.lineNumber == 2)
+        #expect(response.results.first?.contentMatch?.excerpt == "A Needle appears here")
+        #expect(response.skippedFileCount == 0)
+    }
+
+    @Test func contentsSearchFindsMatchesAcrossReadBoundaries() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        let boundaryOffset = 64 * 1_024 - 3
+        let data = Data(repeating: UInt8(ascii: "a"), count: boundaryOffset) + Data("NeEdLe\n".utf8)
+        let matchingFile = try temporaryDirectory.createDataFile(named: "boundary.txt", contents: data)
+
+        let response = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "needle",
+            kind: .contents,
+            includeHiddenFiles: false,
+            limit: 500
+        )
+
+        #expect(response.results.map { canonicalFileURL($0.item.url) } == [canonicalFileURL(matchingFile.url)])
+        #expect(response.results.first?.contentMatch?.lineNumber == 1)
+    }
+
+    @Test func contentsSearchSkipsBinaryAndMalformedUTF8Files() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        _ = try temporaryDirectory.createDataFile(
+            named: "binary.dat",
+            contents: Data([0x6E, 0x65, 0x65, 0x64, 0x6C, 0x65, 0x00])
+        )
+        _ = try temporaryDirectory.createDataFile(
+            named: "invalid.txt",
+            contents: Data([0x6E, 0x65, 0x65, 0x64, 0x6C, 0x65, 0xFF])
+        )
+        let matchingFile = try temporaryDirectory.createFile(named: "valid.txt", contents: "needle")
+
+        let response = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "needle",
+            kind: .contents,
+            includeHiddenFiles: false,
+            limit: 500
+        )
+
+        #expect(response.results.map { canonicalFileURL($0.item.url) } == [canonicalFileURL(matchingFile.url)])
+        #expect(response.skippedFileCount == 2)
+    }
+
+    @Test func contentsSearchDoesNotFollowSymlinksOrEnterPackages() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        let target = try temporaryDirectory.createFile(named: "target.txt", contents: "needle")
+        let linkURL = temporaryDirectory.url.appendingPathComponent("linked.txt")
+        try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: target.url)
+        _ = try temporaryDirectory.createFile(named: "Example.app/inside.txt", contents: "needle")
+        let regularFile = try temporaryDirectory.createFile(named: "outside.txt", contents: "needle")
+
+        let response = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "needle",
+            kind: .contents,
+            includeHiddenFiles: false,
+            limit: 500
+        )
+
+        #expect(
+            Set(response.results.map { canonicalFileURL($0.item.url) }) ==
+                Set([target.url, regularFile.url].map(canonicalFileURL))
+        )
+        #expect(response.results.map(\.item.name).contains("linked.txt") == false)
+    }
+
+    @Test func searchDoesNotWalkInsidePackageBundles() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        _ = try temporaryDirectory.createFile(named: "Outside-needle.txt", contents: "outside")
+        _ = try temporaryDirectory.createFile(named: "Example.app/Inside-needle.txt", contents: "inside")
+
+        let results = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "needle",
+            includeHiddenFiles: false,
+            limit: 500
+        )
+
+        #expect(results.map(\.name) == ["Outside-needle.txt"])
+    }
+
     @Test func searchThroughSymlinkedRootReturnsDisplayRootURLs() async throws {
         let realDirectory = try SearchTestTemporaryDirectory()
         let linkedRoot = try SearchTestTemporaryDirectory.symlink(to: realDirectory.url)
@@ -246,6 +348,13 @@ private struct SearchTestTemporaryDirectory {
         let fileURL = url.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+        return try FileItem(url: fileURL)
+    }
+
+    func createDataFile(named relativePath: String, contents: Data) throws -> FileItem {
+        let fileURL = url.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try contents.write(to: fileURL)
         return try FileItem(url: fileURL)
     }
 

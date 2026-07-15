@@ -782,10 +782,10 @@ struct FilePaneView: View {
                 .buttonStyle(SecondaryActionButtonStyle())
             }
 
-            if viewModel.searchMode == .subtree {
+            if viewModel.searchMode.isSubtreeSearch {
                 Button("Search") {
                     Task {
-                        await viewModel.triggerSubtreeSearch()
+                        await viewModel.performRecursiveSearch()
                     }
                 }
                 .buttonStyle(SecondaryActionButtonStyle())
@@ -820,7 +820,7 @@ struct FilePaneView: View {
                 .foregroundStyle(CatppuccinMochaTheme.primaryText)
                 .onSubmit {
                     Task {
-                        await viewModel.triggerSubtreeSearch()
+                        await viewModel.performRecursiveSearch()
                     }
                 }
         }
@@ -839,9 +839,10 @@ struct FilePaneView: View {
     private var fileTable: some View {
         GeometryReader { geometry in
             let columnVisibility = FilePaneColumnVisibility(width: geometry.size.width)
+            let rowHeight = viewModel.isShowingContentSearchResults ? 44.0 : FilePaneListMetrics.rowHeight
             let pageSize = max(
                 1,
-                Int((geometry.size.height - FilePaneListMetrics.rowHeight) / (FilePaneListMetrics.rowHeight + 2)) - 1
+                Int((geometry.size.height - rowHeight) / (rowHeight + 2)) - 1
             )
 
             ScrollViewReader { scrollProxy in
@@ -853,6 +854,7 @@ struct FilePaneView: View {
                             ForEach(viewModel.visibleItems) { item in
                                 FilePaneRowView(
                                 item: item,
+                                contentSearchDescription: viewModel.recursiveSearchContentDescription(for: item),
                                 calculatedSizeText: viewModel.calculatedFolderSizeText(for: item),
                                 columnVisibility: columnVisibility,
                                 isSelected: viewModel.selectedItems.contains(item),
@@ -1533,6 +1535,7 @@ struct FilePaneView: View {
 
 private struct FilePaneRowContent: View, Equatable {
     let item: FileItem
+    let contentSearchDescription: String?
     let calculatedSizeText: String?
     let columnVisibility: FilePaneColumnVisibility
 
@@ -1545,12 +1548,22 @@ private struct FilePaneRowContent: View, Equatable {
             HStack(spacing: 8) {
                 FileIconImage(item: item)
 
-                Text(item.displayName)
-                    .font(.system(size: 13, weight: item.isDirectory ? .medium : .regular))
-                    .foregroundStyle(nameColor)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.displayName)
+                        .font(.system(size: 13, weight: item.isDirectory ? .medium : .regular))
+                        .foregroundStyle(nameColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    if let contentSearchDescription {
+                        Text(contentSearchDescription)
+                            .font(.system(size: 10))
+                            .foregroundStyle(CatppuccinMochaTheme.mutedText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
@@ -1580,6 +1593,7 @@ private struct FilePaneRowContent: View, Equatable {
 
 private struct FilePaneRowView: View {
     let item: FileItem
+    let contentSearchDescription: String?
     let calculatedSizeText: String?
     let columnVisibility: FilePaneColumnVisibility
     let isSelected: Bool
@@ -1700,6 +1714,7 @@ private struct FilePaneRowView: View {
     var body: some View {
         FilePaneRowContent(
             item: item,
+            contentSearchDescription: contentSearchDescription,
             calculatedSizeText: calculatedSizeText,
             columnVisibility: columnVisibility
         )
@@ -1708,7 +1723,7 @@ private struct FilePaneRowView: View {
         .foregroundStyle(CatppuccinMochaTheme.subtext0)
         .padding(.horizontal, FilePaneListMetrics.rowHorizontalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: FilePaneListMetrics.rowHeight)
+        .frame(height: contentSearchDescription == nil ? FilePaneListMetrics.rowHeight : 44)
         .opacity(isOperationInProgress ? 0.68 : 1)
         .background(
             rowBackground,
@@ -1876,6 +1891,7 @@ private struct FilePaneRowView: View {
 extension FilePaneRowView: Equatable {
     static func == (lhs: FilePaneRowView, rhs: FilePaneRowView) -> Bool {
         lhs.item == rhs.item &&
+            lhs.contentSearchDescription == rhs.contentSearchDescription &&
             lhs.calculatedSizeText == rhs.calculatedSizeText &&
             lhs.columnVisibility == rhs.columnVisibility &&
             lhs.isSelected == rhs.isSelected &&

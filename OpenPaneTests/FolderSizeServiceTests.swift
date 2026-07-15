@@ -21,6 +21,17 @@ struct FolderSizeServiceTests {
         #expect(result.skippedItemCount == 0)
     }
 
+    @Test func includesHiddenFilesInFolderSize() async throws {
+        let temporaryDirectory = try FolderSizeTestTemporaryDirectory()
+        try temporaryDirectory.writeFile(named: "visible.bin", byteCount: 5)
+        try temporaryDirectory.writeFile(named: ".hidden.bin", byteCount: 7)
+
+        let result = try await FolderSizeService().size(of: temporaryDirectory.url)
+
+        #expect(result.byteCount == 12)
+        #expect(result.skippedItemCount == 0)
+    }
+
     @Test func avoidsFollowingSymlinkLoops() async throws {
         let temporaryDirectory = try FolderSizeTestTemporaryDirectory()
         try temporaryDirectory.writeFile(named: "file.bin", byteCount: 3)

@@ -757,7 +757,9 @@ struct DualPaneViewModelTests {
         fileOperationService.reportMoveProgress(
             completedItemCount: 1,
             totalItemCount: 2,
-            currentItemName: "second.txt"
+            currentItemName: "second.txt",
+            completedByteCount: 3,
+            totalByteCount: 6
         )
         await Task.yield()
 
@@ -765,6 +767,8 @@ struct DualPaneViewModelTests {
         #expect(viewModel.operationState.completedItemCount == 1)
         #expect(viewModel.operationState.totalItemCount == 2)
         #expect(viewModel.operationState.currentItemName == "second.txt")
+        #expect(viewModel.operationState.completedByteCount == 3)
+        #expect(viewModel.operationState.totalByteCount == 6)
 
         fileOperationService.resumeMove()
         await operationTask.value
@@ -1725,7 +1729,9 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
     func reportMoveProgress(
         completedItemCount: Int,
         totalItemCount: Int,
-        currentItemName: String? = nil
+        currentItemName: String? = nil,
+        completedByteCount: Int64? = nil,
+        totalByteCount: Int64? = nil
     ) {
         lock.lock()
         let progressHandler = protectedMoveProgressHandler
@@ -1735,7 +1741,9 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
             FileOperationProgress(
                 completedItemCount: completedItemCount,
                 totalItemCount: totalItemCount,
-                currentItemName: currentItemName
+                currentItemName: currentItemName,
+                completedByteCount: completedByteCount,
+                totalByteCount: totalByteCount
             )
         )
     }

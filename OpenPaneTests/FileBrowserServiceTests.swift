@@ -76,6 +76,37 @@ struct FileBrowserServiceTests {
         #expect(Set(changedSnapshot.items.map(\.name)) == Set(["stable.txt", "added.txt"]))
     }
 
+    @Test func directorySnapshotFingerprintChangesWhenAnEntryIsModified() async throws {
+        let temporaryDirectory = try ServiceTestTemporaryDirectory()
+        try temporaryDirectory.createFile(named: "stable.txt")
+        let fileURL = temporaryDirectory.url.appendingPathComponent("stable.txt")
+        let service = FileBrowserService()
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: fileURL.path
+        )
+        let initialSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: fileURL.path
+        )
+        let modifiedSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+
+        #expect(initialSnapshot.fingerprint != modifiedSnapshot.fingerprint)
+    }
+
     @Test func excludesHiddenFilesByDefault() async throws {
         let temporaryDirectory = try ServiceTestTemporaryDirectory()
         try temporaryDirectory.createFile(named: "visible.txt")

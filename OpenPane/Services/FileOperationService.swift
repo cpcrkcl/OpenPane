@@ -19,12 +19,28 @@ nonisolated struct FileOperationProgress: Equatable, Sendable {
     let completedItemCount: Int
     let totalItemCount: Int
     let currentItemName: String?
+    let completedByteCount: Int64?
+    let totalByteCount: Int64?
 
-    init(completedItemCount: Int, totalItemCount: Int, currentItemName: String? = nil) {
+    init(
+        completedItemCount: Int,
+        totalItemCount: Int,
+        currentItemName: String? = nil,
+        completedByteCount: Int64? = nil,
+        totalByteCount: Int64? = nil
+    ) {
         let sanitizedTotal = max(0, totalItemCount)
         self.totalItemCount = sanitizedTotal
         self.completedItemCount = min(max(0, completedItemCount), sanitizedTotal)
         self.currentItemName = currentItemName
+
+        if let totalByteCount, totalByteCount > 0 {
+            self.totalByteCount = totalByteCount
+            self.completedByteCount = min(max(0, completedByteCount ?? 0), totalByteCount)
+        } else {
+            self.totalByteCount = nil
+            self.completedByteCount = nil
+        }
     }
 }
 
@@ -256,6 +272,174 @@ nonisolated struct FileManagerFileSystem: FileSystemOperating {
     }
 }
 
+/// The native, metadata-preserving path used for byte-copy operations. It is
+/// intentionally separate from `FileSystemOperating` so existing move and
+/// rename operations stay small and testable without invoking Darwin APIs.
+nonisolated protocol FileTransferServicing: Sendable {
+    nonisolated func copyItem(
+        at sourceURL: URL,
+        to destinationURL: URL,
+        progressHandler: @escaping @Sendable (Int64) -> Void,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) throws
+}
+
+nonisolated protocol VolumeIdentityProviding: Sendable {
+    nonisolated func isSameVolume(sourceURL: URL, destinationDirectoryURL: URL) -> Bool
+}
+
+nonisolated struct ResourceVolumeIdentityProvider: VolumeIdentityProviding {
+    nonisolated func isSameVolume(sourceURL: URL, destinationDirectoryURL: URL) -> Bool {
+        guard let sourceVolume = try? sourceURL.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier as? NSObject,
+              let destinationVolume = try? destinationDirectoryURL.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier as? NSObject else {
+            // An unknown volume is treated as cross-volume so we preserve the
+            // source until the destination has been safely published.
+            return false
+        }
+
+        return sourceVolume.isEqual(destinationVolume)
+    }
+}
+
+nonisolated struct CopyfileTransferService: FileTransferServicing {
+    nonisolated func copyItem(
+        at sourceURL: URL,
+        to destinationURL: URL,
+        progressHandler: @escaping @Sendable (Int64) -> Void,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) throws {
+        let context = CopyfileTransferCallbackContext(
+            progressHandler: progressHandler,
+            isCancelled: isCancelled
+        )
+        guard let state = copyfile_state_alloc() else {
+            throw POSIXError(.ENOMEM)
+        }
+        defer { copyfile_state_free(state) }
+
+        let contextPointer = Unmanaged.passUnretained(context).toOpaque()
+        guard copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CTX), contextPointer) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        let callbackPointer = unsafeBitCast(
+            openPaneCopyfileProgressCallback,
+            to: UnsafeRawPointer.self
+        )
+        guard copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CB), callbackPointer) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        let result = sourceURL.withUnsafeFileSystemRepresentation { sourcePath in
+            destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
+                copyfile(
+                    sourcePath,
+                    destinationPath,
+                    state,
+                    copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_NOFOLLOW_SRC)
+                )
+            }
+        }
+
+        guard result == 0 else {
+            if isCancelled() {
+                throw CancellationError()
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        if isCancelled() {
+            throw CancellationError()
+        }
+
+        context.finish()
+    }
+}
+
+nonisolated private final class CopyfileTransferCallbackContext: @unchecked Sendable {
+    private let lock = NSLock()
+    private let progressHandler: @Sendable (Int64) -> Void
+    private let isCancelled: @Sendable () -> Bool
+    private var completedFileBytes: Int64 = 0
+    private var currentFileBytes: Int64 = 0
+
+    init(
+        progressHandler: @escaping @Sendable (Int64) -> Void,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) {
+        self.progressHandler = progressHandler
+        self.isCancelled = isCancelled
+    }
+
+    func shouldCancel() -> Bool {
+        isCancelled()
+    }
+
+    func report(copiedByteCount: Int64) {
+        let progress = lock.withLock {
+            currentFileBytes = max(currentFileBytes, max(0, copiedByteCount))
+            return completedFileBytes + currentFileBytes
+        }
+        progressHandler(progress)
+    }
+
+    func finishCurrentFile() {
+        let progress = lock.withLock { () -> Int64 in
+            completedFileBytes += currentFileBytes
+            currentFileBytes = 0
+            return completedFileBytes
+        }
+        progressHandler(progress)
+    }
+
+    func finish() {
+        let progress = lock.withLock { () -> Int64 in
+            completedFileBytes += currentFileBytes
+            currentFileBytes = 0
+            return completedFileBytes
+        }
+        progressHandler(progress)
+    }
+}
+
+nonisolated(unsafe) private let openPaneCopyfileProgressCallback: @convention(c) (
+    Int32,
+    Int32,
+    copyfile_state_t?,
+    UnsafePointer<CChar>?,
+    UnsafePointer<CChar>?,
+    UnsafeMutableRawPointer?
+) -> Int32 = { what, stage, state, source, destination, contextPointer in
+    _ = stage
+    _ = source
+    _ = destination
+
+    guard let contextPointer else {
+        return Int32(COPYFILE_QUIT)
+    }
+
+    let context = Unmanaged<CopyfileTransferCallbackContext>
+        .fromOpaque(contextPointer)
+        .takeUnretainedValue()
+    guard !context.shouldCancel() else {
+        return Int32(COPYFILE_QUIT)
+    }
+
+    if what == Int32(COPYFILE_COPY_DATA), stage == Int32(COPYFILE_PROGRESS) {
+        var copiedByteCount: off_t = 0
+        if let state,
+           copyfile_state_get(state, UInt32(COPYFILE_STATE_COPIED), &copiedByteCount) == 0 {
+            context.report(copiedByteCount: Int64(copiedByteCount))
+        }
+    }
+
+    if what == Int32(COPYFILE_RECURSE_FILE), stage == Int32(COPYFILE_FINISH) {
+        context.finishCurrentFile()
+    }
+
+    return Int32(COPYFILE_CONTINUE)
+}
+
 nonisolated protocol ArchiveProcessRunning: Sendable {
     nonisolated func createArchive(from items: [FileItem], at archiveURL: URL) async throws
 }
@@ -422,10 +606,38 @@ nonisolated struct DittoArchiveProcessRunner: ArchiveProcessRunning {
     }
 }
 
+nonisolated private final class FileOperationProgressCoalescer: @unchecked Sendable {
+    private let lock = NSLock()
+    private let handler: FileOperationProgressHandler
+    private var lastEmission = Date.distantPast
+
+    init(handler: @escaping FileOperationProgressHandler) {
+        self.handler = handler
+    }
+
+    func report(_ progress: FileOperationProgress, force: Bool = false) {
+        let shouldEmit = lock.withLock { () -> Bool in
+            let now = Date()
+            guard force || now.timeIntervalSince(lastEmission) >= 0.1 else {
+                return false
+            }
+            lastEmission = now
+            return true
+        }
+
+        guard shouldEmit else {
+            return
+        }
+        handler(progress)
+    }
+}
+
 nonisolated struct FileOperationService: FileOperationServicing {
     private let trashService: any TrashServicing
     private let fileSystem: any FileSystemOperating
     private let archiveProcessRunner: any ArchiveProcessRunning
+    private let fileTransferService: (any FileTransferServicing)?
+    private let volumeIdentityProvider: any VolumeIdentityProviding
 
     private struct TransferPlan: Sendable {
         let item: FileItem
@@ -464,11 +676,16 @@ nonisolated struct FileOperationService: FileOperationServicing {
     nonisolated init(
         trashService: any TrashServicing = FileManagerTrashService(),
         fileSystem: any FileSystemOperating = FileManagerFileSystem(),
-        archiveProcessRunner: any ArchiveProcessRunning = DittoArchiveProcessRunner()
+        archiveProcessRunner: any ArchiveProcessRunning = DittoArchiveProcessRunner(),
+        fileTransferService: (any FileTransferServicing)? = nil,
+        volumeIdentityProvider: any VolumeIdentityProviding = ResourceVolumeIdentityProvider()
     ) {
         self.trashService = trashService
         self.fileSystem = fileSystem
         self.archiveProcessRunner = archiveProcessRunner
+        self.fileTransferService = fileTransferService ??
+            (fileSystem is FileManagerFileSystem ? CopyfileTransferService() : nil)
+        self.volumeIdentityProvider = volumeIdentityProvider
     }
 
     private nonisolated static func runUserInitiated<T: Sendable>(
@@ -490,15 +707,120 @@ nonisolated struct FileOperationService: FileOperationServicing {
         completedItemCount: Int,
         totalItemCount: Int,
         currentItemName: String? = nil,
+        completedByteCount: Int64? = nil,
+        totalByteCount: Int64? = nil,
         to progressHandler: FileOperationProgressHandler?
     ) {
         progressHandler?(
             FileOperationProgress(
                 completedItemCount: completedItemCount,
                 totalItemCount: totalItemCount,
-                currentItemName: currentItemName
+                currentItemName: currentItemName,
+                completedByteCount: completedByteCount,
+                totalByteCount: totalByteCount
             )
         )
+    }
+
+    private nonisolated static func transferableByteCounts(for plans: [TransferPlan]) throws -> [Int64] {
+        try plans.map { plan in
+            try Task.checkCancellation()
+            return try transferableByteCount(at: plan.item.url)
+        }
+    }
+
+    private nonisolated static func transferableByteCount(at rootURL: URL) throws -> Int64 {
+        let rootValues = try rootURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey]
+        )
+
+        if rootValues.isSymbolicLink != true, rootValues.isRegularFile == true {
+            return Int64(rootValues.fileSize ?? 0)
+        }
+
+        guard rootValues.isDirectory == true else {
+            return 0
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
+            options: []
+        ) else {
+            throw FileOperationError.operationFailed("copy", rootURL, "The folder could not be read.")
+        }
+
+        var total: Int64 = 0
+        while let fileURL = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
+            let values = try fileURL.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+            )
+            guard values.isSymbolicLink != true, values.isRegularFile == true else {
+                continue
+            }
+            total += Int64(values.fileSize ?? 0)
+        }
+
+        return total
+    }
+
+    private nonisolated static func copyViaStaging(
+        plan: TransferPlan,
+        fileSystem: any FileSystemOperating,
+        fileTransferService: any FileTransferServicing,
+        progressHandler: @escaping @Sendable (Int64) -> Void
+    ) throws {
+        let stagingURL = plan.shouldReplaceExistingItem
+            ? uniqueReplacementStagingURL(
+                in: plan.destinationURL.deletingLastPathComponent(),
+                isDirectory: plan.item.isDirectory,
+                fileSystem: fileSystem
+            )
+            : uniqueTransferStagingURL(
+                in: plan.destinationURL.deletingLastPathComponent(),
+                isDirectory: plan.item.isDirectory,
+                fileSystem: fileSystem
+            )
+
+        do {
+            try fileTransferService.copyItem(
+                at: plan.item.url,
+                to: stagingURL,
+                progressHandler: progressHandler,
+                isCancelled: { Task.isCancelled }
+            )
+            try Task.checkCancellation()
+
+            if plan.shouldReplaceExistingItem {
+                try fileSystem.replaceItem(at: plan.destinationURL, withItemAt: stagingURL)
+            } else {
+                try fileSystem.moveItemExclusively(at: stagingURL, to: plan.destinationURL)
+            }
+        } catch {
+            try? fileSystem.removeItem(at: stagingURL)
+            throw error
+        }
+    }
+
+    private nonisolated static func moveAcrossVolumes(
+        plan: TransferPlan,
+        fileSystem: any FileSystemOperating,
+        fileTransferService: any FileTransferServicing,
+        progressHandler: @escaping @Sendable (Int64) -> Void
+    ) throws {
+        try copyViaStaging(
+            plan: plan,
+            fileSystem: fileSystem,
+            fileTransferService: fileTransferService,
+            progressHandler: progressHandler
+        )
+
+        do {
+            try fileSystem.removeItem(at: plan.item.url)
+        } catch {
+            throw SourceCleanupFailure(reason: Self.userReadableReason(for: error))
+        }
     }
 
     nonisolated func copy(
@@ -508,6 +830,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
         progressHandler: FileOperationProgressHandler?
     ) async throws {
         let fileSystem = fileSystem
+        let fileTransferService = fileTransferService
 
         try await Self.runUserInitiated {
             try Task.checkCancellation()
@@ -517,7 +840,21 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 conflictResolution: conflictResolution,
                 fileSystem: fileSystem
             )
-            Self.reportProgress(completedItemCount: 0, totalItemCount: plans.count, to: progressHandler)
+            let byteCounts = try fileTransferService.map { _ in
+                try Self.transferableByteCounts(for: plans)
+            }
+            let totalByteCount = byteCounts?.reduce(0, +) ?? 0
+            let usesByteProgress = totalByteCount > 0 && fileTransferService != nil
+            let byteProgressCoalescer = progressHandler.map(FileOperationProgressCoalescer.init)
+            var completedByteCount: Int64 = 0
+
+            Self.reportProgress(
+                completedItemCount: 0,
+                totalItemCount: plans.count,
+                completedByteCount: usesByteProgress ? 0 : nil,
+                totalByteCount: usesByteProgress ? totalByteCount : nil,
+                to: progressHandler
+            )
 
             for (index, plan) in plans.enumerated() {
                 try Task.checkCancellation()
@@ -525,19 +862,48 @@ nonisolated struct FileOperationService: FileOperationServicing {
                     completedItemCount: index,
                     totalItemCount: plans.count,
                     currentItemName: plan.item.name,
+                    completedByteCount: usesByteProgress ? completedByteCount : nil,
+                    totalByteCount: usesByteProgress ? totalByteCount : nil,
                     to: progressHandler
                 )
 
                 do {
-                    if plan.shouldReplaceExistingItem {
-                        try Self.copyReplacingDestination(plan: plan, fileSystem: fileSystem)
+                    if let fileTransferService {
+                        let byteCountBeforeItem = completedByteCount
+                        let itemByteCount = byteCounts?[index] ?? 0
+                        try Self.copyViaStaging(
+                            plan: plan,
+                            fileSystem: fileSystem,
+                            fileTransferService: fileTransferService,
+                            progressHandler: { copiedByteCount in
+                                guard usesByteProgress else {
+                                    return
+                                }
+                                byteProgressCoalescer?.report(
+                                    FileOperationProgress(
+                                        completedItemCount: index,
+                                        totalItemCount: plans.count,
+                                        currentItemName: plan.item.name,
+                                        completedByteCount: byteCountBeforeItem + min(copiedByteCount, itemByteCount),
+                                        totalByteCount: totalByteCount
+                                    )
+                                )
+                            }
+                        )
                     } else {
-                        try fileSystem.copyItem(at: plan.item.url, to: plan.destinationURL)
+                        if plan.shouldReplaceExistingItem {
+                            try Self.copyReplacingDestination(plan: plan, fileSystem: fileSystem)
+                        } else {
+                            try fileSystem.copyItem(at: plan.item.url, to: plan.destinationURL)
+                        }
                     }
+                    completedByteCount += byteCounts?[index] ?? 0
                     Self.reportProgress(
                         completedItemCount: index + 1,
                         totalItemCount: plans.count,
                         currentItemName: plan.item.name,
+                        completedByteCount: usesByteProgress ? completedByteCount : nil,
+                        totalByteCount: usesByteProgress ? totalByteCount : nil,
                         to: progressHandler
                     )
                 } catch is CancellationError {
@@ -565,6 +931,8 @@ nonisolated struct FileOperationService: FileOperationServicing {
         progressHandler: FileOperationProgressHandler?
     ) async throws {
         let fileSystem = fileSystem
+        let fileTransferService = fileTransferService
+        let volumeIdentityProvider = volumeIdentityProvider
 
         try await Self.runUserInitiated {
             try Task.checkCancellation()
@@ -574,7 +942,30 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 conflictResolution: conflictResolution,
                 fileSystem: fileSystem
             )
-            Self.reportProgress(completedItemCount: 0, totalItemCount: plans.count, to: progressHandler)
+            let requiresByteTransfer = plans.map {
+                !volumeIdentityProvider.isSameVolume(
+                    sourceURL: $0.item.url,
+                    destinationDirectoryURL: destinationDirectory
+                )
+            }
+            let byteCounts = (fileTransferService != nil && requiresByteTransfer.contains(true))
+                ? try Self.transferableByteCounts(for: plans)
+                : nil
+            let totalByteCount = zip(byteCounts ?? [], requiresByteTransfer)
+                .reduce(Int64(0)) { partial, entry in
+                    partial + (entry.1 ? entry.0 : 0)
+                }
+            let usesByteProgress = totalByteCount > 0 && fileTransferService != nil
+            let byteProgressCoalescer = progressHandler.map(FileOperationProgressCoalescer.init)
+            var completedByteCount: Int64 = 0
+
+            Self.reportProgress(
+                completedItemCount: 0,
+                totalItemCount: plans.count,
+                completedByteCount: usesByteProgress ? 0 : nil,
+                totalByteCount: usesByteProgress ? totalByteCount : nil,
+                to: progressHandler
+            )
 
             for (index, plan) in plans.enumerated() {
                 try Task.checkCancellation()
@@ -582,11 +973,36 @@ nonisolated struct FileOperationService: FileOperationServicing {
                     completedItemCount: index,
                     totalItemCount: plans.count,
                     currentItemName: plan.item.name,
+                    completedByteCount: usesByteProgress ? completedByteCount : nil,
+                    totalByteCount: usesByteProgress ? totalByteCount : nil,
                     to: progressHandler
                 )
 
                 do {
-                    if plan.shouldReplaceExistingItem {
+                    if requiresByteTransfer[index], let fileTransferService {
+                        let byteCountBeforeItem = completedByteCount
+                        let itemByteCount = byteCounts?[index] ?? 0
+                        try Self.moveAcrossVolumes(
+                            plan: plan,
+                            fileSystem: fileSystem,
+                            fileTransferService: fileTransferService,
+                            progressHandler: { copiedByteCount in
+                                guard usesByteProgress else {
+                                    return
+                                }
+                                byteProgressCoalescer?.report(
+                                    FileOperationProgress(
+                                        completedItemCount: index,
+                                        totalItemCount: plans.count,
+                                        currentItemName: plan.item.name,
+                                        completedByteCount: byteCountBeforeItem + min(copiedByteCount, itemByteCount),
+                                        totalByteCount: totalByteCount
+                                    )
+                                )
+                            }
+                        )
+                        completedByteCount += itemByteCount
+                    } else if plan.shouldReplaceExistingItem {
                         try Self.moveReplacingDestination(plan: plan, fileSystem: fileSystem)
                     } else {
                         try fileSystem.moveItem(at: plan.item.url, to: plan.destinationURL)
@@ -595,6 +1011,8 @@ nonisolated struct FileOperationService: FileOperationServicing {
                         completedItemCount: index + 1,
                         totalItemCount: plans.count,
                         currentItemName: plan.item.name,
+                        completedByteCount: usesByteProgress ? completedByteCount : nil,
+                        totalByteCount: usesByteProgress ? totalByteCount : nil,
                         to: progressHandler
                     )
                 } catch is CancellationError {
@@ -653,6 +1071,7 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
     nonisolated func duplicate(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {
         let fileSystem = fileSystem
+        let fileTransferService = fileTransferService
 
         try await Self.runUserInitiated {
             guard !items.isEmpty else {
@@ -671,7 +1090,21 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 reservedDestinationIdentities.insert(Self.destinationIdentity(for: duplicateURL))
                 return TransferPlan(item: item, destinationURL: duplicateURL, shouldReplaceExistingItem: false)
             }
-            Self.reportProgress(completedItemCount: 0, totalItemCount: plans.count, to: progressHandler)
+            let byteCounts = try fileTransferService.map { _ in
+                try Self.transferableByteCounts(for: plans)
+            }
+            let totalByteCount = byteCounts?.reduce(0, +) ?? 0
+            let usesByteProgress = totalByteCount > 0 && fileTransferService != nil
+            let byteProgressCoalescer = progressHandler.map(FileOperationProgressCoalescer.init)
+            var completedByteCount: Int64 = 0
+
+            Self.reportProgress(
+                completedItemCount: 0,
+                totalItemCount: plans.count,
+                completedByteCount: usesByteProgress ? 0 : nil,
+                totalByteCount: usesByteProgress ? totalByteCount : nil,
+                to: progressHandler
+            )
 
             for (index, plan) in plans.enumerated() {
                 try Task.checkCancellation()
@@ -679,15 +1112,44 @@ nonisolated struct FileOperationService: FileOperationServicing {
                     completedItemCount: index,
                     totalItemCount: plans.count,
                     currentItemName: plan.item.name,
+                    completedByteCount: usesByteProgress ? completedByteCount : nil,
+                    totalByteCount: usesByteProgress ? totalByteCount : nil,
                     to: progressHandler
                 )
 
                 do {
-                    try fileSystem.copyItem(at: plan.item.url, to: plan.destinationURL)
+                    if let fileTransferService {
+                        let byteCountBeforeItem = completedByteCount
+                        let itemByteCount = byteCounts?[index] ?? 0
+                        try Self.copyViaStaging(
+                            plan: plan,
+                            fileSystem: fileSystem,
+                            fileTransferService: fileTransferService,
+                            progressHandler: { copiedByteCount in
+                                guard usesByteProgress else {
+                                    return
+                                }
+                                byteProgressCoalescer?.report(
+                                    FileOperationProgress(
+                                        completedItemCount: index,
+                                        totalItemCount: plans.count,
+                                        currentItemName: plan.item.name,
+                                        completedByteCount: byteCountBeforeItem + min(copiedByteCount, itemByteCount),
+                                        totalByteCount: totalByteCount
+                                    )
+                                )
+                            }
+                        )
+                    } else {
+                        try fileSystem.copyItem(at: plan.item.url, to: plan.destinationURL)
+                    }
+                    completedByteCount += byteCounts?[index] ?? 0
                     Self.reportProgress(
                         completedItemCount: index + 1,
                         totalItemCount: plans.count,
                         currentItemName: plan.item.name,
+                        completedByteCount: usesByteProgress ? completedByteCount : nil,
+                        totalByteCount: usesByteProgress ? totalByteCount : nil,
                         to: progressHandler
                     )
                 } catch is CancellationError {
@@ -1445,6 +1907,23 @@ nonisolated struct FileOperationService: FileOperationServicing {
         while true {
             let candidateURL = directoryURL.appendingPathComponent(
                 ".openpane-replace-\(UUID().uuidString).tmp",
+                isDirectory: isDirectory
+            )
+
+            if existingDestinationURL(for: candidateURL, fileSystem: fileSystem) == nil {
+                return candidateURL
+            }
+        }
+    }
+
+    private nonisolated static func uniqueTransferStagingURL(
+        in directoryURL: URL,
+        isDirectory: Bool,
+        fileSystem: any FileSystemOperating
+    ) -> URL {
+        while true {
+            let candidateURL = directoryURL.appendingPathComponent(
+                ".openpane-transfer-\(UUID().uuidString).tmp",
                 isDirectory: isDirectory
             )
 

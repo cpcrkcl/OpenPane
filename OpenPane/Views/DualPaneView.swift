@@ -563,7 +563,15 @@ struct DualPaneView: View {
                 ProgressView()
                     .controlSize(.small)
 
-                if viewModel.operationState.totalItemCount > 0 {
+                if let completedByteCount = viewModel.operationState.completedByteCount,
+                   let totalByteCount = viewModel.operationState.totalByteCount,
+                   totalByteCount > 0 {
+                    ProgressView(
+                        value: Double(completedByteCount),
+                        total: Double(totalByteCount)
+                    )
+                    .frame(width: 80)
+                } else if viewModel.operationState.totalItemCount > 0 {
                     ProgressView(
                         value: Double(viewModel.operationState.completedItemCount),
                         total: Double(viewModel.operationState.totalItemCount)
@@ -611,13 +619,35 @@ struct DualPaneView: View {
     private var operationProgressText: String? {
         let state = viewModel.operationState
 
-        guard state.isRunning,
-              state.totalItemCount > 0 else {
+        guard state.isRunning else {
             return nil
         }
 
-        return "\(state.completedItemCount) of \(state.totalItemCount)"
+        let itemProgressText = state.totalItemCount > 0
+            ? "\(state.completedItemCount) of \(state.totalItemCount)"
+            : nil
+
+        guard let completedByteCount = state.completedByteCount,
+              let totalByteCount = state.totalByteCount,
+              totalByteCount > 0 else {
+            return itemProgressText
+        }
+
+        let percent = Int((Double(completedByteCount) / Double(totalByteCount) * 100).rounded())
+        let byteProgressText = "\(Self.byteCountFormatter.string(fromByteCount: completedByteCount)) / " +
+            "\(Self.byteCountFormatter.string(fromByteCount: totalByteCount)) (\(percent)%)"
+        return [byteProgressText, itemProgressText]
+            .compactMap { $0 }
+            .joined(separator: " • ")
     }
+
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+        formatter.isAdaptive = true
+        return formatter
+    }()
 
     private var commandPaletteCommands: [CommandPaletteCommand] {
         let isFileBacked = viewModel.activePane.isFileBackedLocation

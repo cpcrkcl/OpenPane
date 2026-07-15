@@ -134,7 +134,7 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
             guard let enumerator = FileManager.default.enumerator(
                 at: folderURL,
                 includingPropertiesForKeys: resourceKeys,
-                options: [.skipsHiddenFiles],
+                options: [],
                 errorHandler: { _, _ in
                     skippedItemCount += 1
                     return true

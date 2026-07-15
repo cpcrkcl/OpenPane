@@ -32,11 +32,11 @@ Screenshots will be added for the initial GitHub release.
 - Network page with nearby SMB discovery
 - Connect to Server for SMB hosts, including Tailscale MagicDNS names and `100.x` addresses
 - File icons
-- Filter and recursive-subtree filename search with progress and result counts
+- Filter, recursive filename search, and explicit UTF-8 content search with line snippets and skipped-file counts
 - Go to Folder with `~` expansion, recent paths, and clickable path breadcrumbs
 - Quick Look preview
 - Reveal in Finder and Open with default app
-- Per-item operation progress with current filename and cancellation
+- Byte-level progress for copy, paste, duplicate, and cross-volume moves; fast same-volume moves retain item progress
 
 ## Safety
 
@@ -100,9 +100,8 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 - No cloud storage integrations.
 - No folder sync.
 - No signed or notarized release package yet.
-- Operation progress is per item; byte-level progress is not implemented yet.
 - Conflict handling is intentionally simple and applies one selected strategy to the operation.
-- Recursive search is filename-based, not content search.
+- Content search is local and ephemeral: it scans regular UTF-8 files beneath the current folder, skips binary/unreadable/malformed files and package contents, and returns at most 500 matches.
 - Tabs are basic and included in the saved session.
 
 ## Project Structure
@@ -125,7 +124,7 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 - `Command-Option-C`: Copy selection to the other pane
 - `Command-Option-M`: Move selection to the other pane
 - `Command-Shift-N`: New folder
-- `Command-Shift-F`: Search the active pane's subtree
+- `Command-Shift-F`: Search filenames in the active pane's subtree
 - `Command-Shift-G`: Go to Folder
 - `Up` / `Down`: Move file-list focus and selection
 - `Shift-Up` / `Shift-Down`: Extend the selection range
@@ -145,9 +144,7 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 
 - SFTP support later
 - Signed release builds
-- Byte-level operation progress
 - More advanced conflict review
-- File content search
 
 ## License
 

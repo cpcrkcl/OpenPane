@@ -747,6 +747,41 @@ struct FilePaneViewModelTests {
         #expect(viewModel.errorMessage == nil)
     }
 
+    @Test func contentsSearchStoresAnnotationsAndSkippedFileStatus() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(),
+            fileSearchService: ContentSearchMockFileSearchService(
+                response: FileSearchResponse(
+                    results: [
+                        FileSearchResult(
+                            item: searchResult,
+                            contentMatch: FileContentMatch(
+                                lineNumber: 7,
+                                excerpt: "Needle in the notes"
+                            )
+                        )
+                    ],
+                    skippedFileCount: 2
+                )
+            )
+        )
+        viewModel.searchMode = .contents
+        viewModel.searchText = "needle"
+
+        await viewModel.performRecursiveSearch()
+
+        #expect(viewModel.recursiveSearchResults == [searchResult])
+        #expect(viewModel.recursiveSearchContentMatch(for: searchResult)?.lineNumber == 7)
+        #expect(
+            viewModel.recursiveSearchContentDescription(for: searchResult) ==
+                "Nested/Notes.txt • Line 7: Needle in the notes"
+        )
+        #expect(viewModel.searchStatusText == "1 result • 2 files skipped")
+    }
+
     @Test func clearRecursiveSearchReturnsToCurrentFolderFilter() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
@@ -2367,6 +2402,34 @@ nonisolated private struct DelayedMockFileSearchService: FileSearchServicing {
     ) async throws -> [FileItem] {
         try await Task.sleep(nanoseconds: delayNanoseconds)
         return Array(results.prefix(limit))
+    }
+}
+
+nonisolated private struct ContentSearchMockFileSearchService: FileSearchServicing {
+    let response: FileSearchResponse
+
+    nonisolated func search(
+        root: URL,
+        query: String,
+        includeHiddenFiles: Bool,
+        limit: Int
+    ) async throws -> [FileItem] {
+        response.results.map(\.item)
+    }
+
+    nonisolated func search(
+        root: URL,
+        query: String,
+        kind: FileSearchKind,
+        includeHiddenFiles: Bool,
+        limit: Int
+    ) async throws -> FileSearchResponse {
+        kind == .contents
+            ? response
+            : FileSearchResponse(
+                results: response.results.map { FileSearchResult(item: $0.item, contentMatch: nil) },
+                skippedFileCount: 0
+            )
     }
 }
 

@@ -2,6 +2,18 @@
 
 All notable changes to OpenPane will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- Explicit recursive Contents search for local UTF-8 files, with case-insensitive literal matching, first-line snippets, and skipped-file counts.
+- Byte-level progress for copy, paste, duplicate, and cross-volume moves, backed by macOS `copyfile` metadata-preserving transfers.
+
+### Changed
+
+- Same-volume moves keep the fast rename path and item-level progress.
+- Copy-style transfers stage destination output before atomic publication; cancelling removes only the incomplete staged item.
+
 ## v0.1.0
 
 Initial MVP release.

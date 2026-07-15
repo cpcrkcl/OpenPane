@@ -25,6 +25,10 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 The metadata-ready number is not on the presentation critical path anymore. Rows first publish with stable URL identity plus name, directory, and hidden state. Size, modified date, and kind are enriched as one cancellable utility-priority batch. A future visible-row metadata pipeline could reduce that background total further, but was intentionally deferred to avoid destabilizing sorting, selection, Quick Look, and file operations.
 
+## Core-workflow regression check
+
+The focused 10,000-file benchmark was rerun on July 15, 2026 after adding contents search and byte-transfer progress. The directory pipeline remained on its established path: first `items` publication was 126.36 ms, first `visibleItems` publication was 196.15 ms, and a one-match recursive name search was 58.20 ms. Contents search is explicit and does no work during first paint; transfer preflight and callback handling run off the main actor.
+
 ## Bottlenecks found and changes made
 
 - Filtering and user-configurable sorting previously ran synchronously from `@Published` observers. They now use a 150 ms search debounce, cancellable background computation, generation checks, and main-actor publication of only the latest result.
@@ -34,6 +38,8 @@ The metadata-ready number is not on the presentation critical path anymore. Rows
 - Dual-pane state forwarded every child `objectWillChange`, invalidating unrelated pane content. Parent publication is now limited to state the parent actually consumes.
 - Monitor events always caused a full reload. Debounced events now obtain a constant-size, order-independent fingerprint over visible entry URLs and flags plus the directory modification marker. An unchanged fingerprint publishes nothing; a changed lightweight snapshot is reused directly by the refresh.
 - Recursive search built a complete `FileItem` before checking its name. It now reads essential hidden/directory state, checks the filename, and builds extended metadata only for matches. Search runs at utility priority and remains cancellable.
+- Content search streams local UTF-8 candidates in 64 KiB chunks with bounded carry-over rather than loading whole files. It is explicit (not part of the live filter), stops after 500 matches, and uses the same cancellation/generation checks as filename search.
+- Byte-transfer callbacks are coalesced to at most ten UI progress updates per second, with immediate item-change and completion updates. Preflight byte counting runs off the main actor, so it does not affect directory first paint.
 
 DEBUG diagnostics count visible-item computations/publications, directory enumerations, fingerprint checks/no-ops, icon misses, item-array replacements, and dual-pane fanouts. The benchmark and focused unit tests assert the important work counts in addition to wall-clock timing.
 
@@ -52,6 +58,7 @@ DEBUG diagnostics count visible-item computations/publications, directory enumer
 - Every directory, metadata, filter, search, and monitor result is checked against generation, active tab, and URL before publication. Explicit navigation cancels monitor fingerprint work and supersedes older loads.
 - Monitor fingerprints deliberately avoid a full incremental filesystem model. The two 64-bit order-independent entry accumulators, count, and directory modification date make accidental equality extremely unlikely, but a full diff engine would be stronger and substantially more invasive.
 - Recursive search still uses `FileManager` enumeration rather than Spotlight, so a no-match search must walk the tree. It now avoids optional metadata work for those nonmatches.
+- Content search intentionally does not use an index or impose a file-size cap; a no-match query can read every eligible file beneath the selected folder. Its chunked decoder keeps memory bounded.
 - Optional metadata enrichment is directory-wide rather than limited to visible rows. It is cancellable and off the first-paint path, but very large network directories can still take noticeable background time.
 - Folder-size results can be stale for external nested changes for at most the 30-second TTL. OpenPane operations and manual refresh continue to invalidate affected descendants immediately.
 - Icon and application discovery depend on legacy AppKit/Launch Services APIs. Their results are wrapped as immutable sendable values, all slow calls are kept off row/body evaluation, and the strict-concurrency application build is warning-free.

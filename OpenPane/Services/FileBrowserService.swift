@@ -43,18 +43,27 @@ nonisolated protocol FileBrowserServicing: Sendable {
 
 /// Constant-size, order-independent signature over the presented entries.
 /// Count plus two commutative 64-bit accumulators keeps monitor comparison O(n)
-/// without retaining or sorting a second directory-sized array.
+/// without retaining or sorting a second directory-sized array. Entry content
+/// modification dates are included so a directory monitor event caused by an
+/// in-place edit does not leave the size and modified columns stale.
 nonisolated struct DirectoryFingerprint: Equatable, Sendable {
     let entryCount: Int
     let entryHashXOR: UInt64
     let entryHashSum: UInt64
     let directoryModificationDate: Date?
 
-    init(items: [FileItem], directoryModificationDate: Date? = nil) {
+    init(
+        items: [FileItem],
+        directoryModificationDate: Date? = nil,
+        entryModificationDates: [Date?] = []
+    ) {
         var hashXOR: UInt64 = 0
         var hashSum: UInt64 = 0
-        for item in items {
-            let entryHash = Self.stableEntryHash(for: item)
+        for (index, item) in items.enumerated() {
+            let modificationDate = entryModificationDates.indices.contains(index)
+                ? entryModificationDates[index]
+                : nil
+            let entryHash = Self.stableEntryHash(for: item, modificationDate: modificationDate)
             hashXOR ^= entryHash
             hashSum &+= entryHash
         }
@@ -65,7 +74,7 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
         self.directoryModificationDate = directoryModificationDate
     }
 
-    private static func stableEntryHash(for item: FileItem) -> UInt64 {
+    private static func stableEntryHash(for item: FileItem, modificationDate: Date?) -> UInt64 {
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in item.url.path.utf8 {
             hash ^= UInt64(byte)
@@ -75,6 +84,10 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
         hash &*= 1_099_511_628_211
         hash ^= item.isHidden ? 0xA1 : 0xB1
         hash &*= 1_099_511_628_211
+        if let modificationDate {
+            hash ^= modificationDate.timeIntervalSinceReferenceDate.bitPattern
+            hash &*= 1_099_511_628_211
+        }
         return hash
     }
 
@@ -86,9 +99,14 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
             let directoryModificationDate = try? directoryURL.resourceValues(
                 forKeys: [.contentModificationDateKey]
             ).contentModificationDate
+            let entryModificationDates = items.map {
+                try? $0.url.resourceValues(forKeys: [.contentModificationDateKey])
+                    .contentModificationDate
+            }
             return DirectoryFingerprint(
                 items: items,
-                directoryModificationDate: directoryModificationDate
+                directoryModificationDate: directoryModificationDate,
+                entryModificationDates: entryModificationDates
             )
         }
 
@@ -155,9 +173,13 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
                 PerformanceDiagnostics.shared.recordDirectoryEnumeration()
                 #endif
 
+                var resourceKeys = FileItem.essentialResourceKeys
+                if includeFingerprint {
+                    resourceKeys.insert(.contentModificationDateKey)
+                }
                 let fileURLs = try FileManager.default.contentsOfDirectory(
                     at: url,
-                    includingPropertiesForKeys: Array(FileItem.essentialResourceKeys),
+                    includingPropertiesForKeys: Array(resourceKeys),
                     options: []
                 )
 
@@ -181,9 +203,21 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
                     let directoryModificationDate = try? url.resourceValues(
                         forKeys: [.contentModificationDateKey]
                     ).contentModificationDate
+                    var entryModificationDates: [Date?] = []
+                    entryModificationDates.reserveCapacity(items.count)
+                    for (index, item) in items.enumerated() {
+                        if index.isMultiple(of: 128) {
+                            try Task.checkCancellation()
+                        }
+                        entryModificationDates.append(
+                            try? item.url.resourceValues(forKeys: [.contentModificationDateKey])
+                                .contentModificationDate
+                        )
+                    }
                     fingerprint = DirectoryFingerprint(
                         items: items,
-                        directoryModificationDate: directoryModificationDate
+                        directoryModificationDate: directoryModificationDate,
+                        entryModificationDates: entryModificationDates
                     )
                 } else {
                     fingerprint = nil

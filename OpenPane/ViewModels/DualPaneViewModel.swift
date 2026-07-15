@@ -118,6 +118,8 @@ nonisolated struct FileOperationState: Equatable, Sendable {
     let completedItemCount: Int
     let totalItemCount: Int
     let currentItemName: String?
+    let completedByteCount: Int64?
+    let totalByteCount: Int64?
     let isCancellable: Bool
 
     static let idle = FileOperationState(
@@ -126,6 +128,8 @@ nonisolated struct FileOperationState: Equatable, Sendable {
         completedItemCount: 0,
         totalItemCount: 0,
         currentItemName: nil,
+        completedByteCount: nil,
+        totalByteCount: nil,
         isCancellable: false
     )
 
@@ -140,6 +144,8 @@ nonisolated struct FileOperationState: Equatable, Sendable {
             completedItemCount: 0,
             totalItemCount: max(0, totalItemCount),
             currentItemName: nil,
+            completedByteCount: nil,
+            totalByteCount: nil,
             isCancellable: isCancellable
         )
     }
@@ -151,6 +157,8 @@ nonisolated struct FileOperationState: Equatable, Sendable {
             completedItemCount: progress.completedItemCount,
             totalItemCount: progress.totalItemCount,
             currentItemName: progress.currentItemName ?? currentItemName,
+            completedByteCount: progress.completedByteCount,
+            totalByteCount: progress.totalByteCount,
             isCancellable: isCancellable
         )
     }
@@ -1006,7 +1014,9 @@ final class DualPaneViewModel: ObservableObject {
 
         guard operationState.completedItemCount != progress.completedItemCount ||
               operationState.totalItemCount != progress.totalItemCount ||
-              operationState.currentItemName != progress.currentItemName else {
+              operationState.currentItemName != progress.currentItemName ||
+              operationState.completedByteCount != progress.completedByteCount ||
+              operationState.totalByteCount != progress.totalByteCount else {
             return
         }
 
