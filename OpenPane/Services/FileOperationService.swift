@@ -18,11 +18,13 @@ enum FileConflictResolution: Equatable, Sendable {
 nonisolated struct FileOperationProgress: Equatable, Sendable {
     let completedItemCount: Int
     let totalItemCount: Int
+    let currentItemName: String?
 
-    init(completedItemCount: Int, totalItemCount: Int) {
+    init(completedItemCount: Int, totalItemCount: Int, currentItemName: String? = nil) {
         let sanitizedTotal = max(0, totalItemCount)
         self.totalItemCount = sanitizedTotal
         self.completedItemCount = min(max(0, completedItemCount), sanitizedTotal)
+        self.currentItemName = currentItemName
     }
 }
 
@@ -487,12 +489,14 @@ nonisolated struct FileOperationService: FileOperationServicing {
     private nonisolated static func reportProgress(
         completedItemCount: Int,
         totalItemCount: Int,
+        currentItemName: String? = nil,
         to progressHandler: FileOperationProgressHandler?
     ) {
         progressHandler?(
             FileOperationProgress(
                 completedItemCount: completedItemCount,
-                totalItemCount: totalItemCount
+                totalItemCount: totalItemCount,
+                currentItemName: currentItemName
             )
         )
     }
@@ -517,6 +521,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
             for (index, plan) in plans.enumerated() {
                 try Task.checkCancellation()
+                Self.reportProgress(
+                    completedItemCount: index,
+                    totalItemCount: plans.count,
+                    currentItemName: plan.item.name,
+                    to: progressHandler
+                )
 
                 do {
                     if plan.shouldReplaceExistingItem {
@@ -524,7 +534,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
                     } else {
                         try fileSystem.copyItem(at: plan.item.url, to: plan.destinationURL)
                     }
-                    Self.reportProgress(completedItemCount: index + 1, totalItemCount: plans.count, to: progressHandler)
+                    Self.reportProgress(
+                        completedItemCount: index + 1,
+                        totalItemCount: plans.count,
+                        currentItemName: plan.item.name,
+                        to: progressHandler
+                    )
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -563,6 +578,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
             for (index, plan) in plans.enumerated() {
                 try Task.checkCancellation()
+                Self.reportProgress(
+                    completedItemCount: index,
+                    totalItemCount: plans.count,
+                    currentItemName: plan.item.name,
+                    to: progressHandler
+                )
 
                 do {
                     if plan.shouldReplaceExistingItem {
@@ -570,7 +591,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
                     } else {
                         try fileSystem.moveItem(at: plan.item.url, to: plan.destinationURL)
                     }
-                    Self.reportProgress(completedItemCount: index + 1, totalItemCount: plans.count, to: progressHandler)
+                    Self.reportProgress(
+                        completedItemCount: index + 1,
+                        totalItemCount: plans.count,
+                        currentItemName: plan.item.name,
+                        to: progressHandler
+                    )
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -593,14 +619,29 @@ nonisolated struct FileOperationService: FileOperationServicing {
         let trashService = trashService
 
         try await Self.runUserInitiated {
+            guard !items.isEmpty else {
+                throw FileOperationError.noItems
+            }
+
             Self.reportProgress(completedItemCount: 0, totalItemCount: items.count, to: progressHandler)
 
             for (index, item) in items.enumerated() {
                 try Task.checkCancellation()
+                Self.reportProgress(
+                    completedItemCount: index,
+                    totalItemCount: items.count,
+                    currentItemName: item.name,
+                    to: progressHandler
+                )
 
                 do {
                     try trashService.trashItem(at: item.url)
-                    Self.reportProgress(completedItemCount: index + 1, totalItemCount: items.count, to: progressHandler)
+                    Self.reportProgress(
+                        completedItemCount: index + 1,
+                        totalItemCount: items.count,
+                        currentItemName: item.name,
+                        to: progressHandler
+                    )
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -614,6 +655,10 @@ nonisolated struct FileOperationService: FileOperationServicing {
         let fileSystem = fileSystem
 
         try await Self.runUserInitiated {
+            guard !items.isEmpty else {
+                throw FileOperationError.noItems
+            }
+
             var reservedDestinationIdentities: Set<DestinationIdentity> = []
             let plans = try items.map { item in
                 try Task.checkCancellation()
@@ -630,10 +675,21 @@ nonisolated struct FileOperationService: FileOperationServicing {
 
             for (index, plan) in plans.enumerated() {
                 try Task.checkCancellation()
+                Self.reportProgress(
+                    completedItemCount: index,
+                    totalItemCount: plans.count,
+                    currentItemName: plan.item.name,
+                    to: progressHandler
+                )
 
                 do {
                     try fileSystem.copyItem(at: plan.item.url, to: plan.destinationURL)
-                    Self.reportProgress(completedItemCount: index + 1, totalItemCount: plans.count, to: progressHandler)
+                    Self.reportProgress(
+                        completedItemCount: index + 1,
+                        totalItemCount: plans.count,
+                        currentItemName: plan.item.name,
+                        to: progressHandler
+                    )
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -675,6 +731,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
             }
 
             Self.reportProgress(completedItemCount: 0, totalItemCount: items.count, to: progressHandler)
+            Self.reportProgress(
+                completedItemCount: 0,
+                totalItemCount: items.count,
+                currentItemName: items.count == 1 ? items[0].name : "\(items.count) items",
+                to: progressHandler
+            )
 
             do {
                 try await archiveProcessRunner.createArchive(from: items, at: temporaryArchiveURL)
@@ -691,7 +753,12 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 destination: archiveDestination,
                 fileSystem: fileSystem
             )
-            Self.reportProgress(completedItemCount: items.count, totalItemCount: items.count, to: progressHandler)
+            Self.reportProgress(
+                completedItemCount: items.count,
+                totalItemCount: items.count,
+                currentItemName: publishedArchiveURL.lastPathComponent,
+                to: progressHandler
+            )
             return publishedArchiveURL
         }
 
@@ -890,6 +957,10 @@ nonisolated struct FileOperationService: FileOperationServicing {
         conflictResolution: FileConflictResolution,
         fileSystem: any FileSystemOperating
     ) throws -> [TransferPlan] {
+        guard !items.isEmpty else {
+            throw FileOperationError.noItems
+        }
+
         try validateWritableDirectory(destinationDirectory, fileSystem: fileSystem)
         var reservedDestinationIdentities: Set<DestinationIdentity> = []
 

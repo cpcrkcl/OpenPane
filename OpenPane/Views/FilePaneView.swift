@@ -56,6 +56,7 @@ private let fileDropTypeIdentifiers = [
     UTType.url.identifier,
     fileNamesPasteboardTypeIdentifier
 ].uniqued()
+private let fileListSelectionCoordinateSpace = "file-list-selection-coordinate-space"
 
 private nonisolated struct FileDrop: Sendable {
     let sourcePaneSide: PaneSide?
@@ -111,6 +112,7 @@ struct FilePaneView: View {
     var onPaste: () -> Void = {}
     var onStatusMessage: (String) -> Void = { _ in }
     var onDropFiles: ([URL], PaneSide?, URL) -> Void = { _, _, _ in }
+    var onMountNetworkURLs: ([URL]) -> Void = { _ in }
 
     @State private var isTabAppendDropTargeted = false
     @State private var targetedTabID: FilePaneTab.ID?
@@ -120,6 +122,11 @@ struct FilePaneView: View {
     @State private var isShowingViewOptions = false
     @State private var fileListFocusRequest = 0
     @State private var isFileListKeyboardFocused = false
+    @State private var fileListRowFrames: [FileItem.ID: CGRect] = [:]
+    @State private var marqueeSelectionStartPoint: CGPoint?
+    @State private var marqueeSelectionRect: CGRect?
+    @State private var marqueeSelectionBaseIDs: Set<FileItem.ID> = []
+    @State private var marqueeAddsToSelection = false
 
     private enum PaneContentState {
         case loading
@@ -139,7 +146,7 @@ struct FilePaneView: View {
     }
 
     private var paneContentState: PaneContentState? {
-        if viewModel.isLoading && viewModel.visibleItems.isEmpty {
+        if (viewModel.isLoading || viewModel.isSearchingSubtree) && viewModel.visibleItems.isEmpty {
             return .loading
         }
 
@@ -156,7 +163,8 @@ struct FilePaneView: View {
             return .emptyRecursiveSearch
         }
 
-        if !viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if viewModel.searchMode == .filter,
+           !viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .emptySearch
         }
 
@@ -204,32 +212,24 @@ struct FilePaneView: View {
             paneHeader
                 .padding(.horizontal, 12)
 
-            toolbar
-                .padding(.horizontal, 12)
-                .padding(.bottom, 6)
+            if viewModel.isFileBackedLocation {
+                toolbar
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+            }
 
-            if shouldShowErrorBanner, let errorMessage = viewModel.errorMessage {
+            if viewModel.isFileBackedLocation,
+               shouldShowErrorBanner,
+               let errorMessage = viewModel.errorMessage {
                 paneErrorBanner(errorMessage)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 4)
             }
 
-            ZStack {
-                fileTable
-
-                if let paneContentState {
-                    paneStateView(paneContentState)
-                        .transition(.opacity)
-                }
-            }
+            paneContent
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CatppuccinMochaTheme.base)
             .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium))
-            .overlay {
-                if isPerformingOperation {
-                    operationInProgressOverlay
-                }
-            }
             .padding(.horizontal, 10)
             .padding(.bottom, 10)
         }
@@ -317,6 +317,22 @@ struct FilePaneView: View {
         }
     }
 
+    @ViewBuilder
+    private var paneContent: some View {
+        if viewModel.isFileBackedLocation {
+            ZStack {
+                fileTable
+
+                if let paneContentState {
+                    paneStateView(paneContentState)
+                        .transition(.opacity)
+                }
+            }
+        } else {
+            NetworkPageView(onMount: onMountNetworkURLs)
+        }
+    }
+
     private func paneStateView(_ state: PaneContentState) -> some View {
         let details = paneStateDetails(for: state)
 
@@ -364,8 +380,10 @@ struct FilePaneView: View {
         case .loading:
             return (
                 "arrow.clockwise",
-                "Loading folder",
-                "Reading \(viewModel.currentURL.openPaneDisplayName)...",
+                viewModel.isSearchingSubtree ? "Searching" : "Loading folder",
+                viewModel.isSearchingSubtree
+                    ? "Searching for “\(viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines))”..."
+                    : "Reading \(viewModel.currentURL.openPaneDisplayName)...",
                 CatppuccinMochaTheme.accent
             )
         case .error(let message):
@@ -399,35 +417,11 @@ struct FilePaneView: View {
         }
     }
 
-    private var operationInProgressOverlay: some View {
-        VStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-                .tint(CatppuccinMochaTheme.accent)
-
-            Text("Operation in progress")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(CatppuccinMochaTheme.secondaryText)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            CatppuccinMochaTheme.surface0.opacity(0.88),
-            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
-                .stroke(CatppuccinMochaTheme.surface2.opacity(0.7), lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
-        }
-        .shadow(color: CatppuccinMochaTheme.crust.opacity(0.45), radius: 10, y: 4)
-        .allowsHitTesting(false)
-    }
-
     private var paneHeader: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    Text(viewModel.currentURL.openPaneDisplayName)
+                    Text(viewModel.currentLocation.displayName)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(CatppuccinMochaTheme.primaryText)
                         .lineLimit(1)
@@ -452,7 +446,11 @@ struct FilePaneView: View {
                     }
                 }
 
-                PathBarView(path: viewModel.currentURL.path)
+                PathBarView(path: viewModel.currentLocation.pathText) { url in
+                    Task {
+                        await viewModel.setDirectory(url)
+                    }
+                }
             }
 
             Spacer(minLength: 0)
@@ -667,7 +665,7 @@ struct FilePaneView: View {
         let item = FilePaneTabDragItem(
             tabID: tab.id,
             sourcePaneSide: paneSide,
-            currentURL: tab.currentURL
+            location: tab.location
         )
 
         if let data = item.encodedData {
@@ -742,27 +740,71 @@ struct FilePaneView: View {
             .buttonStyle(SecondaryActionButtonStyle())
             .disabled(viewModel.selectedItems.isEmpty)
 
-            searchField
+            searchControls
                 .layoutPriority(1)
+        }
+    }
 
-            Button {
-                Task {
-                    await viewModel.performRecursiveSearch()
+    private var searchControls: some View {
+        HStack(spacing: 8) {
+            Picker("Search mode", selection: $viewModel.searchMode) {
+                ForEach(FilePaneSearchMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
                 }
-            } label: {
-                Label("Recursive Search", systemImage: "magnifyingglass")
             }
-            .buttonStyle(SecondaryActionButtonStyle())
-            .disabled(viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 220)
 
-            if viewModel.isShowingRecursiveSearchResults {
+            searchField
+
+            if viewModel.isSearchingSubtree {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Searching…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(CatppuccinMochaTheme.mutedText)
+                }
+            } else if let statusText = viewModel.searchStatusText {
+                Text(statusText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(CatppuccinMochaTheme.mutedText)
+                    .lineLimit(1)
+            }
+
+            if viewModel.isShowingRecursiveSearchResults || !viewModel.searchText.isEmpty {
                 Button {
-                    viewModel.clearRecursiveSearch()
+                    viewModel.clearSearch()
                 } label: {
                     Label("Clear Search", systemImage: "xmark.circle")
                 }
                 .buttonStyle(SecondaryActionButtonStyle())
             }
+
+            if viewModel.searchMode == .subtree {
+                Button("Search") {
+                    Task {
+                        await viewModel.triggerSubtreeSearch()
+                    }
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .disabled(
+                    viewModel.isSearchingSubtree ||
+                        viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            }
+
+            Button("Search Subtree") {
+                Task {
+                    await viewModel.triggerSubtreeSearch()
+                }
+            }
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .searchSubtree))
+            .disabled(!isActive)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
         }
     }
 
@@ -772,10 +814,15 @@ struct FilePaneView: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(CatppuccinMochaTheme.mutedText)
 
-            TextField("Filter", text: $viewModel.searchText)
+            TextField(viewModel.searchMode.placeholder, text: $viewModel.searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(CatppuccinMochaTheme.primaryText)
+                .onSubmit {
+                    Task {
+                        await viewModel.triggerSubtreeSearch()
+                    }
+                }
         }
         .padding(.horizontal, 9)
         .frame(minWidth: 120, idealWidth: 180, maxWidth: 220, minHeight: 28, maxHeight: 28)
@@ -888,6 +935,18 @@ struct FilePaneView: View {
                                 }
                                 )
                                 .equatable()
+                                .background {
+                                    GeometryReader { proxy in
+                                        Color.clear.preference(
+                                            key: FileListRowFramePreferenceKey.self,
+                                            value: [
+                                                item.id: proxy.frame(
+                                                    in: .named(fileListSelectionCoordinateSpace)
+                                                )
+                                            ]
+                                        )
+                                    }
+                                }
                                 .id(item.id)
                             }
                         }
@@ -907,10 +966,14 @@ struct FilePaneView: View {
                             }
                         )
                     }
+                    .coordinateSpace(name: fileListSelectionCoordinateSpace)
                     .overlay {
                         if isPaneFileDropTargeted && targetedFolderDropID == nil {
                             paneDropTargetOverlay
                         }
+                    }
+                    .overlay(alignment: .topLeading) {
+                        marqueeSelectionOverlay
                     }
                     .onDrop(
                         of: fileDropTypeIdentifiers,
@@ -919,6 +982,9 @@ struct FilePaneView: View {
                             handleFileDrop(providers, targetDirectory: viewModel.currentURL)
                         }
                     )
+                    .onPreferenceChange(FileListRowFramePreferenceKey.self) { rowFrames in
+                        fileListRowFrames = rowFrames
+                    }
                     .contextMenu {
                         EmptyPaneContextMenu(
                             includeHiddenFiles: viewModel.includeHiddenFiles,
@@ -954,6 +1020,7 @@ struct FilePaneView: View {
                             requestFileListFocus()
                         }
                     )
+                    .simultaneousGesture(marqueeSelectionGesture)
                     .onRightClickInside {
                         requestFileListFocus()
                     }
@@ -1018,8 +1085,8 @@ struct FilePaneView: View {
             )
             .overlay(alignment: .center) {
                 dropHint(
-                    title: "Drop to copy here",
-                    subtitle: "Copies into the target folder",
+                    title: "Drop to place here",
+                    subtitle: "Uses your file drop action",
                     systemImage: "doc.on.doc",
                     tint: CatppuccinMochaTheme.accent
                 )
@@ -1093,11 +1160,92 @@ struct FilePaneView: View {
     }
 
     private func applySort(_ option: FileSortOption) {
-        if viewModel.sortOption == option {
-            viewModel.sortDirection = viewModel.sortDirection == .ascending ? .descending : .ascending
-        } else {
-            viewModel.sortOption = option
-            viewModel.sortDirection = .ascending
+        viewModel.applyHeaderSort(option)
+    }
+
+    private var marqueeSelectionGesture: some Gesture {
+        DragGesture(
+            minimumDistance: 6,
+            coordinateSpace: .named(fileListSelectionCoordinateSpace)
+        )
+        .onChanged { value in
+            updateMarqueeSelection(with: value)
+        }
+        .onEnded { _ in
+            resetMarqueeSelection()
+        }
+    }
+
+    private func updateMarqueeSelection(with value: DragGesture.Value) {
+        guard viewModel.isFileBackedLocation else {
+            return
+        }
+
+        if marqueeSelectionStartPoint == nil {
+            guard !fileListRowFrames.values.contains(where: { $0.contains(value.startLocation) }) else {
+                return
+            }
+
+            let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            marqueeAddsToSelection = modifiers.contains(.command) || modifiers.contains(.shift)
+            marqueeSelectionBaseIDs = marqueeAddsToSelection
+                ? Set(viewModel.selectedItems.map(\.id))
+                : []
+            marqueeSelectionStartPoint = value.startLocation
+        }
+
+        guard let startPoint = marqueeSelectionStartPoint else {
+            return
+        }
+
+        let selectionRect = CGRect(
+            x: min(startPoint.x, value.location.x),
+            y: min(startPoint.y, value.location.y),
+            width: abs(value.location.x - startPoint.x),
+            height: abs(value.location.y - startPoint.y)
+        )
+        let selectedIDs = Set(
+            fileListRowFrames.compactMap { itemID, frame in
+                selectionRect.intersects(frame) ? itemID : nil
+            }
+        )
+        let effectiveSelectionIDs = marqueeSelectionBaseIDs.union(selectedIDs)
+
+        marqueeSelectionRect = selectionRect
+        viewModel.selectFileListItems(
+            withIDs: effectiveSelectionIDs,
+            addingToSelection: false
+        )
+    }
+
+    private func resetMarqueeSelection() {
+        marqueeSelectionStartPoint = nil
+        marqueeSelectionRect = nil
+        marqueeSelectionBaseIDs = []
+        marqueeAddsToSelection = false
+    }
+
+    @ViewBuilder
+    private var marqueeSelectionOverlay: some View {
+        if let marqueeSelectionRect {
+            Rectangle()
+                .fill(CatppuccinMochaTheme.accent.opacity(0.12))
+                .overlay {
+                    Rectangle()
+                        .stroke(
+                            CatppuccinMochaTheme.accent.opacity(0.75),
+                            style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                        )
+                }
+                .frame(
+                    width: max(1, marqueeSelectionRect.width),
+                    height: max(1, marqueeSelectionRect.height)
+                )
+                .position(
+                    x: marqueeSelectionRect.midX,
+                    y: marqueeSelectionRect.midY
+                )
+                .allowsHitTesting(false)
         }
     }
 
@@ -1530,7 +1678,7 @@ private struct FilePaneRowView: View {
     private var dropHintTitle: String {
         switch dropVisualState {
         case .valid:
-            return "Drop to copy here"
+            return "Drop to place here"
         case .invalid:
             return "Drop into folders only"
         case .none:
@@ -2117,8 +2265,6 @@ private struct FilePaneViewOptionsView: View {
                     direction.displayName
                 }
 
-                Toggle("Directories First", isOn: $viewModel.directoriesFirst)
-                    .toggleStyle(.checkbox)
             }
             .font(.system(size: 13))
             .foregroundStyle(CatppuccinMochaTheme.primaryText)
@@ -2319,6 +2465,17 @@ private final class RightClickMonitorNSView: NSView {
         self.monitor = nil
     }
 
+}
+
+private struct FileListRowFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [FileItem.ID: CGRect] = [:]
+
+    static func reduce(
+        value: inout [FileItem.ID: CGRect],
+        nextValue: () -> [FileItem.ID: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
 }
 
 private extension View {

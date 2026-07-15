@@ -169,10 +169,15 @@ private final class BrowserWindowRegistrationNSView: NSView {
 struct OpenPaneApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var keyboardShortcutStore = KeyboardShortcutStore()
+    @StateObject private var volumeVisibilityStore = VolumeVisibilityStore()
+    @StateObject private var favoriteStore = FavoriteStore()
 
     var body: some Scene {
         WindowGroup {
-            MainWindowView()
+            MainWindowView(
+                volumeVisibilityStore: volumeVisibilityStore,
+                favoriteStore: favoriteStore
+            )
                 .environmentObject(keyboardShortcutStore)
                 .background(BrowserWindowRegistrationView())
         }
@@ -191,7 +196,10 @@ struct OpenPaneApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(
+                volumeVisibilityStore: volumeVisibilityStore,
+                favoriteStore: favoriteStore
+            )
                 .environmentObject(keyboardShortcutStore)
         }
     }

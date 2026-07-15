@@ -28,6 +28,8 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case duplicateFiles
     case newFile
     case moveToTrash
+    case searchSubtree
+    case goToFolder
 
     var id: String {
         rawValue
@@ -71,6 +73,10 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
             "New file"
         case .moveToTrash:
             "Move to Trash"
+        case .searchSubtree:
+            "Search subtree"
+        case .goToFolder:
+            "Go to folder"
         }
     }
 }
@@ -316,7 +322,9 @@ final class KeyboardShortcutStore: ObservableObject {
         .selectAllFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "a"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .duplicateFiles: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "d"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .newFile: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "n"), usesCommand: true, usesShift: false, usesOption: true, usesControl: false),
-        .moveToTrash: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "delete"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false)
+        .moveToTrash: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "delete"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
+        .searchSubtree: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "f"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false),
+        .goToFolder: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "g"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false)
     ]
 }
 

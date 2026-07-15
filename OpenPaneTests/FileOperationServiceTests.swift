@@ -39,9 +39,29 @@ struct FileOperationServiceTests {
 
         #expect(progressRecorder.progresses == [
             FileOperationProgress(completedItemCount: 0, totalItemCount: 2),
-            FileOperationProgress(completedItemCount: 1, totalItemCount: 2),
-            FileOperationProgress(completedItemCount: 2, totalItemCount: 2)
+            FileOperationProgress(completedItemCount: 0, totalItemCount: 2, currentItemName: "first.txt"),
+            FileOperationProgress(completedItemCount: 1, totalItemCount: 2, currentItemName: "first.txt"),
+            FileOperationProgress(completedItemCount: 1, totalItemCount: 2, currentItemName: "second.txt"),
+            FileOperationProgress(completedItemCount: 2, totalItemCount: 2, currentItemName: "second.txt")
         ])
+    }
+
+    @Test func emptyItemOperationsFailInsteadOfReportingFalseSuccess() async {
+        let service = FileOperationService()
+        let destinationURL = FileManager.default.temporaryDirectory
+
+        await #expect(throws: FileOperationError.noItems) {
+            try await service.copy(items: [], to: destinationURL)
+        }
+        await #expect(throws: FileOperationError.noItems) {
+            try await service.move(items: [], to: destinationURL)
+        }
+        await #expect(throws: FileOperationError.noItems) {
+            try await service.trash(items: [])
+        }
+        await #expect(throws: FileOperationError.noItems) {
+            try await service.duplicate(items: [])
+        }
     }
 
     @Test func movesFileToDestinationDirectory() async throws {
@@ -152,6 +172,28 @@ struct FileOperationServiceTests {
         let archiveURL = try FileOperationService.archiveURL(for: [folderItem])
 
         #expect(archiveURL == temporaryDirectory.sourceURL.appendingPathComponent("Folder.zip"))
+    }
+
+    @Test func compressReportsSourceAndPublishedArchiveNames() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "File.txt", contents: "zip me")
+        let progressRecorder = ProgressRecorder()
+
+        let archiveURL = try await FileOperationService(
+            archiveProcessRunner: SuccessfulArchiveProcessRunner(archiveContents: "archive")
+        ).compress(items: [sourceFile], progressHandler: { progress in
+            progressRecorder.append(progress)
+        })
+
+        #expect(progressRecorder.progresses == [
+            FileOperationProgress(completedItemCount: 0, totalItemCount: 1),
+            FileOperationProgress(completedItemCount: 0, totalItemCount: 1, currentItemName: "File.txt"),
+            FileOperationProgress(
+                completedItemCount: 1,
+                totalItemCount: 1,
+                currentItemName: archiveURL.lastPathComponent
+            )
+        ])
     }
 
     @Test func compressMultipleItemsWithSystemDittoIncludesEverySelectedEntry() async throws {

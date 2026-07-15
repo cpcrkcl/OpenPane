@@ -143,6 +143,28 @@ nonisolated struct FileListSelectionController: Equatable, Sendable {
         resetTypeAhead()
     }
 
+    mutating func select(
+        _ ids: Set<URL>,
+        addingToSelection: Bool,
+        in entries: [FileListSelectionEntry]
+    ) {
+        let existingIDs = addingToSelection ? Set(orderedSelectionIDs) : []
+        let selectedIDs = existingIDs.union(ids)
+        orderedSelectionIDs = entries.map(\.id).filter(selectedIDs.contains)
+
+        guard let firstSelectedID = orderedSelectionIDs.first,
+              let focusedID = orderedSelectionIDs.last,
+              let focusedIndex = entries.firstIndex(where: { $0.id == focusedID }) else {
+            clear()
+            return
+        }
+
+        self.focusedID = focusedID
+        selectionAnchorID = firstSelectedID
+        focusedIndexHint = focusedIndex
+        resetTypeAhead()
+    }
+
     @discardableResult
     mutating func typeAhead(
         _ characters: String,

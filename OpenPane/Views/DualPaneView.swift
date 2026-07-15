@@ -11,6 +11,9 @@ import SwiftUI
 
 struct DualPaneView: View {
     @ObservedObject var viewModel: DualPaneViewModel
+    var sidebarViewModel: SidebarViewModel?
+    var recentLocationStore: RecentLocationStore
+    var onMountNetworkURLs: (PaneSide, [URL]) -> Void = { _, _ in }
     @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
     @AppStorage(DefaultFileDropAction.userDefaultsKey) private var defaultFileDropActionRawValue = DefaultFileDropAction.copy.rawValue
 
@@ -20,6 +23,9 @@ struct DualPaneView: View {
     @State private var batchRenameBaseName = "Item"
     @State private var batchRenameStartingNumber = 1
     @State private var activeSheet: ActiveSheet?
+    @State private var isShowingGoToFolder = false
+    @State private var goToFolderPath = ""
+    @State private var goToFolderError: String?
     @State private var isShowingTrashConfirmation = false
     @State private var trashConfirmationItemCount = 0
     @State private var pendingConflictOperation: PendingConflictOperation?
@@ -27,6 +33,19 @@ struct DualPaneView: View {
     @State private var leftPaneWidth: CGFloat?
     @State private var isCommandPalettePresented = false
     @FocusState private var focusedSheetField: SheetField?
+
+    @MainActor
+    init(
+        viewModel: DualPaneViewModel,
+        sidebarViewModel: SidebarViewModel? = nil,
+        recentLocationStore: RecentLocationStore? = nil,
+        onMountNetworkURLs: @escaping (PaneSide, [URL]) -> Void = { _, _ in }
+    ) {
+        self.viewModel = viewModel
+        self.sidebarViewModel = sidebarViewModel
+        self.recentLocationStore = recentLocationStore ?? RecentLocationStore()
+        self.onMountNetworkURLs = onMountNetworkURLs
+    }
 
     private enum ActiveSheet: Identifiable {
         case newFolder
@@ -136,6 +155,16 @@ struct DualPaneView: View {
             case .batchRename:
                 batchRenameSheet
             }
+        }
+        .sheet(isPresented: $isShowingGoToFolder) {
+            GoToFolderSheet(
+                pathText: $goToFolderPath,
+                recentPaths: recentLocationStore.recentPaths,
+                errorMessage: goToFolderError,
+                onSubmit: submitGoToFolder,
+                onSelectRecent: submitGoToFolder,
+                onCancel: { isShowingGoToFolder = false }
+            )
         }
         .confirmationDialog(
             "Move to Trash?",
@@ -318,6 +347,8 @@ struct DualPaneView: View {
                 targetDirectory: targetDirectory,
                 targetPaneSide: side
             )
+        } onMountNetworkURLs: { urls in
+            onMountNetworkURLs(side, urls)
         }
     }
 
@@ -355,6 +386,8 @@ struct DualPaneView: View {
 
     @ViewBuilder
     private var toolbarActions: some View {
+        let isFileBacked = viewModel.activePane.isFileBackedLocation
+
         HStack(spacing: 8) {
             Button {
                 prepareNewFolderSheet()
@@ -363,7 +396,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .newFolder))
-            .disabled(viewModel.isPerformingOperation)
+            .disabled(viewModel.isPerformingOperation || !isFileBacked)
             .accessibilityIdentifier("toolbar-new-folder-button")
 
             Button {
@@ -373,7 +406,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .newFile))
-            .disabled(viewModel.isPerformingOperation)
+            .disabled(viewModel.isPerformingOperation || !isFileBacked)
             .accessibilityIdentifier("toolbar-new-file-button")
 
             Button {
@@ -383,7 +416,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .rename))
-            .disabled(viewModel.isPerformingOperation)
+            .disabled(viewModel.isPerformingOperation || !isFileBacked)
             .accessibilityIdentifier("toolbar-rename-button")
 
             Button {
@@ -419,7 +452,17 @@ struct DualPaneView: View {
             }
             .buttonStyle(ToolbarIconButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .goUp))
+            .disabled(!isFileBacked)
             .accessibilityIdentifier("toolbar-up-button")
+
+            Button {
+                prepareGoToFolder()
+            } label: {
+                Label("Go to Folder", systemImage: "folder.badge.gearshape")
+            }
+            .buttonStyle(ToolbarIconButtonStyle())
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .goToFolder))
+            .accessibilityIdentifier("toolbar-go-to-folder-button")
 
             Button {
                 Task {
@@ -430,6 +473,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(ToolbarIconButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .refreshActive))
+            .disabled(!isFileBacked)
             .accessibilityIdentifier("toolbar-refresh-active-button")
 
             Button {
@@ -442,6 +486,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .toggleHiddenFiles))
+            .disabled(!isFileBacked)
 
             Button {
                 prepareCopyToOtherPane()
@@ -450,7 +495,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(PrimaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .copyToOtherPane))
-            .disabled(viewModel.isPerformingOperation)
+            .disabled(viewModel.isPerformingOperation || !isFileBacked || !viewModel.inactivePane.isFileBackedLocation)
             .accessibilityIdentifier("toolbar-copy-to-other-pane-button")
 
             Button {
@@ -460,7 +505,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(PrimaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .moveToOtherPane))
-            .disabled(viewModel.isPerformingOperation)
+            .disabled(viewModel.isPerformingOperation || !isFileBacked || !viewModel.inactivePane.isFileBackedLocation)
             .accessibilityIdentifier("toolbar-move-to-other-pane-button")
 
             Button {
@@ -470,7 +515,7 @@ struct DualPaneView: View {
             }
             .buttonStyle(DestructiveActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .moveToTrash))
-            .disabled(viewModel.isPerformingOperation)
+            .disabled(viewModel.isPerformingOperation || !isFileBacked)
 
             Button {
                 Task {
@@ -490,6 +535,18 @@ struct DualPaneView: View {
                 Label("Swap Panes", systemImage: "arrow.left.arrow.right")
             }
             .buttonStyle(SecondaryActionButtonStyle())
+
+            Button {
+                viewModel.togglePaneLink()
+            } label: {
+                Label(
+                    "Link Panes",
+                    systemImage: viewModel.isPanesLinked ? "link" : "link.badge.plus"
+                )
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+            .help(viewModel.isPanesLinked ? "Unlink Panes" : "Link Panes")
+            .accessibilityIdentifier("toolbar-link-panes-button")
         }
     }
 
@@ -505,11 +562,27 @@ struct DualPaneView: View {
             if viewModel.isPerformingOperation {
                 ProgressView()
                     .controlSize(.small)
+
+                if viewModel.operationState.totalItemCount > 0 {
+                    ProgressView(
+                        value: Double(viewModel.operationState.completedItemCount),
+                        total: Double(viewModel.operationState.totalItemCount)
+                    )
+                    .frame(width: 80)
+                }
             }
 
             Text(viewModel.operationStatusMessage ?? "Ready")
                 .lineLimit(1)
                 .foregroundStyle(viewModel.errorMessage == nil ? CatppuccinMochaTheme.secondaryText : CatppuccinMochaTheme.destructive)
+
+            if let currentItemName = viewModel.operationState.currentItemName,
+               viewModel.operationState.isRunning {
+                Text(currentItemName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(CatppuccinMochaTheme.mutedText)
+            }
 
             if let operationProgressText {
                 Text(operationProgressText)
@@ -543,24 +616,28 @@ struct DualPaneView: View {
             return nil
         }
 
-        return "\(state.completedItemCount)/\(state.totalItemCount)"
+        return "\(state.completedItemCount) of \(state.totalItemCount)"
     }
 
     private var commandPaletteCommands: [CommandPaletteCommand] {
+        let isFileBacked = viewModel.activePane.isFileBackedLocation
+        let fileLocationUnavailableReason = isFileBacked ? nil : "Unavailable on the Network page."
         let selectedItemCount = viewModel.activePane.selectedItems.count
 
         return [
             CommandPaletteCommand(
                 id: "new-folder",
                 title: "New Folder",
-                systemImage: "folder.badge.plus"
+                systemImage: "folder.badge.plus",
+                disabledReason: fileLocationUnavailableReason
             ) {
                 prepareNewFolderSheet()
             },
             CommandPaletteCommand(
                 id: "new-file",
                 title: "New File",
-                systemImage: "doc.badge.plus"
+                systemImage: "doc.badge.plus",
+                disabledReason: fileLocationUnavailableReason
             ) {
                 prepareNewFileSheet()
             },
@@ -568,7 +645,7 @@ struct DualPaneView: View {
                 id: "copy-files",
                 title: "Copy Selected Files",
                 systemImage: "doc.on.doc",
-                disabledReason: selectedItemCount > 0 ? nil : "Select one or more items"
+                disabledReason: fileLocationUnavailableReason ?? (selectedItemCount > 0 ? nil : "Select one or more items")
             ) {
                 let copiedItemCount = viewModel.activePane.copySelectedItemsToPasteboard()
                 if copiedItemCount > 0 {
@@ -582,7 +659,8 @@ struct DualPaneView: View {
             CommandPaletteCommand(
                 id: "paste-files",
                 title: "Paste Files",
-                systemImage: "doc.on.clipboard"
+                systemImage: "doc.on.clipboard",
+                disabledReason: fileLocationUnavailableReason
             ) {
                 Task {
                     await viewModel.pasteIntoPane(viewModel.activePane)
@@ -591,7 +669,8 @@ struct DualPaneView: View {
             CommandPaletteCommand(
                 id: "select-all-files",
                 title: "Select All Files",
-                systemImage: "checkmark.circle"
+                systemImage: "checkmark.circle",
+                disabledReason: fileLocationUnavailableReason
             ) {
                 viewModel.activePane.selectAllVisibleItems()
             },
@@ -599,7 +678,7 @@ struct DualPaneView: View {
                 id: "duplicate-files",
                 title: "Duplicate Selected Files",
                 systemImage: "plus.square.on.square",
-                disabledReason: selectedItemCount > 0 ? nil : "Select one or more items"
+                disabledReason: fileLocationUnavailableReason ?? (selectedItemCount > 0 ? nil : "Select one or more items")
             ) {
                 Task {
                     await viewModel.duplicateSelectionInActivePane()
@@ -609,7 +688,7 @@ struct DualPaneView: View {
                 id: "rename",
                 title: "Rename",
                 systemImage: "pencil",
-                disabledReason: selectedItemCount == 1 ? nil : "Select exactly one item"
+                disabledReason: fileLocationUnavailableReason ?? (selectedItemCount == 1 ? nil : "Select exactly one item")
             ) {
                 prepareRenameSheet()
             },
@@ -617,7 +696,7 @@ struct DualPaneView: View {
                 id: "copy-to-other-pane",
                 title: "Copy to Other Pane",
                 systemImage: "doc.on.doc",
-                disabledReason: selectedItemCount > 0 ? nil : "Select one or more items"
+                disabledReason: fileLocationUnavailableReason ?? (selectedItemCount > 0 ? nil : "Select one or more items")
             ) {
                 prepareCopyToOtherPane()
             },
@@ -625,14 +704,15 @@ struct DualPaneView: View {
                 id: "move-to-other-pane",
                 title: "Move to Other Pane",
                 systemImage: "arrow.right.doc.on.clipboard",
-                disabledReason: selectedItemCount > 0 ? nil : "Select one or more items"
+                disabledReason: fileLocationUnavailableReason ?? (selectedItemCount > 0 ? nil : "Select one or more items")
             ) {
                 prepareMoveToOtherPane()
             },
             CommandPaletteCommand(
                 id: "refresh-active-pane",
                 title: "Refresh Active Pane",
-                systemImage: "arrow.clockwise"
+                systemImage: "arrow.clockwise",
+                disabledReason: fileLocationUnavailableReason
             ) {
                 Task {
                     await viewModel.activePane.refresh()
@@ -650,14 +730,37 @@ struct DualPaneView: View {
             CommandPaletteCommand(
                 id: "toggle-hidden-files",
                 title: viewModel.activePane.includeHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files",
-                systemImage: "eye"
+                systemImage: "eye",
+                disabledReason: fileLocationUnavailableReason
             ) {
                 toggleHiddenFilesInActivePane()
             },
             CommandPaletteCommand(
+                id: "go-to-folder",
+                title: "Go to Folder…",
+                systemImage: "folder.badge.gearshape"
+            ) {
+                prepareGoToFolder()
+            },
+            CommandPaletteCommand(
+                id: "add-to-favorites",
+                title: "Add Current Folder to Favorites",
+                systemImage: "star",
+                disabledReason: fileLocationUnavailableReason ?? {
+                    guard let sidebarViewModel,
+                          let url = viewModel.activePane.fileURL else {
+                        return sidebarViewModel == nil ? "Unavailable" : fileLocationUnavailableReason
+                    }
+                    return sidebarViewModel.containsFavorite(url: url) ? "Already in Favorites" : nil
+                }()
+            ) {
+                addCurrentFolderToFavorites()
+            },
+            CommandPaletteCommand(
                 id: "go-up",
                 title: "Go Up",
-                systemImage: "arrow.up"
+                systemImage: "arrow.up",
+                disabledReason: fileLocationUnavailableReason
             ) {
                 Task {
                     await viewModel.activePane.goUp()
@@ -709,12 +812,6 @@ struct DualPaneView: View {
             ) {
                 switchActivePane()
             },
-            CommandPaletteCommand(
-                id: "show-mounted-volumes",
-                title: "Show Mounted Volumes",
-                systemImage: "externaldrive",
-                disabledReason: "Use the Volumes section in the sidebar"
-            ) {}
         ]
     }
 
@@ -762,14 +859,20 @@ struct DualPaneView: View {
         }
 
         viewModel.setActivePane(targetPaneSide)
+        let validatedSourcePaneSide = viewModel.validatedDropSourcePaneSide(
+            sourcePaneSide,
+            fileURLs: fileURLs
+        )
         let drop = PendingFileDrop(
             fileURLs: fileURLs,
-            sourcePaneSide: sourcePaneSide,
+            sourcePaneSide: validatedSourcePaneSide,
             targetDirectory: targetDirectory,
             targetPaneSide: targetPaneSide
         )
-        switch FileDropPreparationDecision.forOrdinaryDrop(
+        switch FileDropPreparationDecision.forDrop(
             defaultAction: defaultFileDropAction,
+            sourcePaneSide: validatedSourcePaneSide,
+            targetPaneSide: targetPaneSide,
             hasPotentialConflict: hasPotentialConflict(in: drop)
         ) {
         case .ask:
@@ -822,8 +925,51 @@ struct DualPaneView: View {
         }
     }
 
+    private func prepareGoToFolder() {
+        goToFolderPath = viewModel.activePane.fileURL?.path ?? "~"
+        goToFolderError = nil
+        isShowingGoToFolder = true
+    }
+
+    private func submitGoToFolder() {
+        submitGoToFolder(goToFolderPath)
+    }
+
+    private func submitGoToFolder(_ path: String) {
+        goToFolderPath = path
+        goToFolderError = nil
+
+        Task {
+            let succeeded = await viewModel.navigateActivePaneToPath(
+                path,
+                recentLocationStore: recentLocationStore
+            )
+            if succeeded {
+                isShowingGoToFolder = false
+            } else {
+                goToFolderError = viewModel.activePane.errorMessage
+                    ?? "OpenPane couldn’t navigate to that folder."
+                viewModel.activePane.errorMessage = nil
+            }
+        }
+    }
+
+    private func addCurrentFolderToFavorites() {
+        guard let sidebarViewModel else {
+            return
+        }
+
+        do {
+            try viewModel.addCurrentFolderToFavorites(using: sidebarViewModel)
+            viewModel.showStatusMessage("Added to Favorites.")
+        } catch {
+            viewModel.errorMessage = error.localizedDescription
+        }
+    }
+
     private func prepareNewFolderSheet() {
-        guard !viewModel.isPerformingOperation else {
+        guard !viewModel.isPerformingOperation,
+              viewModel.activePane.isFileBackedLocation else {
             return
         }
 
@@ -832,7 +978,8 @@ struct DualPaneView: View {
     }
 
     private func prepareNewFileSheet() {
-        guard !viewModel.isPerformingOperation else {
+        guard !viewModel.isPerformingOperation,
+              viewModel.activePane.isFileBackedLocation else {
             return
         }
 
@@ -1029,7 +1176,8 @@ struct DualPaneView: View {
     }
 
     private func prepareRenameSheet() {
-        guard !viewModel.isPerformingOperation else {
+        guard !viewModel.isPerformingOperation,
+              viewModel.activePane.isFileBackedLocation else {
             return
         }
 
@@ -1149,7 +1297,8 @@ struct DualPaneView: View {
     }
 
     private func prepareTrashConfirmation() {
-        guard !viewModel.isPerformingOperation else {
+        guard !viewModel.isPerformingOperation,
+              viewModel.activePane.isFileBackedLocation else {
             return
         }
 
@@ -1167,7 +1316,9 @@ struct DualPaneView: View {
     }
 
     private func prepareCopyToOtherPane() {
-        guard !viewModel.isPerformingOperation else {
+        guard !viewModel.isPerformingOperation,
+              viewModel.activePane.isFileBackedLocation,
+              viewModel.inactivePane.isFileBackedLocation else {
             return
         }
 
@@ -1182,7 +1333,9 @@ struct DualPaneView: View {
     }
 
     private func prepareMoveToOtherPane() {
-        guard !viewModel.isPerformingOperation else {
+        guard !viewModel.isPerformingOperation,
+              viewModel.activePane.isFileBackedLocation,
+              viewModel.inactivePane.isFileBackedLocation else {
             return
         }
 
@@ -1218,13 +1371,16 @@ struct DualPaneView: View {
     private var hasPotentialConflictInInactivePane: Bool {
         let selectedItems = viewModel.activePane.selectedItems
 
-        guard !selectedItems.isEmpty else {
+        guard viewModel.activePane.isFileBackedLocation,
+              viewModel.inactivePane.isFileBackedLocation,
+              !selectedItems.isEmpty,
+              let destinationURL = viewModel.inactivePane.fileURL else {
             return false
         }
 
         return FileOperationService.hasPotentialTransferConflict(
             items: Array(selectedItems),
-            to: viewModel.inactivePane.currentURL
+            to: destinationURL
         )
     }
 
@@ -1260,50 +1416,57 @@ private struct PaneSplitView<LeftPane: View, RightPane: View>: NSViewRepresentab
         self.onCommit = onCommit
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onCommit: onCommit)
+    func makeCoordinator() -> PaneSplitCoordinator {
+        PaneSplitCoordinator(onCommit: onCommit)
     }
 
-    func makeNSView(context: Context) -> PaneSplitContainerView<LeftPane, RightPane> {
-        let containerView = PaneSplitContainerView(leftPane: leftPane, rightPane: rightPane)
-        containerView.onCommit = { [weak coordinator = context.coordinator] leftWidth in
-            coordinator?.commit(leftWidth)
-        }
+    func makeNSView(context: Context) -> PaneSplitContainerView {
+        let containerView = PaneSplitContainerView(
+            leftPane: AnyView(leftPane),
+            rightPane: AnyView(rightPane)
+        )
+        containerView.commitDelegate = context.coordinator
         return containerView
     }
 
-    func updateNSView(_ containerView: PaneSplitContainerView<LeftPane, RightPane>, context: Context) {
+    func updateNSView(_ containerView: PaneSplitContainerView, context: Context) {
         context.coordinator.onCommit = onCommit
-        containerView.onCommit = { [weak coordinator = context.coordinator] leftWidth in
-            coordinator?.commit(leftWidth)
-        }
+        containerView.commitDelegate = context.coordinator
         containerView.update(
-            leftPane: leftPane,
-            rightPane: rightPane,
+            leftPane: AnyView(leftPane),
+            rightPane: AnyView(rightPane),
             totalWidth: totalWidth,
             desiredLeftWidth: desiredLeftWidth,
             dividerWidth: dividerWidth
         )
     }
 
-    final class Coordinator: NSObject {
-        fileprivate var onCommit: (CGFloat) -> Void
+}
 
-        init(onCommit: @escaping (CGFloat) -> Void) {
-            self.onCommit = onCommit
-        }
+// Keep the closure-owning coordinator outside the generic representable.
+// Swift 6.3's Release optimizer crashes while synthesizing the destructor for
+// the equivalent nested generic-context type.
+private protocol PaneSplitCommitDelegate: AnyObject {
+    func commit(_ leftWidth: CGFloat)
+}
 
-        func commit(_ leftWidth: CGFloat) {
-            onCommit(leftWidth)
-        }
+private final class PaneSplitCoordinator: PaneSplitCommitDelegate {
+    fileprivate var onCommit: (CGFloat) -> Void
+
+    init(onCommit: @escaping (CGFloat) -> Void) {
+        self.onCommit = onCommit
+    }
+
+    func commit(_ leftWidth: CGFloat) {
+        onCommit(leftWidth)
     }
 }
 
-private final class PaneSplitContainerView<LeftPane: View, RightPane: View>: NSView, PaneSplitDividerViewDelegate {
-    fileprivate var onCommit: (CGFloat) -> Void = { _ in }
+private final class PaneSplitContainerView: NSView, PaneSplitDividerViewDelegate {
+    fileprivate weak var commitDelegate: PaneSplitCommitDelegate?
 
-    private let leftHostingView: NSHostingView<LeftPane>
-    private let rightHostingView: NSHostingView<RightPane>
+    private let leftHostingView: NSHostingView<AnyView>
+    private let rightHostingView: NSHostingView<AnyView>
     private let dividerView = PaneSplitDividerView()
     private let previewView = PaneSplitDividerPreviewView()
     private var totalWidth: CGFloat = 0
@@ -1312,7 +1475,7 @@ private final class PaneSplitContainerView<LeftPane: View, RightPane: View>: NSV
     private var dragStartLeftWidth: CGFloat?
     private var previewLeftWidth: CGFloat?
 
-    init(leftPane: LeftPane, rightPane: RightPane) {
+    init(leftPane: AnyView, rightPane: AnyView) {
         self.leftHostingView = NSHostingView(rootView: leftPane)
         self.rightHostingView = NSHostingView(rootView: rightPane)
         super.init(frame: .zero)
@@ -1338,8 +1501,8 @@ private final class PaneSplitContainerView<LeftPane: View, RightPane: View>: NSV
     }
 
     func update(
-        leftPane: LeftPane,
-        rightPane: RightPane,
+        leftPane: AnyView,
+        rightPane: AnyView,
         totalWidth: CGFloat,
         desiredLeftWidth: CGFloat,
         dividerWidth: CGFloat
@@ -1391,7 +1554,7 @@ private final class PaneSplitContainerView<LeftPane: View, RightPane: View>: NSV
         previewLeftWidth = nil
         previewView.isHidden = true
         applyCommittedLeftWidth(finalLeftWidth)
-        onCommit(committedLeftWidth)
+        commitDelegate?.commit(committedLeftWidth)
     }
 
     private func applyCommittedLeftWidth(_ proposedLeftWidth: CGFloat) {

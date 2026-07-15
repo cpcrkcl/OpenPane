@@ -57,6 +57,28 @@ struct FileListSelectionControllerTests {
         #expect(controller.focusedID == entries[0].id)
     }
 
+    @Test func marqueeSelectionPreservesVisibleOrderAndSupportsAdding() {
+        var controller = FileListSelectionController()
+
+        controller.select(
+            Set([entries[1].id, entries[3].id]),
+            addingToSelection: false,
+            in: entries
+        )
+
+        #expect(controller.orderedSelectionIDs == [entries[1].id, entries[3].id])
+        #expect(controller.focusedID == entries[3].id)
+
+        controller.select(
+            Set([entries[0].id]),
+            addingToSelection: true,
+            in: entries
+        )
+
+        #expect(controller.orderedSelectionIDs == [entries[0].id, entries[1].id, entries[3].id])
+        #expect(controller.selectionAnchorID == entries[0].id)
+    }
+
     @Test func arrowMovementReplacesOrExtendsSelection() {
         var controller = FileListSelectionController()
 

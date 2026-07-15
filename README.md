@@ -1,8 +1,8 @@
 # OpenPane
 
-OpenPane is a local-first, open-source native macOS dual-pane file manager.
+OpenPane is a local-first, open-source native macOS dual-pane file manager with optional SMB network connections.
 
-The MVP is focused on fast, practical local file browsing and basic file operations. It is inspired by classic dual-pane file managers, but intentionally keeps the first version simple: local files only, no cloud storage, no folder sync, and no remote connections yet.
+The MVP is focused on fast, practical local file browsing and basic file operations. It is inspired by classic dual-pane file managers, with Bonjour SMB discovery and macOS-managed mounting for network shares. It has no cloud storage, folder sync, or in-app remote filesystem protocol.
 
 ## Screenshots
 
@@ -20,19 +20,23 @@ Screenshots will be added for the initial GitHub release.
 - Keyboard-native file selection, range selection, and type-ahead navigation
 - Copy and move between panes
 - Clipboard copy/paste with `Command-C` and `Command-V`
-- Drag-and-drop copies by default, with conflict handling when needed
+- Mouse dragging between panes moves selected items; external and same-pane drops use the configured Copy, Ask, or Move action
 - Configurable default drop action (`Copy`, `Ask`, or `Move`) in Settings
 - Conflict handling: cancel, skip, replace, and keep both
 - Rename and batch rename
 - New folder
 - Move to Trash
-- Favorites sidebar
+- Persistent, reorderable favorites sidebar
+- Linked-pane navigation with mirror and one-way modes
+- Persistent volume visibility selection
+- Network page with nearby SMB discovery
+- Connect to Server for SMB hosts, including Tailscale MagicDNS names and `100.x` addresses
 - File icons
-- Filename filtering/search within the current folder
-- Recursive filename search
+- Filter and recursive-subtree filename search with progress and result counts
+- Go to Folder with `~` expansion, recent paths, and clickable path breadcrumbs
 - Quick Look preview
 - Reveal in Finder and Open with default app
-- Basic operation status messages
+- Per-item operation progress with current filename and cancellation
 
 ## Safety
 
@@ -40,7 +44,7 @@ OpenPane uses macOS Move to Trash for deletion-style actions. It does not perman
 
 ## Development Permissions
 
-The MVP development app target is currently unsandboxed so OpenPane can work as a local file manager across user folders. macOS privacy protections still apply; for protected locations, users may need to grant OpenPane Full Disk Access in System Settings > Privacy & Security.
+The development app target is currently unsandboxed so OpenPane can work as a local file manager across user folders. macOS privacy protections still apply; for protected locations, users may need to grant OpenPane Full Disk Access in System Settings > Privacy & Security. Network discovery may require Local Network permission on macOS 15 and later.
 
 ## Requirements
 
@@ -87,15 +91,19 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 
 ## Known Limitations
 
-- Local files only.
+- SMB connections are mounted by macOS and then appear as ordinary mounted volumes; OpenPane does not yet implement an independent remote filesystem client.
+- Authentication is handled by macOS and its Keychain flow. OpenPane rejects credentials in entered SMB URLs and never stores passwords.
+- Bonjour discovery only finds SMB services advertised on the reachable local network. It does not enumerate every computer or share.
+- Tailscale devices are not automatically listed. Connect to them using a MagicDNS hostname or Tailscale IP, and ensure the SMB service, route, firewall, and Tailscale ACLs permit access.
+- OpenPane does not use a Tailscale SDK, CLI, API token, or app integration; Tailscale supplies the route or DNS name while macOS handles SMB authentication.
 - No SFTP or other remote file systems yet.
 - No cloud storage integrations.
 - No folder sync.
 - No signed or notarized release package yet.
-- Operation progress is status-only; byte-level progress is not implemented yet.
+- Operation progress is per item; byte-level progress is not implemented yet.
 - Conflict handling is intentionally simple and applies one selected strategy to the operation.
 - Recursive search is filename-based, not content search.
-- Tabs are basic and session-only.
+- Tabs are basic and included in the saved session.
 
 ## Project Structure
 
@@ -117,6 +125,8 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 - `Command-Option-C`: Copy selection to the other pane
 - `Command-Option-M`: Move selection to the other pane
 - `Command-Shift-N`: New folder
+- `Command-Shift-F`: Search the active pane's subtree
+- `Command-Shift-G`: Go to Folder
 - `Up` / `Down`: Move file-list focus and selection
 - `Shift-Up` / `Shift-Down`: Extend the selection range
 - `Command-A`: Select all visible items
@@ -135,8 +145,7 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 
 - SFTP support later
 - Signed release builds
-- Better operation progress
-- Persistent user favorites
+- Byte-level operation progress
 - More advanced conflict review
 - File content search
 

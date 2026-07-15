@@ -10,18 +10,34 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var keyboardShortcutStore: KeyboardShortcutStore
+    @ObservedObject var volumeVisibilityStore: VolumeVisibilityStore
+    @StateObject private var volumeViewModel: SidebarViewModel
     @AppStorage(DefaultFileDropAction.userDefaultsKey) private var defaultFileDropActionRawValue = DefaultFileDropAction.copy.rawValue
+    @AppStorage(PaneLinkMode.userDefaultsKey) private var paneLinkModeRawValue = PaneLinkMode.off.rawValue
     @State private var recordingAction: OpenPaneShortcutAction?
+
+    init(volumeVisibilityStore: VolumeVisibilityStore, favoriteStore: FavoriteStore) {
+        self.volumeVisibilityStore = volumeVisibilityStore
+        _volumeViewModel = StateObject(
+            wrappedValue: SidebarViewModel(
+                volumeVisibilityStore: volumeVisibilityStore,
+                favoriteStore: favoriteStore
+            )
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
             settingsShortcutNote
             fileDropSection
+            paneLinkSection
+            favoritesSection
+            volumeVisibilitySection
             shortcutsSection
         }
         .padding(24)
-        .frame(width: 540, height: 600, alignment: .topLeading)
+        .frame(width: 540, height: 700, alignment: .topLeading)
         .background(CatppuccinMochaTheme.appBackground)
         .preferredColorScheme(.dark)
     }
@@ -124,7 +140,7 @@ struct SettingsView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(CatppuccinMochaTheme.primaryText)
 
-                Text("Ask shows the Copy or Move chooser for every drop.")
+                Text("Applies to external and same-pane drops. Cross-pane drags move items.")
                     .font(.system(size: 11))
                     .foregroundStyle(CatppuccinMochaTheme.secondaryText)
             }
@@ -148,6 +164,93 @@ struct SettingsView: View {
         .overlay {
             RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
                 .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+    }
+
+    private var favoritesSection: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Favorites")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+                Text("Restore the built-in Home, Desktop, Documents, Downloads, and Applications favorites.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+            }
+
+            Spacer()
+
+            Button("Reset to Defaults") {
+                volumeViewModel.resetFavoritesToDefaults()
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            CatppuccinMochaTheme.mantle,
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+                .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+    }
+
+    private var paneLinkSection: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Linked panes")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+                Text("Choose which pane navigation should keep the other pane in sync.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+            }
+
+            Spacer()
+
+            Picker("Linked panes", selection: $paneLinkModeRawValue) {
+                ForEach(PaneLinkMode.allCases) { mode in
+                    Text(mode.title).tag(mode.rawValue)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 180)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            CatppuccinMochaTheme.mantle,
+            in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
+                .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+    }
+
+    private var volumeVisibilitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Visible Volumes")
+                .font(.system(size: 11, weight: .semibold))
+                .textCase(.uppercase)
+                .tracking(0.7)
+                .foregroundStyle(CatppuccinMochaTheme.mutedText)
+
+            if volumeViewModel.allMountedVolumes.isEmpty {
+                Text("No mounted volumes are available.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+            } else {
+                VolumeVisibilityPickerView(
+                    visibilityStore: volumeVisibilityStore,
+                    volumes: volumeViewModel.allMountedVolumes
+                )
+                .frame(height: 120)
+            }
         }
     }
 

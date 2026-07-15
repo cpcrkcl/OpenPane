@@ -9,17 +9,37 @@ import Combine
 import SwiftUI
 
 struct MainWindowView: View {
-    @StateObject private var sidebarViewModel = SidebarViewModel()
+    @StateObject private var sidebarViewModel: SidebarViewModel
+    @ObservedObject private var volumeVisibilityStore: VolumeVisibilityStore
     @StateObject private var dualPaneViewModel: DualPaneViewModel
     @StateObject private var sessionAutosaveController: SessionAutosaveController
+    @StateObject private var recentLocationStore = RecentLocationStore()
+    @State private var isShowingVolumeVisibilityPicker = false
+    @AppStorage(PaneLinkMode.userDefaultsKey) private var paneLinkModeRawValue = PaneLinkMode.off.rawValue
     private let isSessionPersistenceEnabled: Bool
 
-    init(sessionPersistenceService: (any SessionPersistenceServicing)? = nil) {
+    init(
+        sessionPersistenceService: (any SessionPersistenceServicing)? = nil,
+        volumeVisibilityStore: VolumeVisibilityStore? = nil,
+        favoriteStore: FavoriteStore? = nil
+    ) {
+        let resolvedVolumeVisibilityStore = volumeVisibilityStore ?? VolumeVisibilityStore()
+        let resolvedFavoriteStore = favoriteStore ?? FavoriteStore()
+        _volumeVisibilityStore = ObservedObject(wrappedValue: resolvedVolumeVisibilityStore)
+        _sidebarViewModel = StateObject(
+            wrappedValue: SidebarViewModel(
+                volumeVisibilityStore: resolvedVolumeVisibilityStore,
+                favoriteStore: resolvedFavoriteStore
+            )
+        )
         let resolvedSessionPersistenceService = sessionPersistenceService ?? UserDefaultsSessionPersistenceService()
         let isUITesting = ProcessInfo.processInfo.arguments.contains("-ui-testing")
         let isRunningUnderXCTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         let restoredViewModel = DualPaneViewModel.restoring(
             isUITesting || isRunningUnderXCTest ? nil : resolvedSessionPersistenceService.loadSession()
+        )
+        restoredViewModel.setPaneLinkMode(
+            PaneLinkMode(rawValue: UserDefaults.standard.string(forKey: PaneLinkMode.userDefaultsKey) ?? "") ?? .off
         )
         _dualPaneViewModel = StateObject(wrappedValue: restoredViewModel)
         _sessionAutosaveController = StateObject(
@@ -67,12 +87,50 @@ struct MainWindowView: View {
                 sessionAutosaveController.scheduleSave(dualPaneViewModel.sessionState())
             }
         }
+        .onChange(of: paneLinkModeRawValue) { _, rawValue in
+            dualPaneViewModel.setPaneLinkMode(PaneLinkMode(rawValue: rawValue) ?? .off)
+        }
+        .onReceive(dualPaneViewModel.$paneLinkMode.dropFirst()) { mode in
+            guard paneLinkModeRawValue != mode.rawValue else {
+                return
+            }
+            paneLinkModeRawValue = mode.rawValue
+        }
         .onDisappear {
             guard isSessionPersistenceEnabled else {
                 return
             }
 
             sessionAutosaveController.saveImmediately(dualPaneViewModel.sessionState())
+        }
+        .sheet(isPresented: $isShowingVolumeVisibilityPicker) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Visible Volumes")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(CatppuccinMochaTheme.primaryText)
+
+                    Spacer()
+
+                    Button("Done") {
+                        isShowingVolumeVisibilityPicker = false
+                    }
+                    .buttonStyle(SecondaryActionButtonStyle())
+                }
+
+                Text("Choose which mounted volumes appear in the sidebar. New volumes are shown automatically.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+
+                VolumeVisibilityPickerView(
+                    visibilityStore: volumeVisibilityStore,
+                    volumes: sidebarViewModel.allMountedVolumes
+                )
+            }
+            .padding(18)
+            .frame(width: 360, height: 360)
+            .background(CatppuccinMochaTheme.appBackground)
+            .preferredColorScheme(.dark)
         }
     }
 
@@ -123,7 +181,7 @@ struct MainWindowView: View {
     private var sidebarSurface: some View {
         SidebarView(
             viewModel: sidebarViewModel,
-            activeURL: dualPaneViewModel.activePane.currentURL
+            activeLocation: dualPaneViewModel.activePane.currentLocation
         ) { location in
             Task {
                 await dualPaneViewModel.navigateActivePane(to: location.url)
@@ -132,6 +190,12 @@ struct MainWindowView: View {
             Task {
                 await dualPaneViewModel.navigateActivePane(to: volume.url)
             }
+        } onSelectNetwork: {
+            Task {
+                await dualPaneViewModel.navigateActivePane(to: .network)
+            }
+        } onManageVolumes: {
+            isShowingVolumeVisibilityPicker = true
         }
         .background(CatppuccinMochaTheme.sidebarBackground)
         .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge))
@@ -149,7 +213,19 @@ struct MainWindowView: View {
     }
 
     private var mainContentSurface: some View {
-        DualPaneView(viewModel: dualPaneViewModel)
+        DualPaneView(
+            viewModel: dualPaneViewModel,
+            sidebarViewModel: sidebarViewModel,
+            recentLocationStore: recentLocationStore,
+            onMountNetworkURLs: { paneSide, urls in
+                Task {
+                    if let url = urls.first {
+                        await dualPaneViewModel.pane(for: paneSide).navigate(to: .file(url))
+                    }
+                    sidebarViewModel.refreshVolumes()
+                }
+            }
+        )
             .background(CatppuccinMochaTheme.windowBackground)
             .clipShape(RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge))
             .overlay {

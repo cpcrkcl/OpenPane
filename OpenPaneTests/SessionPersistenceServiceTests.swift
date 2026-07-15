@@ -53,8 +53,7 @@ struct SessionPersistenceServiceTests {
                 currentURL: leftURL,
                 includeHiddenFiles: true,
                 sortOption: .modifiedDate,
-                sortDirection: .descending,
-                directoriesFirst: false
+                sortDirection: .descending
             ),
             rightPane: SessionPaneState(
                 tabs: [
@@ -64,8 +63,7 @@ struct SessionPersistenceServiceTests {
                 currentURL: rightURL,
                 includeHiddenFiles: false,
                 sortOption: .size,
-                sortDirection: .ascending,
-                directoriesFirst: true
+                sortDirection: .ascending
             ),
             activePaneSide: .right,
             splitLeftPaneFraction: 0.42
@@ -79,7 +77,6 @@ struct SessionPersistenceServiceTests {
         #expect(viewModel.leftPane.includeHiddenFiles)
         #expect(viewModel.leftPane.sortOption == .modifiedDate)
         #expect(viewModel.leftPane.sortDirection == .descending)
-        #expect(!viewModel.leftPane.directoriesFirst)
         #expect(viewModel.rightPane.activeTabID == rightActiveTabID)
         #expect(viewModel.rightPane.currentURL == rightURL)
         #expect(viewModel.splitLeftPaneFraction == 0.42)
@@ -129,8 +126,7 @@ struct SessionPersistenceServiceTests {
                 currentURL: URL(filePath: "/tmp", directoryHint: .isDirectory),
                 includeHiddenFiles: true,
                 sortOption: .name,
-                sortDirection: .ascending,
-                directoriesFirst: true
+                sortDirection: .ascending
             ),
             rightPane: SessionPaneState(
                 tabs: [SessionTabState(id: rightTabID, currentURL: URL(filePath: "/", directoryHint: .isDirectory))],
@@ -138,8 +134,7 @@ struct SessionPersistenceServiceTests {
                 currentURL: URL(filePath: "/", directoryHint: .isDirectory),
                 includeHiddenFiles: false,
                 sortOption: .kind,
-                sortDirection: .descending,
-                directoriesFirst: false
+                sortDirection: .descending
             ),
             activePaneSide: .left,
             splitLeftPaneFraction: 0.5

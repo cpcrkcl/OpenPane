@@ -44,6 +44,64 @@ final class OpenPaneUITests: XCTestCase {
     }
 
     @MainActor
+    func testNetworkSidebarRowShowsNetworkPage() throws {
+        assertDualPaneShellVisible()
+
+        let networkRow = element("sidebar-network")
+        XCTAssertTrue(networkRow.waitForExistence(timeout: 3))
+        networkRow.click()
+
+        XCTAssertTrue(element("network-page").waitForExistence(timeout: 3))
+        XCTAssertTrue(element("connect-to-server-button").exists)
+        XCTAssertTrue(element("network-refresh").exists)
+    }
+
+    @MainActor
+    func testConnectToServerSheetShowsValidatedEntryControls() throws {
+        assertDualPaneShellVisible()
+
+        element("sidebar-network").click()
+        XCTAssertTrue(element("network-page").waitForExistence(timeout: 3))
+
+        element("connect-to-server-button").click()
+
+        XCTAssertTrue(element("server-address-field").waitForExistence(timeout: 2))
+        XCTAssertTrue(element("connect-server-submit").exists)
+        app.buttons["Cancel"].firstMatch.click()
+    }
+
+    @MainActor
+    func testVolumeManagementPickerCanHideAndShowAVolume() throws {
+        assertDualPaneShellVisible()
+
+        let manageVolumes = element("manage-volumes-button")
+        try XCTSkipUnless(manageVolumes.waitForExistence(timeout: 3), "No mounted volumes were exposed by the test environment")
+
+        let volumeRow = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "sidebar-volume-")
+        ).firstMatch
+        XCTAssertTrue(volumeRow.waitForExistence(timeout: 2))
+        let volumeIdentifier = volumeRow.identifier
+
+        manageVolumes.click()
+        let picker = element("volume-visibility-picker")
+        XCTAssertTrue(picker.waitForExistence(timeout: 2))
+
+        let checkbox = app.checkBoxes.firstMatch
+        XCTAssertTrue(checkbox.waitForExistence(timeout: 2))
+        checkbox.click()
+        app.buttons["Done"].firstMatch.click()
+
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: volumeIdentifier).firstMatch.exists)
+
+        manageVolumes.click()
+        XCTAssertTrue(picker.waitForExistence(timeout: 2))
+        app.checkBoxes.firstMatch.click()
+        app.buttons["Done"].firstMatch.click()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: volumeIdentifier).firstMatch.waitForExistence(timeout: 2))
+    }
+
+    @MainActor
     func testKeyboardSelectionAndReturnOpenFolder() throws {
         assertDualPaneShellVisible()
 
@@ -62,6 +120,23 @@ final class OpenPaneUITests: XCTestCase {
 
         app.typeKey(.upArrow, modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["left-note.txt"].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
+    func testMouseMarqueeSelectsVisibleItems() throws {
+        assertDualPaneShellVisible()
+
+        let fileList = element("left-file-list")
+        let blankArea = fileList.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.85))
+        let lastItem = app.staticTexts["left-note.txt"].firstMatch
+        XCTAssertTrue(lastItem.waitForExistence(timeout: 3))
+
+        blankArea.press(
+            forDuration: 0.1,
+            thenDragTo: lastItem.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        )
+
+        XCTAssertTrue(app.staticTexts["2 selected"].waitForExistence(timeout: 3))
     }
 
     @MainActor

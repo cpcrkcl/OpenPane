@@ -48,6 +48,10 @@ final class MouseNavigationMonitorView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    deinit {
+        stopMonitoring()
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
 

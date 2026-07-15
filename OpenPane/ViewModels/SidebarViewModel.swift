@@ -10,22 +10,65 @@ import Foundation
 
 @MainActor
 final class SidebarViewModel: ObservableObject {
-    @Published var favoriteLocations: [FavoriteLocation]
-    @Published private(set) var mountedVolumes: [MountedVolume]
+    @Published private(set) var favoriteLocations: [FavoriteLocation]
+    @Published private(set) var allMountedVolumes: [MountedVolume]
+    @Published private(set) var visibleMountedVolumes: [MountedVolume]
+
+    var mountedVolumes: [MountedVolume] {
+        visibleMountedVolumes
+    }
 
     private let volumeService: any VolumeServicing
+    let volumeVisibilityStore: VolumeVisibilityStore
+    let favoriteStore: FavoriteStore
     private var volumeMonitorToken: (any VolumeMonitorToken)?
+    private var volumeVisibilityCancellable: AnyCancellable?
+    private var favoritesCancellable: AnyCancellable?
 
     init(
         favoriteLocations: [FavoriteLocation]? = nil,
-        volumeService: (any VolumeServicing)? = nil
+        volumeService: (any VolumeServicing)? = nil,
+        volumeVisibilityStore: VolumeVisibilityStore? = nil,
+        favoriteStore: FavoriteStore? = nil
     ) {
         let resolvedVolumeService = volumeService ?? VolumeService()
+        let resolvedVisibilityStore = volumeVisibilityStore ?? VolumeVisibilityStore()
+        let resolvedFavoriteStore = favoriteStore ?? FavoriteStore()
         let shouldLoadVolumes = volumeService != nil || !(Self.isRunningUnderXCTest || Self.isRunningForUITests)
-        self.favoriteLocations = favoriteLocations ?? Self.defaultFavoriteLocations()
+
+        if let favoriteLocations {
+            resolvedFavoriteStore.replace(
+                with: favoriteLocations.compactMap { location in
+                    try? FavoriteBookmark(
+                        id: location.id,
+                        name: location.name,
+                        url: location.url,
+                        systemImage: location.systemImage
+                    )
+                }
+            )
+        } else if !Self.isRunningUnderXCTest && !Self.isRunningForUITests {
+            resolvedFavoriteStore.seedDefaultsIfNeeded()
+        }
+
+        let initialVolumes = shouldLoadVolumes ? resolvedVolumeService.mountedVolumes() : []
+        self.favoriteLocations = favoriteLocations ?? resolvedFavoriteStore.favoriteLocations
         self.volumeService = resolvedVolumeService
-        self.mountedVolumes = shouldLoadVolumes ? resolvedVolumeService.mountedVolumes() : []
+        self.volumeVisibilityStore = resolvedVisibilityStore
+        self.favoriteStore = resolvedFavoriteStore
+        self.allMountedVolumes = initialVolumes
+        self.visibleMountedVolumes = resolvedVisibilityStore.visibleVolumes(from: initialVolumes)
         self.volumeMonitorToken = nil
+        self.volumeVisibilityCancellable = nil
+        self.favoritesCancellable = nil
+
+        self.volumeVisibilityCancellable = resolvedVisibilityStore.$hiddenVolumeIdentifiers.sink { [weak self] hiddenIdentifiers in
+            self?.updateVisibleMountedVolumes(hiddenIdentifiers: hiddenIdentifiers)
+        }
+
+        self.favoritesCancellable = resolvedFavoriteStore.$bookmarks.sink { [weak self] _ in
+            self?.favoriteLocations = resolvedFavoriteStore.favoriteLocations
+        }
 
         if shouldLoadVolumes {
             self.volumeMonitorToken = resolvedVolumeService.startMonitoring { [weak self] in
@@ -39,45 +82,55 @@ final class SidebarViewModel: ObservableObject {
     }
 
     func refreshVolumes() {
-        mountedVolumes = volumeService.mountedVolumes()
+        allMountedVolumes = volumeService.mountedVolumes()
+        updateVisibleMountedVolumes()
     }
 
-    private static func defaultFavoriteLocations(fileManager: FileManager = .default) -> [FavoriteLocation] {
-        let homeURL = fileManager.homeDirectoryForCurrentUser
-
-        return [
-            FavoriteLocation(name: "Home", url: homeURL, systemImage: "house"),
-            FavoriteLocation(
-                name: "Desktop",
-                url: standardDirectoryURL(.desktopDirectory, fileManager: fileManager) ?? homeURL.appendingPathComponent("Desktop", isDirectory: true),
-                systemImage: "display"
-            ),
-            FavoriteLocation(
-                name: "Documents",
-                url: standardDirectoryURL(.documentDirectory, fileManager: fileManager) ?? homeURL.appendingPathComponent("Documents", isDirectory: true),
-                systemImage: "doc.text"
-            ),
-            FavoriteLocation(
-                name: "Downloads",
-                url: standardDirectoryURL(.downloadsDirectory, fileManager: fileManager) ?? homeURL.appendingPathComponent("Downloads", isDirectory: true),
-                systemImage: "arrow.down.circle"
-            ),
-            FavoriteLocation(
-                name: "Applications",
-                url: applicationsURL(fileManager: fileManager),
-                systemImage: "square.grid.2x2"
-            )
-        ]
+    func setVolumeVisible(_ visible: Bool, for volume: MountedVolume) {
+        volumeVisibilityStore.setVisible(visible, for: volume)
     }
 
-    private static func standardDirectoryURL(_ directory: FileManager.SearchPathDirectory, fileManager: FileManager) -> URL? {
-        fileManager.urls(for: directory, in: .userDomainMask).first
+    func hideVolume(_ volume: MountedVolume) {
+        setVolumeVisible(false, for: volume)
     }
 
-    private static func applicationsURL(fileManager: FileManager) -> URL {
-        fileManager.urls(for: .applicationDirectory, in: .localDomainMask).first
-            ?? fileManager.urls(for: .applicationDirectory, in: .userDomainMask).first
-            ?? URL(filePath: "/Applications", directoryHint: .isDirectory)
+    func showVolume(_ volume: MountedVolume) {
+        setVolumeVisible(true, for: volume)
+    }
+
+    func isVolumeVisible(_ volume: MountedVolume) -> Bool {
+        volumeVisibilityStore.isVisible(volume)
+    }
+
+    func addFavorite(name: String, url: URL, systemImage: String = "folder") throws {
+        _ = try favoriteStore.add(name: name, url: url, systemImage: systemImage)
+    }
+
+    func removeFavorite(id: String) {
+        favoriteStore.remove(id: id)
+    }
+
+    func renameFavorite(id: String, to name: String) {
+        favoriteStore.rename(id: id, to: name)
+    }
+
+    func reorderFavorites(from source: IndexSet, to destination: Int) {
+        favoriteStore.reorder(from: source, to: destination)
+    }
+
+    func resetFavoritesToDefaults() {
+        favoriteStore.resetToDefaults()
+    }
+
+    func containsFavorite(url: URL) -> Bool {
+        favoriteStore.contains(url: url)
+    }
+
+    private func updateVisibleMountedVolumes(hiddenIdentifiers: Set<String>? = nil) {
+        let hiddenIdentifiers = hiddenIdentifiers ?? volumeVisibilityStore.hiddenVolumeIdentifiers
+        visibleMountedVolumes = allMountedVolumes.filter {
+            !hiddenIdentifiers.contains($0.persistentIdentifier)
+        }
     }
 
     private static var isRunningUnderXCTest: Bool {

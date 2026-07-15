@@ -56,4 +56,25 @@ struct CommandPaletteViewModelTests {
 
         #expect(ranCommandIDs == ["second"])
     }
+
+    @Test func filteringClampsASelectionThatIsPastTheNewResults() {
+        var ranCommandIDs: [String] = []
+        let viewModel = CommandPaletteViewModel(commands: [
+            CommandPaletteCommand(id: "alpha", title: "Alpha", systemImage: "a.circle") {
+                ranCommandIDs.append("alpha")
+            },
+            CommandPaletteCommand(id: "beta", title: "Beta", systemImage: "b.circle") {},
+            CommandPaletteCommand(id: "gamma", title: "Gamma", systemImage: "g.circle") {}
+        ])
+
+        viewModel.moveSelectionDown()
+        viewModel.moveSelectionDown()
+        #expect(viewModel.selectedIndex == 2)
+
+        viewModel.query = "alp"
+        viewModel.runSelectedCommand()
+
+        #expect(viewModel.selectedIndex == 0)
+        #expect(ranCommandIDs == ["alpha"])
+    }
 }

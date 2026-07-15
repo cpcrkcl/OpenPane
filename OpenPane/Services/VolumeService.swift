@@ -38,7 +38,8 @@ final class VolumeService: VolumeServicing {
             .volumeIsRemovableKey,
             .volumeIsEjectableKey,
             .volumeTotalCapacityKey,
-            .volumeAvailableCapacityKey
+            .volumeAvailableCapacityKey,
+            .volumeUUIDStringKey
         ]
 
         let volumeURLs = fileManager.mountedVolumeURLs(
@@ -75,7 +76,8 @@ final class VolumeService: VolumeServicing {
             isRemovable: values?.volumeIsRemovable ?? false,
             isEjectable: values?.volumeIsEjectable ?? false,
             totalCapacity: values?.volumeTotalCapacity.map(Int64.init),
-            availableCapacity: values?.volumeAvailableCapacity.map(Int64.init)
+            availableCapacity: values?.volumeAvailableCapacity.map(Int64.init),
+            persistentIdentifier: MountedVolume.persistentIdentifier(for: url, resourceValues: values)
         )
     }
 
@@ -113,6 +115,10 @@ private final class WorkspaceVolumeMonitorToken: VolumeMonitorToken, @unchecked 
                 }
             }
         }
+    }
+
+    deinit {
+        cancel()
     }
 
     nonisolated func cancel() {

@@ -91,6 +91,75 @@ struct DualPaneViewModelTests {
         )
     }
 
+    @Test func crossPaneDropMovesEvenWhenTheGeneralDropPreferenceIsCopy() {
+        #expect(
+            FileDropPreparationDecision.forDrop(
+                defaultAction: .copy,
+                sourcePaneSide: .left,
+                targetPaneSide: .right,
+                hasPotentialConflict: false
+            ) == .perform(.move)
+        )
+        #expect(
+            FileDropPreparationDecision.forDrop(
+                defaultAction: .copy,
+                sourcePaneSide: .left,
+                targetPaneSide: .right,
+                hasPotentialConflict: true
+            ) == .resolveConflicts(.move)
+        )
+    }
+
+    @Test func samePaneDropStillUsesTheConfiguredDropPreference() {
+        #expect(
+            FileDropPreparationDecision.forDrop(
+                defaultAction: .copy,
+                sourcePaneSide: .left,
+                targetPaneSide: .left,
+                hasPotentialConflict: false
+            ) == .perform(.copy)
+        )
+    }
+
+    @Test func crossPaneMoveDefaultOnlyTrustsURLsVisibleInTheClaimedSourcePane() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "source.txt", contents: "source")
+        let unrelatedItem = try temporaryDirectory.createDestinationFile(named: "unrelated.txt", contents: "external")
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        leftPane.items = [sourceItem]
+        await leftPane.waitForVisibleItemsUpdate()
+
+        let validSide = viewModel.validatedDropSourcePaneSide(.left, fileURLs: [sourceItem.url])
+        let forgedSide = viewModel.validatedDropSourcePaneSide(.left, fileURLs: [unrelatedItem.url])
+
+        #expect(validSide == .left)
+        #expect(forgedSide == nil)
+        #expect(
+            FileDropPreparationDecision.forDrop(
+                defaultAction: .copy,
+                sourcePaneSide: validSide,
+                targetPaneSide: .right,
+                hasPotentialConflict: false
+            ) == .perform(.move)
+        )
+        #expect(
+            FileDropPreparationDecision.forDrop(
+                defaultAction: .copy,
+                sourcePaneSide: forgedSide,
+                targetPaneSide: .right,
+                hasPotentialConflict: false
+            ) == .perform(.copy)
+        )
+    }
+
     @Test func defaultsToLeftActivePane() {
         let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
         let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
@@ -99,6 +168,165 @@ struct DualPaneViewModelTests {
         #expect(viewModel.activePaneSide == .left)
         #expect(viewModel.activePane === leftPane)
         #expect(viewModel.inactivePane === rightPane)
+    }
+
+    @Test func mirrorLinkedPanesFollowCompletedDirectoryNavigationWithoutRecursing() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let childURL = temporaryDirectory.sourceURL.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        let fileBrowserService = FileBrowserService()
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: fileBrowserService
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: fileBrowserService
+        )
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            paneLinkMode: .mirror
+        )
+
+        await leftPane.setDirectory(childURL)
+        for _ in 0..<20 where rightPane.currentURL.standardizedFileURL != childURL.standardizedFileURL {
+            await Task.yield()
+        }
+
+        #expect(leftPane.currentURL.standardizedFileURL == childURL.standardizedFileURL)
+        #expect(rightPane.currentURL.standardizedFileURL == childURL.standardizedFileURL)
+        #expect(viewModel.paneLinkMode == .mirror)
+    }
+
+    @Test func unlinkedPanesKeepDirectoryNavigationIndependent() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let childURL = temporaryDirectory.sourceURL.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        let fileBrowserService = FileBrowserService()
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: fileBrowserService
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: fileBrowserService
+        )
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+
+        await leftPane.setDirectory(childURL)
+        for _ in 0..<5 {
+            await Task.yield()
+        }
+
+        #expect(viewModel.paneLinkMode == .off)
+        #expect(rightPane.currentURL.standardizedFileURL == temporaryDirectory.destinationURL.standardizedFileURL)
+    }
+
+    @Test func oneWayLinkedPanesIgnoreNavigationFromTheNonDrivingPane() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let childURL = temporaryDirectory.destinationURL.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        let fileBrowserService = FileBrowserService()
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: fileBrowserService
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: fileBrowserService
+        )
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            paneLinkMode: .leftToRight
+        )
+
+        await rightPane.setDirectory(childURL)
+        for _ in 0..<5 {
+            await Task.yield()
+        }
+
+        #expect(leftPane.currentURL.standardizedFileURL == temporaryDirectory.sourceURL.standardizedFileURL)
+        #expect(rightPane.currentURL.standardizedFileURL == childURL.standardizedFileURL)
+        #expect(viewModel.paneLinkMode == .leftToRight)
+    }
+
+    @Test func linkedNavigationLeavesANetworkPaneUntouched() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let childURL = temporaryDirectory.sourceURL.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            paneLinkMode: .mirror
+        )
+        await rightPane.navigate(to: .network)
+
+        await leftPane.setDirectory(childURL)
+        for _ in 0..<5 {
+            await Task.yield()
+        }
+
+        #expect(rightPane.currentLocation == .network)
+        #expect(viewModel.isPanesLinked)
+    }
+
+    @Test func unlinkingCancelsNavigationAlreadyScheduledForTheOtherPane() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let childURL = temporaryDirectory.sourceURL.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: SlowCancellableFileBrowserService()
+        )
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            paneLinkMode: .mirror
+        )
+
+        await leftPane.setDirectory(childURL)
+        for _ in 0..<50 where !rightPane.isLoading {
+            await Task.yield()
+        }
+        #expect(rightPane.isLoading)
+
+        viewModel.setPaneLinkMode(.off)
+        for _ in 0..<50 where rightPane.isLoading {
+            await Task.yield()
+        }
+
+        #expect(viewModel.paneLinkMode == .off)
+        #expect(rightPane.currentURL.standardizedFileURL == temporaryDirectory.destinationURL.standardizedFileURL)
+    }
+
+    @Test func toolbarToggleRestoresThePreviouslySelectedLinkDirection() {
+        let leftPane = FilePaneViewModel(currentURL: URL(filePath: "/left"), fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: URL(filePath: "/right"), fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            paneLinkMode: .leftToRight
+        )
+
+        viewModel.togglePaneLink()
+        #expect(viewModel.paneLinkMode == .off)
+
+        viewModel.togglePaneLink()
+        #expect(viewModel.paneLinkMode == .leftToRight)
     }
 
     @Test func setActivePaneSwitchesActiveAndInactivePane() {
@@ -160,6 +388,27 @@ struct DualPaneViewModelTests {
 
         #expect(viewModel.leftPane.currentURL == rightURL)
         #expect(viewModel.rightPane.currentURL == leftURL)
+    }
+
+    @Test func swapPaneLocationsIsNotOverriddenByMirrorSynchronization() async {
+        let leftURL = URL(filePath: "/left")
+        let rightURL = URL(filePath: "/right")
+        let leftPane = FilePaneViewModel(currentURL: leftURL, fileBrowserService: EmptyFileBrowserService())
+        let rightPane = FilePaneViewModel(currentURL: rightURL, fileBrowserService: EmptyFileBrowserService())
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            paneLinkMode: .mirror
+        )
+
+        await viewModel.swapPaneLocations()
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        #expect(viewModel.leftPane.currentURL == rightURL)
+        #expect(viewModel.rightPane.currentURL == leftURL)
+        #expect(viewModel.paneLinkMode == .mirror)
     }
 
     @Test func moveTabMovesTabBetweenPanesAndActivatesDestination() async {
@@ -505,17 +754,62 @@ struct DualPaneViewModelTests {
         }
 
         await fileOperationService.waitForMoveToStart()
-        fileOperationService.reportMoveProgress(completedItemCount: 1, totalItemCount: 2)
+        fileOperationService.reportMoveProgress(
+            completedItemCount: 1,
+            totalItemCount: 2,
+            currentItemName: "second.txt"
+        )
         await Task.yield()
 
         #expect(viewModel.operationState.isRunning)
         #expect(viewModel.operationState.completedItemCount == 1)
         #expect(viewModel.operationState.totalItemCount == 2)
+        #expect(viewModel.operationState.currentItemName == "second.txt")
 
         fileOperationService.resumeMove()
         await operationTask.value
 
         #expect(viewModel.operationState == .idle)
+    }
+
+    @Test func lateProgressFromAFinishedOperationCannotMutateTheNextOperation() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "item.txt", contents: "item")
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let fileOperationService = RetainedProgressFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+        leftPane.selectedItems = [sourceItem]
+
+        await viewModel.moveSelectionToOtherPane()
+        leftPane.selectedItems = [sourceItem]
+        let secondOperation = Task {
+            await viewModel.moveSelectionToOtherPane()
+        }
+        await fileOperationService.waitForSecondMoveToStart()
+
+        fileOperationService.reportLateFirstMoveProgress()
+        for _ in 0..<5 {
+            await Task.yield()
+        }
+
+        #expect(viewModel.operationState.isRunning)
+        #expect(viewModel.operationState.totalItemCount == 1)
+        #expect(viewModel.operationState.completedItemCount == 0)
+        #expect(viewModel.operationState.currentItemName == nil)
+
+        fileOperationService.resumeSecondMove()
+        await secondOperation.value
     }
 
     @Test func cancelCurrentOperationCancelsRunningOperationWithoutFileFailure() async throws {
@@ -927,6 +1221,13 @@ nonisolated private struct EmptyFileBrowserService: FileBrowserServicing {
     }
 }
 
+nonisolated private struct SlowCancellableFileBrowserService: FileBrowserServicing {
+    nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
+        try await Task.sleep(nanoseconds: 5_000_000_000)
+        return []
+    }
+}
+
 @MainActor
 private final class PasteboardWorkspaceService: WorkspaceServicing, @unchecked Sendable {
     let fileURLs: [URL]
@@ -1198,6 +1499,114 @@ private final class PartialTransferFileOperationService: FileOperationServicing,
     func createFile(named name: String, in directory: URL) async throws -> URL { directory }
 }
 
+private final class RetainedProgressFileOperationService: FileOperationServicing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var moveInvocationCount = 0
+    private var firstMoveProgressHandler: FileOperationProgressHandler?
+    private var secondMoveContinuation: CheckedContinuation<Void, Error>?
+    private var secondMoveDidStart = false
+    private var secondMoveStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func copy(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution,
+        progressHandler: FileOperationProgressHandler?
+    ) async throws {}
+
+    func move(
+        items: [FileItem],
+        to destinationDirectory: URL,
+        conflictResolution: FileConflictResolution,
+        progressHandler: FileOperationProgressHandler?
+    ) async throws {
+        lock.lock()
+        moveInvocationCount += 1
+        let invocation = moveInvocationCount
+        if invocation == 1 {
+            firstMoveProgressHandler = progressHandler
+        }
+        lock.unlock()
+
+        progressHandler?(FileOperationProgress(completedItemCount: 0, totalItemCount: items.count))
+        guard invocation > 1 else {
+            progressHandler?(FileOperationProgress(completedItemCount: items.count, totalItemCount: items.count))
+            return
+        }
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                secondMoveContinuation = continuation
+                secondMoveDidStart = true
+                let waiters = secondMoveStartWaiters
+                secondMoveStartWaiters.removeAll()
+                lock.unlock()
+                waiters.forEach { $0.resume() }
+            }
+        } onCancel: {
+            self.resumeSecondMove(throwing: CancellationError())
+        }
+    }
+
+    func trash(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {}
+    func duplicate(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws {}
+    func compress(items: [FileItem], progressHandler: FileOperationProgressHandler?) async throws -> URL {
+        URL(filePath: "/archive.zip")
+    }
+    func rename(item: FileItem, to newName: String) async throws -> URL { item.url }
+    func batchRename(
+        items: [FileItem],
+        baseName: String,
+        startingNumber: Int,
+        preserveExtensions: Bool
+    ) async throws -> [URL] { [] }
+    func createFolder(named name: String, in directory: URL) async throws -> URL { directory }
+    func createFile(named name: String, in directory: URL) async throws -> URL { directory }
+
+    func waitForSecondMoveToStart() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if secondMoveDidStart {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                secondMoveStartWaiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func reportLateFirstMoveProgress() {
+        lock.lock()
+        let progressHandler = firstMoveProgressHandler
+        lock.unlock()
+        progressHandler?(
+            FileOperationProgress(
+                completedItemCount: 99,
+                totalItemCount: 99,
+                currentItemName: "stale.txt"
+            )
+        )
+    }
+
+    func resumeSecondMove() {
+        resumeSecondMove(throwing: nil)
+    }
+
+    private func resumeSecondMove(throwing error: Error?) {
+        lock.lock()
+        let continuation = secondMoveContinuation
+        secondMoveContinuation = nil
+        lock.unlock()
+        if let error {
+            continuation?.resume(throwing: error)
+        } else {
+            continuation?.resume()
+        }
+    }
+}
+
 private final class SuspendingMoveFileOperationService: FileOperationServicing, @unchecked Sendable {
     private let lock = NSLock()
     private var didStartMove = false
@@ -1313,7 +1722,11 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
         resumeMove(throwing: nil)
     }
 
-    func reportMoveProgress(completedItemCount: Int, totalItemCount: Int) {
+    func reportMoveProgress(
+        completedItemCount: Int,
+        totalItemCount: Int,
+        currentItemName: String? = nil
+    ) {
         lock.lock()
         let progressHandler = protectedMoveProgressHandler
         lock.unlock()
@@ -1321,7 +1734,8 @@ private final class SuspendingMoveFileOperationService: FileOperationServicing, 
         progressHandler?(
             FileOperationProgress(
                 completedItemCount: completedItemCount,
-                totalItemCount: totalItemCount
+                totalItemCount: totalItemCount,
+                currentItemName: currentItemName
             )
         )
     }

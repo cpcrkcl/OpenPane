@@ -397,7 +397,7 @@ struct FilePaneViewModelTests {
         #expect(viewModel.filteredItems == [imageItem, notesItem])
     }
 
-    @Test func filteredItemsSortsByNameWithDirectoriesFirstByDefault() async throws {
+    @Test func filteredItemsSortsByNameAcrossFilesAndDirectories() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let zebraItem = try temporaryDirectory.createDirectoryItem(named: "Zebra")
         let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
@@ -410,7 +410,7 @@ struct FilePaneViewModelTests {
 
         await viewModel.loadCurrentDirectory()
 
-        #expect(viewModel.filteredItems == [zebraItem, alphaItem])
+        #expect(viewModel.filteredItems == [alphaItem, zebraItem])
     }
 
     @Test func filteredItemsCanSortBySize() async throws {
@@ -432,22 +432,26 @@ struct FilePaneViewModelTests {
         #expect(viewModel.filteredItems == [directoryItem, smallItem, largeItem])
     }
 
-    @Test func filteredItemsCanDisableDirectoriesFirst() async throws {
+    @Test func headerSortTogglesNameDirectionAcrossFilesAndDirectories() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
-        let zebraItem = try temporaryDirectory.createDirectoryItem(named: "Zebra")
-        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let bravoFolder = try temporaryDirectory.createDirectoryItem(named: "Bravo")
+        let alphaFile = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let deltaFolder = try temporaryDirectory.createDirectoryItem(named: "Delta")
+        let charlieFile = try temporaryDirectory.createFileItem(named: "Charlie.txt")
         let viewModel = FilePaneViewModel(
             currentURL: temporaryDirectory.url,
             fileBrowserService: MockFileBrowserService(itemsByURL: [
-                temporaryDirectory.url: [zebraItem, alphaItem]
+                temporaryDirectory.url: [bravoFolder, alphaFile, deltaFolder, charlieFile]
             ])
         )
 
         await viewModel.loadCurrentDirectory()
-        viewModel.directoriesFirst = false
+        #expect(viewModel.filteredItems == [alphaFile, bravoFolder, charlieFile, deltaFolder])
+
+        viewModel.applyHeaderSort(.name)
         await viewModel.waitForVisibleItemsUpdate()
 
-        #expect(viewModel.filteredItems == [alphaItem, zebraItem])
+        #expect(viewModel.filteredItems == [deltaFolder, charlieFile, bravoFolder, alphaFile])
     }
 
     @Test func visibleItemsUpdatesWhenSearchTextChanges() async throws {
@@ -537,22 +541,44 @@ struct FilePaneViewModelTests {
         #expect(viewModel.visibleItems == [smallItem, largeItem])
     }
 
-    @Test func visibleItemsUpdatesWhenDirectoriesFirstChanges() async throws {
+    @Test func headerSortsByModifiedDateAcrossFilesAndDirectories() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
-        let zebraItem = try temporaryDirectory.createDirectoryItem(named: "Zebra")
-        let alphaItem = try temporaryDirectory.createFileItem(named: "Alpha.txt")
+        let oldestFolder = try temporaryDirectory.createDirectoryItem(named: "Zulu Folder")
+        let middleFile = try temporaryDirectory.createFileItem(named: "Alpha File.txt")
+        let newestFolder = try temporaryDirectory.createDirectoryItem(named: "Beta Folder")
+        let fileManager = FileManager.default
+        try fileManager.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: oldestFolder.url.path
+        )
+        try fileManager.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: middleFile.url.path
+        )
+        try fileManager.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 3_000)],
+            ofItemAtPath: newestFolder.url.path
+        )
+        let datedOldestFolder = try FileItem(url: oldestFolder.url)
+        let datedMiddleFile = try FileItem(url: middleFile.url)
+        let datedNewestFolder = try FileItem(url: newestFolder.url)
         let viewModel = FilePaneViewModel(
             currentURL: temporaryDirectory.url,
             fileBrowserService: MockFileBrowserService(itemsByURL: [
-                temporaryDirectory.url: [zebraItem, alphaItem]
+                temporaryDirectory.url: [datedNewestFolder, datedOldestFolder, datedMiddleFile]
             ])
         )
 
         await viewModel.loadCurrentDirectory()
-        viewModel.directoriesFirst = false
+        viewModel.applyHeaderSort(.modifiedDate)
         await viewModel.waitForVisibleItemsUpdate()
 
-        #expect(viewModel.visibleItems == [alphaItem, zebraItem])
+        #expect(viewModel.visibleItems == [datedOldestFolder, datedMiddleFile, datedNewestFolder])
+
+        viewModel.applyHeaderSort(.modifiedDate)
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.visibleItems == [datedNewestFolder, datedMiddleFile, datedOldestFolder])
     }
 
     @Test func visibleItemsUpdatesWhenSortDirectionChanges() async throws {
@@ -717,7 +743,7 @@ struct FilePaneViewModelTests {
         #expect(viewModel.recursiveSearchResults == [searchResult])
         #expect(viewModel.filteredItems == [searchResult])
         #expect(viewModel.isShowingRecursiveSearchResults)
-        #expect(viewModel.isLoading == false)
+        #expect(viewModel.isSearchingSubtree == false)
         #expect(viewModel.errorMessage == nil)
     }
 
@@ -742,6 +768,102 @@ struct FilePaneViewModelTests {
         #expect(viewModel.recursiveSearchResults.isEmpty)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
         #expect(viewModel.filteredItems == [localItem])
+    }
+
+    @Test func switchingFromSubtreeSearchToFilterRestoresLiveFolderFiltering() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let matchingLocalItem = try temporaryDirectory.createFileItem(named: "Local Notes.txt")
+        let otherLocalItem = try temporaryDirectory.createFileItem(named: "Photo.jpg")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [matchingLocalItem, otherLocalItem]
+            ]),
+            fileSearchService: MockFileSearchService(results: [searchResult])
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+        await viewModel.triggerSubtreeSearch()
+
+        viewModel.searchMode = .filter
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+        #expect(viewModel.visibleItems == [matchingLocalItem])
+    }
+
+    @Test func subtreeModeDoesNotApplyTheCurrentFolderFilterBeforeSubmission() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let matchingItem = try temporaryDirectory.createFileItem(named: "Notes.txt")
+        let otherItem = try temporaryDirectory.createFileItem(named: "Photo.jpg")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [matchingItem, otherItem]
+            ])
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchMode = .subtree
+        viewModel.searchText = "notes"
+
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(Set(viewModel.visibleItems) == Set([matchingItem, otherItem]))
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+    }
+
+    @Test func editingQueryClearsCompletedSubtreeResults() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let localItem = try temporaryDirectory.createFileItem(named: "Local.txt")
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [localItem]
+            ]),
+            fileSearchService: MockFileSearchService(results: [searchResult])
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+        await viewModel.triggerSubtreeSearch()
+
+        viewModel.searchText = "photos"
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.recursiveSearchResults.isEmpty)
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+        #expect(viewModel.visibleItems == [localItem])
+    }
+
+    @Test func switchingToFilterCancelsInFlightSubtreeSearch() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let localItem = try temporaryDirectory.createFileItem(named: "Local Notes.txt")
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [localItem]
+            ]),
+            fileSearchService: DelayedMockFileSearchService(
+                results: [searchResult],
+                delayNanoseconds: 100_000_000
+            )
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+        let searchTask = Task {
+            await viewModel.triggerSubtreeSearch()
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        viewModel.searchMode = .filter
+        await searchTask.value
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.isSearchingSubtree == false)
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+        #expect(viewModel.visibleItems == [localItem])
     }
 
     @Test func staleRecursiveSearchResultIsDiscardedAfterClearingSearch() async throws {
@@ -787,7 +909,266 @@ struct FilePaneViewModelTests {
 
         #expect(viewModel.errorMessage == "Enter a search term.")
         #expect(viewModel.isShowingRecursiveSearchResults == false)
-        #expect(viewModel.isLoading == false)
+        #expect(viewModel.isSearchingSubtree == false)
+    }
+
+    @Test func performRecursiveSearchQueuesUntilNavigationCompletes() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let slowBrowser = DelayedMockFileBrowserService(
+            itemsByURL: [
+                temporaryDirectory.url: [childDirectory],
+                childDirectory.url: []
+            ],
+            delayNanosecondsByURL: [childDirectory.url: 100_000_000]
+        )
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: slowBrowser,
+            fileSearchService: MockFileSearchService(results: [searchResult])
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+
+        let navigationTask = Task {
+            await viewModel.setDirectory(childDirectory.url)
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        let searchTask = Task {
+            await viewModel.performRecursiveSearch()
+        }
+
+        await Task.yield()
+        #expect(viewModel.isSearchingSubtree)
+
+        await navigationTask.value
+        await searchTask.value
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.isShowingRecursiveSearchResults)
+        #expect(viewModel.recursiveSearchResults == [searchResult])
+        #expect(viewModel.isSearchingSubtree == false)
+    }
+
+    @Test func multipleRecursiveSearchCallersRemainQueuedUntilNavigationCompletes() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let searchResult = try temporaryDirectory.createFileItem(named: "Child/Notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: DelayedMockFileBrowserService(
+                itemsByURL: [childDirectory.url: []],
+                delayNanosecondsByURL: [childDirectory.url: 100_000_000]
+            ),
+            fileSearchService: MockFileSearchService(results: [searchResult])
+        )
+        viewModel.searchText = "notes"
+
+        let navigationTask = Task {
+            await viewModel.setDirectory(childDirectory.url)
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        var firstSearchFinished = false
+        var secondSearchFinished = false
+        let firstSearchTask = Task {
+            await viewModel.performRecursiveSearch()
+            firstSearchFinished = true
+        }
+        await Task.yield()
+        let secondSearchTask = Task {
+            await viewModel.performRecursiveSearch()
+            secondSearchFinished = true
+        }
+        await Task.yield()
+
+        #expect(firstSearchFinished == false)
+        #expect(secondSearchFinished == false)
+
+        await navigationTask.value
+        await firstSearchTask.value
+        await secondSearchTask.value
+
+        #expect(firstSearchFinished)
+        #expect(secondSearchFinished)
+        #expect(viewModel.recursiveSearchResults == [searchResult])
+    }
+
+    @Test func recursiveSearchDoesNotCancelInFlightMetadataEnrichment() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let fullItem = try temporaryDirectory.createFileItem(named: "Notes.txt", contents: "metadata")
+        let lightweightItem = try FileItem(essentialURL: fullItem.url)
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [lightweightItem]
+            ]),
+            fileSearchService: MockFileSearchService(results: [fullItem]),
+            metadataEnricher: { items in
+                try await Task.sleep(nanoseconds: 50_000_000)
+                return try await FilePaneViewModel.enrichMetadata(in: items)
+            }
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+
+        await viewModel.performRecursiveSearch()
+        await viewModel.waitForMetadataEnrichment()
+
+        #expect(viewModel.items.first?.hasExtendedMetadata == true)
+        #expect(viewModel.isShowingRecursiveSearchResults)
+    }
+
+    @Test func navigationCancelsAnInFlightSubtreeSearchWithoutLeavingTheSpinnerActive() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let searchResult = try temporaryDirectory.createFileItem(named: "Nested/Notes.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [childDirectory],
+                childDirectory.url: []
+            ]),
+            fileSearchService: DelayedMockFileSearchService(
+                results: [searchResult],
+                delayNanoseconds: 100_000_000
+            )
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "notes"
+
+        let searchTask = Task {
+            await viewModel.performRecursiveSearch()
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        await viewModel.setDirectory(childDirectory.url)
+        await searchTask.value
+
+        #expect(viewModel.currentURL == childDirectory.url)
+        #expect(viewModel.isSearchingSubtree == false)
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+    }
+
+    @Test func clearingAFilterDoesNotCancelInFlightDirectoryNavigation() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Child")
+        let browser = DelayedMockFileBrowserService(
+            itemsByURL: [
+                temporaryDirectory.url: [childDirectory],
+                childDirectory.url: []
+            ],
+            delayNanosecondsByURL: [childDirectory.url: 100_000_000]
+        )
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: browser
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchText = "child"
+
+        let navigationTask = Task {
+            await viewModel.setDirectory(childDirectory.url)
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        viewModel.clearSearch()
+        await navigationTask.value
+
+        #expect(viewModel.currentURL.standardizedFileURL == childDirectory.url.standardizedFileURL)
+        #expect(viewModel.searchText.isEmpty)
+    }
+
+    @Test func navigateToPathExpandsTildeAndNavigates() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Projects")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [childDirectory],
+                childDirectory.url: []
+            ])
+        )
+        await viewModel.loadCurrentDirectory()
+
+        let succeeded = await viewModel.navigateToPath(childDirectory.url.path)
+
+        #expect(succeeded)
+        #expect(viewModel.currentURL.standardizedFileURL == childDirectory.url.standardizedFileURL)
+    }
+
+    @Test func navigateToPathRejectsMissingDirectory() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService()
+        )
+
+        let succeeded = await viewModel.navigateToPath("/tmp/OpenPaneMissing-\(UUID().uuidString)")
+
+        #expect(succeeded == false)
+        #expect(viewModel.errorMessage?.contains("doesn’t exist") == true)
+    }
+
+    @Test func navigateToPathReportsFailureWhenDirectoryCannotBeLoaded() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Projects")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(errorByURL: [
+                childDirectory.url: FileBrowserError.accessDenied(childDirectory.url)
+            ])
+        )
+
+        let succeeded = await viewModel.navigateToPath(childDirectory.url.path)
+
+        #expect(succeeded == false)
+        #expect(viewModel.currentURL == temporaryDirectory.url)
+        #expect(viewModel.errorMessage == "You do not have permission to open Projects.")
+    }
+
+    @Test func equivalentStandardizedPathRefreshesWithoutAddingHistoryEntry() async {
+        let rootURL = URL(filePath: "/tmp/OpenPane/Folder", directoryHint: .isDirectory)
+        let equivalentURL = rootURL.appendingPathComponent("..", isDirectory: true)
+            .appendingPathComponent("Folder", isDirectory: true)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: MockFileBrowserService()
+        )
+
+        await viewModel.setDirectory(equivalentURL)
+
+        #expect(viewModel.currentURL == rootURL)
+        #expect(viewModel.backStack.isEmpty)
+    }
+
+    @Test func navigateToPathRejectsRelativePaths() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService()
+        )
+
+        let succeeded = await viewModel.navigateToPath("relative/path")
+
+        #expect(succeeded == false)
+        #expect(viewModel.errorMessage == "Enter an absolute path or a path beginning with ~.")
+    }
+
+    @Test func navigateToPathCanLeaveTheNetworkPage() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let childDirectory = try temporaryDirectory.createDirectoryItem(named: "Projects")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [childDirectory.url: []])
+        )
+        await viewModel.navigate(to: .network)
+
+        let succeeded = await viewModel.navigateToPath(childDirectory.url.path)
+
+        #expect(succeeded)
+        #expect(viewModel.currentLocation == .file(childDirectory.url.standardizedFileURL))
     }
 
     @Test func setDirectoryClearsSelectionAndLoadsNewItems() async throws {

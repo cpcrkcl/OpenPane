@@ -9,10 +9,33 @@ import Foundation
 
 struct FilePaneTab: Identifiable, Equatable, Sendable {
     let id: UUID
-    var currentURL: URL
+    var location: PaneLocation
     var items: [FileItem]
     var selectedItems: Set<FileItem>
     var isDirty: Bool
+
+    init(
+        id: UUID = UUID(),
+        location: PaneLocation,
+        items: [FileItem] = [],
+        selectedItems: Set<FileItem> = [],
+        isDirty: Bool = false
+    ) {
+        self.id = id
+        self.location = location
+        self.items = items
+        self.selectedItems = selectedItems
+        self.isDirty = isDirty
+    }
+
+    var currentURL: URL {
+        get {
+            location.fileURL ?? PaneLocation.networkPlaceholderURL
+        }
+        set {
+            location = .file(newValue)
+        }
+    }
 
     init(
         id: UUID = UUID(),
@@ -21,14 +44,16 @@ struct FilePaneTab: Identifiable, Equatable, Sendable {
         selectedItems: Set<FileItem> = [],
         isDirty: Bool = false
     ) {
-        self.id = id
-        self.currentURL = currentURL
-        self.items = items
-        self.selectedItems = selectedItems
-        self.isDirty = isDirty
+        self.init(
+            id: id,
+            location: .file(currentURL),
+            items: items,
+            selectedItems: selectedItems,
+            isDirty: isDirty
+        )
     }
 
     var title: String {
-        currentURL.openPaneDisplayName
+        location.displayName
     }
 }

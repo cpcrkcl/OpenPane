@@ -37,7 +37,11 @@ struct CommandPaletteCommand: Identifiable {
 
 @MainActor
 final class CommandPaletteViewModel: ObservableObject {
-    @Published var query: String
+    @Published var query: String {
+        didSet {
+            clampSelection()
+        }
+    }
     @Published var selectedIndex: Int
     private(set) var commands: [CommandPaletteCommand]
 
@@ -99,7 +103,7 @@ final class CommandPaletteViewModel: ObservableObject {
         if filteredCommands.isEmpty {
             selectedIndex = 0
         } else {
-            selectedIndex = min(selectedIndex, filteredCommands.count - 1)
+            selectedIndex = min(max(selectedIndex, 0), filteredCommands.count - 1)
         }
     }
 }
