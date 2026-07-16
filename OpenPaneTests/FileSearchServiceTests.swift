@@ -119,6 +119,34 @@ struct FileSearchServiceTests {
         #expect(response.skippedFileCount == 0)
     }
 
+    @Test func contentsSearchCountsWindowsAndClassicMacLineEndings() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        _ = try temporaryDirectory.createFile(
+            named: "windows.txt",
+            contents: "first line\r\nsecond line\r\nA needle appears here"
+        )
+        _ = try temporaryDirectory.createFile(
+            named: "classic-mac.txt",
+            contents: "first line\rsecond line\rAnother needle appears here"
+        )
+
+        let response = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "needle",
+            kind: .contents,
+            includeHiddenFiles: false,
+            limit: 500
+        )
+        let matchesByName = Dictionary(
+            uniqueKeysWithValues: response.results.map { ($0.item.name, $0.contentMatch) }
+        )
+
+        #expect(matchesByName["windows.txt"]??.lineNumber == 3)
+        #expect(matchesByName["windows.txt"]??.excerpt == "A needle appears here")
+        #expect(matchesByName["classic-mac.txt"]??.lineNumber == 3)
+        #expect(matchesByName["classic-mac.txt"]??.excerpt == "Another needle appears here")
+    }
+
     @Test func contentsSearchFindsMatchesAcrossReadBoundaries() async throws {
         let temporaryDirectory = try SearchTestTemporaryDirectory()
         let boundaryOffset = 64 * 1_024 - 3

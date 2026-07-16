@@ -14,10 +14,11 @@ struct FileInfoView: View {
     let onRevealInFinder: () -> Void
     let onClose: () -> Void
 
-    @State private var details: FileInfoDetails?
+    @State private var details: FilePreviewMetadata?
     @State private var icon: NSImage?
 
     private let fileIconService = FileIconService.shared
+    private let metadataService: any FilePreviewMetadataServicing = FilePreviewMetadataService()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -45,9 +46,15 @@ struct FileInfoView: View {
                 .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
         }
         .task(id: item.id) {
-            details = await FileInfoDetails.load(for: item.url)
+            details = nil
+            let loadedDetails = try? await metadataService.metadata(for: item.url)
+            guard !Task.isCancelled else {
+                return
+            }
+            details = loadedDetails
         }
         .task(id: item.id) {
+            icon = nil
             let loadedIcon = await fileIconService.icon(for: item)
             guard !Task.isCancelled else {
                 return
@@ -147,53 +154,14 @@ struct FileInfoView: View {
     }
 }
 
-private struct FileInfoDetails: Sendable {
-    let createdDate: Date?
-    let posixPermissions: Int?
-
-    var formattedCreatedDate: String {
-        guard let createdDate else {
-            return "--"
-        }
-
-        return createdDate.formatted(date: .abbreviated, time: .shortened)
-    }
-
-    var permissionsDescription: String {
-        guard let posixPermissions else {
-            return "--"
-        }
-
-        let octal = String(posixPermissions, radix: 8)
-        return "\(Self.symbolicPermissions(for: posixPermissions)) (\(octal))"
-    }
-
-    static func load(for url: URL) async -> FileInfoDetails {
-        await Task.detached(priority: .userInitiated) {
-            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-
-            return FileInfoDetails(
-                createdDate: attributes?[.creationDate] as? Date,
-                posixPermissions: attributes?[.posixPermissions] as? Int
-            )
-        }.value
-    }
-
-    private static func symbolicPermissions(for permissions: Int) -> String {
-        let masksAndCharacters: [(Int, Character)] = [
-            (0o400, "r"), (0o200, "w"), (0o100, "x"),
-            (0o040, "r"), (0o020, "w"), (0o010, "x"),
-            (0o004, "r"), (0o002, "w"), (0o001, "x")
-        ]
-
-        return String(masksAndCharacters.map { mask, character in
-            permissions & mask == mask ? character : "-"
-        })
-    }
-}
-
 private extension FileItem {
     var formattedModifiedDateOrPlaceholder: String {
         formattedModifiedDate.isEmpty ? "--" : formattedModifiedDate
+    }
+}
+
+private extension FilePreviewMetadata {
+    var formattedCreatedDate: String {
+        creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "--"
     }
 }

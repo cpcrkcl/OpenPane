@@ -64,7 +64,7 @@ struct CommandPaletteView: View {
             viewModel.updateCommands(commands)
             isSearchFocused = true
         }
-        .onChange(of: commands.map(\.id)) { _, _ in
+        .onChange(of: commandPresentationSignature) { _, _ in
             viewModel.updateCommands(commands)
         }
         .onExitCommand {
@@ -79,6 +79,13 @@ struct CommandPaletteView: View {
             default:
                 break
             }
+        }
+    }
+
+    private var commandPresentationSignature: [String] {
+        commands.map { command in
+            [command.id, command.title, command.systemImage, command.disabledReason ?? ""]
+                .joined(separator: "\u{0}")
         }
     }
 

@@ -66,8 +66,8 @@ final class SidebarViewModel: ObservableObject {
             self?.updateVisibleMountedVolumes(hiddenIdentifiers: hiddenIdentifiers)
         }
 
-        self.favoritesCancellable = resolvedFavoriteStore.$bookmarks.sink { [weak self] _ in
-            self?.favoriteLocations = resolvedFavoriteStore.favoriteLocations
+        self.favoritesCancellable = resolvedFavoriteStore.$bookmarks.sink { [weak self] bookmarks in
+            self?.favoriteLocations = resolvedFavoriteStore.resolvedFavoriteLocations(from: bookmarks)
         }
 
         if shouldLoadVolumes {

@@ -44,8 +44,9 @@ nonisolated protocol FileBrowserServicing: Sendable {
 /// Constant-size, order-independent signature over the presented entries.
 /// Count plus two commutative 64-bit accumulators keeps monitor comparison O(n)
 /// without retaining or sorting a second directory-sized array. Entry content
-/// modification dates are included so a directory monitor event caused by an
-/// in-place edit does not leave the size and modified columns stale.
+/// sizes and modification dates are included so a directory monitor event
+/// caused by an in-place edit does not leave the size and modified columns
+/// stale, even when a writer preserves the original timestamp.
 nonisolated struct DirectoryFingerprint: Equatable, Sendable {
     let entryCount: Int
     let entryHashXOR: UInt64
@@ -55,7 +56,8 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
     init(
         items: [FileItem],
         directoryModificationDate: Date? = nil,
-        entryModificationDates: [Date?] = []
+        entryModificationDates: [Date?] = [],
+        entryFileSizes: [Int64?] = []
     ) {
         var hashXOR: UInt64 = 0
         var hashSum: UInt64 = 0
@@ -63,7 +65,14 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
             let modificationDate = entryModificationDates.indices.contains(index)
                 ? entryModificationDates[index]
                 : nil
-            let entryHash = Self.stableEntryHash(for: item, modificationDate: modificationDate)
+            let fileSize = entryFileSizes.indices.contains(index)
+                ? entryFileSizes[index]
+                : nil
+            let entryHash = Self.stableEntryHash(
+                for: item,
+                modificationDate: modificationDate,
+                fileSize: fileSize
+            )
             hashXOR ^= entryHash
             hashSum &+= entryHash
         }
@@ -74,7 +83,11 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
         self.directoryModificationDate = directoryModificationDate
     }
 
-    private static func stableEntryHash(for item: FileItem, modificationDate: Date?) -> UInt64 {
+    private static func stableEntryHash(
+        for item: FileItem,
+        modificationDate: Date?,
+        fileSize: Int64?
+    ) -> UInt64 {
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in item.url.path.utf8 {
             hash ^= UInt64(byte)
@@ -88,6 +101,10 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
             hash ^= modificationDate.timeIntervalSinceReferenceDate.bitPattern
             hash &*= 1_099_511_628_211
         }
+        if let fileSize {
+            hash ^= UInt64(bitPattern: fileSize)
+            hash &*= 1_099_511_628_211
+        }
         return hash
     }
 
@@ -99,14 +116,22 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
             let directoryModificationDate = try? directoryURL.resourceValues(
                 forKeys: [.contentModificationDateKey]
             ).contentModificationDate
-            let entryModificationDates = items.map {
-                try? $0.url.resourceValues(forKeys: [.contentModificationDateKey])
-                    .contentModificationDate
+            let entryMetadata = items.map {
+                try? $0.url.resourceValues(
+                    forKeys: [
+                        .contentModificationDateKey,
+                        .fileSizeKey,
+                        .totalFileAllocatedSizeKey
+                    ]
+                )
             }
             return DirectoryFingerprint(
                 items: items,
                 directoryModificationDate: directoryModificationDate,
-                entryModificationDates: entryModificationDates
+                entryModificationDates: entryMetadata.map { $0?.contentModificationDate },
+                entryFileSizes: zip(items, entryMetadata).map { item, values in
+                    Self.fileSize(for: item, resourceValues: values)
+                }
             )
         }
 
@@ -116,12 +141,29 @@ nonisolated struct DirectoryFingerprint: Equatable, Sendable {
             task.cancel()
         }
     }
+
+    fileprivate static func fileSize(
+        for item: FileItem,
+        resourceValues: URLResourceValues?
+    ) -> Int64? {
+        guard !item.isDirectory, let resourceValues else {
+            return nil
+        }
+
+        if let fileSize = resourceValues.fileSize {
+            return Int64(fileSize)
+        }
+
+        return resourceValues.totalFileAllocatedSize.map(Int64.init)
+    }
 }
 
 nonisolated struct DirectorySnapshot: Sendable {
     let items: [FileItem]
     let fingerprint: DirectoryFingerprint?
 }
+
+typealias FileBrowserItemBuilder = @Sendable (URL) throws -> FileItem
 
 extension FileBrowserServicing {
     nonisolated func directorySnapshot(
@@ -148,6 +190,16 @@ extension FileBrowserServicing {
 }
 
 nonisolated struct FileBrowserService: FileBrowserServicing {
+    private let itemBuilder: FileBrowserItemBuilder
+
+    nonisolated init(
+        itemBuilder: @escaping FileBrowserItemBuilder = { url in
+            try FileItem(essentialURL: url)
+        }
+    ) {
+        self.itemBuilder = itemBuilder
+    }
+
     nonisolated func contentsOfDirectory(at url: URL, includeHiddenFiles: Bool) async throws -> [FileItem] {
         try await directorySnapshot(
             at: url,
@@ -163,6 +215,7 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
         includeFingerprint: Bool,
         priority: TaskPriority
     ) async throws -> DirectorySnapshot {
+        let itemBuilder = itemBuilder
         let task = Task.detached(priority: priority) {
             do {
                 try Task.checkCancellation()
@@ -176,6 +229,8 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
                 var resourceKeys = FileItem.essentialResourceKeys
                 if includeFingerprint {
                     resourceKeys.insert(.contentModificationDateKey)
+                    resourceKeys.insert(.fileSizeKey)
+                    resourceKeys.insert(.totalFileAllocatedSizeKey)
                 }
                 let fileURLs = try FileManager.default.contentsOfDirectory(
                     at: url,
@@ -188,12 +243,21 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
 
                 for fileURL in fileURLs {
                     try Task.checkCancellation()
-                    let item = try FileItem(essentialURL: fileURL)
+                    let item: FileItem
+                    do {
+                        item = try itemBuilder(fileURL)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // An entry can disappear between the directory read and
+                        // its metadata lookup. Keep the rest of the readable
+                        // folder available instead of failing the whole pane.
+                        continue
+                    }
 
                     guard includeHiddenFiles || (!item.isHidden && !item.name.hasPrefix(".")) else {
                         continue
                     }
-
                     items.append(item)
                 }
 
@@ -204,20 +268,30 @@ nonisolated struct FileBrowserService: FileBrowserServicing {
                         forKeys: [.contentModificationDateKey]
                     ).contentModificationDate
                     var entryModificationDates: [Date?] = []
+                    var entryFileSizes: [Int64?] = []
                     entryModificationDates.reserveCapacity(items.count)
+                    entryFileSizes.reserveCapacity(items.count)
                     for (index, item) in items.enumerated() {
                         if index.isMultiple(of: 128) {
                             try Task.checkCancellation()
                         }
-                        entryModificationDates.append(
-                            try? item.url.resourceValues(forKeys: [.contentModificationDateKey])
-                                .contentModificationDate
+                        let values = try? item.url.resourceValues(
+                            forKeys: [
+                                .contentModificationDateKey,
+                                .fileSizeKey,
+                                .totalFileAllocatedSizeKey
+                            ]
+                        )
+                        entryModificationDates.append(values?.contentModificationDate)
+                        entryFileSizes.append(
+                            DirectoryFingerprint.fileSize(for: item, resourceValues: values)
                         )
                     }
                     fingerprint = DirectoryFingerprint(
                         items: items,
                         directoryModificationDate: directoryModificationDate,
-                        entryModificationDates: entryModificationDates
+                        entryModificationDates: entryModificationDates,
+                        entryFileSizes: entryFileSizes
                     )
                 } else {
                     fingerprint = nil

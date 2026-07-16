@@ -36,6 +36,40 @@ struct FileIconServiceTests {
         #expect(firstIcon === secondIcon)
     }
 
+    @Test func applicationBundlesKeepTheirDistinctIcons() async throws {
+        let temporaryDirectory = try IconTestTemporaryDirectory()
+        let firstApplication = try temporaryDirectory.createDirectoryItem(named: "First.app")
+        let secondApplication = try temporaryDirectory.createDirectoryItem(named: "Second.app")
+        let loader = DistinctIconLoader()
+        let service = FileIconService(
+            observesMemoryPressure: false,
+            iconLoader: loader.load
+        )
+
+        let firstIcon = await service.icon(for: firstApplication)
+        let secondIcon = await service.icon(for: secondApplication)
+
+        #expect(firstIcon !== secondIcon)
+        #expect(loader.loadCount == 2)
+    }
+
+    @Test func differentDocumentTypesDoNotShareIcons() async throws {
+        let temporaryDirectory = try IconTestTemporaryDirectory()
+        let wordDocument = try temporaryDirectory.createFileItem(named: "Document.docx")
+        let pdfDocument = try temporaryDirectory.createFileItem(named: "Document.pdf")
+        let loader = DistinctIconLoader()
+        let service = FileIconService(
+            observesMemoryPressure: false,
+            iconLoader: loader.load
+        )
+
+        let wordIcon = await service.icon(for: wordDocument)
+        let pdfIcon = await service.icon(for: pdfDocument)
+
+        #expect(wordIcon !== pdfIcon)
+        #expect(loader.loadCount == 2)
+    }
+
     @Test func cacheRemainsBoundedAcrossManyExtensions() async throws {
         let temporaryDirectory = try IconTestTemporaryDirectory()
         let service = FileIconService(
@@ -87,6 +121,29 @@ struct FileIconServiceTests {
         #expect(loader.loadCount == 0)
         #expect(service.inFlightRequestCount == 0)
     }
+
+    @Test func clearingCachePreventsInFlightLookupFromRepopulatingIt() async throws {
+        let temporaryDirectory = try IconTestTemporaryDirectory()
+        let item = try temporaryDirectory.createFileItem(named: "pending.clear")
+        let loader = SuspendedIconLoader()
+        let service = FileIconService(
+            observesMemoryPressure: false,
+            iconLoader: loader.load
+        )
+
+        let request = Task { await service.icon(for: item) }
+        while service.inFlightRequestCount == 0 || !loader.hasStarted {
+            await Task.yield()
+        }
+
+        service.removeAllCachedIcons()
+        #expect(service.inFlightRequestCount == 0)
+        loader.finish()
+        _ = await request.value
+
+        #expect(service.cachedIcon(for: item) == nil)
+        #expect(service.cachedIconCount == 0)
+    }
 }
 
 private final class CountingIconLoader: @unchecked Sendable {
@@ -111,13 +168,77 @@ private final class CountingIconLoader: @unchecked Sendable {
         lock.withLock { protectedLoadedOnMainThread }
     }
 
-    func load(_ url: URL) async -> LoadedFileIcon {
+    func load(_ lookup: FileIconLookup) async -> LoadedFileIcon {
         lock.withLock {
             protectedLoadCount += 1
             protectedLoadedOnMainThread = protectedLoadedOnMainThread || Thread.isMainThread
         }
         try? await Task.sleep(nanoseconds: 20_000_000)
         return loadedIcon
+    }
+}
+
+private final class SuspendedIconLoader: @unchecked Sendable {
+    private let lock = NSLock()
+    private let loadedIcon: LoadedFileIcon
+    private var protectedHasStarted = false
+    private var continuation: CheckedContinuation<LoadedFileIcon, Never>?
+
+    @MainActor
+    init() {
+        loadedIcon = LoadedFileIcon(
+            image: NSImage(size: NSSize(width: 16, height: 16)),
+            cost: 1_024
+        )
+    }
+
+    var hasStarted: Bool {
+        lock.withLock { protectedHasStarted }
+    }
+
+    func load(_ lookup: FileIconLookup) async -> LoadedFileIcon {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                protectedHasStarted = true
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func finish() {
+        let continuation = lock.withLock {
+            let continuation = self.continuation
+            self.continuation = nil
+            return continuation
+        }
+        continuation?.resume(returning: loadedIcon)
+    }
+}
+
+private final class DistinctIconLoader: @unchecked Sendable {
+    private let lock = NSLock()
+    private let icons: [NSImage]
+    private var protectedLoadCount = 0
+
+    @MainActor
+    init() {
+        icons = [
+            NSImage(size: NSSize(width: 16, height: 16)),
+            NSImage(size: NSSize(width: 17, height: 17))
+        ]
+    }
+
+    var loadCount: Int {
+        lock.withLock { protectedLoadCount }
+    }
+
+    func load(_ lookup: FileIconLookup) async -> LoadedFileIcon {
+        let image = lock.withLock {
+            let image = icons[protectedLoadCount % icons.count]
+            protectedLoadCount += 1
+            return image
+        }
+        return LoadedFileIcon(image: image, cost: 1_024)
     }
 }
 

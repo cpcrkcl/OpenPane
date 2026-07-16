@@ -100,6 +100,7 @@ struct FilePaneView: View {
     var isActive: Bool = false
     var paneSide: PaneSide?
     var isPerformingOperation = false
+    var canMoveToOtherPane = true
     var onActivate: () -> Void = {}
     var onMoveTab: @MainActor @Sendable (FilePaneTab.ID, PaneSide, PaneSide, Int?) -> Void = { _, _, _, _ in }
     var onRenameSelected: () -> Void = {}
@@ -107,6 +108,8 @@ struct FilePaneView: View {
     var onDuplicateSelected: () -> Void = {}
     var onDuplicate: (FileItem) -> Void = { _ in }
     var onCompress: (FileItem) -> Void = { _ in }
+    var onAddToFavorites: (FileItem) -> Void = { _ in }
+    var onMoveToOtherPane: (FileItem) -> Void = { _ in }
     var onCreateFolder: () -> Void = {}
     var onCreateFile: () -> Void = {}
     var onPaste: () -> Void = {}
@@ -819,6 +822,10 @@ struct FilePaneView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(CatppuccinMochaTheme.primaryText)
                 .onSubmit {
+                    guard viewModel.searchMode.isSubtreeSearch else {
+                        return
+                    }
+
                     Task {
                         await viewModel.performRecursiveSearch()
                     }
@@ -902,6 +909,13 @@ struct FilePaneView: View {
                                 },
                                 onCalculateFolderSize: {
                                     viewModel.calculateFolderSizeForContextMenu(clickedItem: item)
+                                },
+                                onAddToFavorites: {
+                                    onAddToFavorites(item)
+                                },
+                                canMoveToOtherPane: canMoveToOtherPane,
+                                onMoveToOtherPane: {
+                                    onMoveToOtherPane(item)
                                 },
                                 onRename: onRenameSelected,
                                 onTrash: onTrashSelected,
@@ -1612,6 +1626,9 @@ private struct FilePaneRowView: View {
     let onCopyItems: () -> Void
     let onGetInfo: () -> Void
     let onCalculateFolderSize: () -> Void
+    let onAddToFavorites: () -> Void
+    let canMoveToOtherPane: Bool
+    let onMoveToOtherPane: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
     let onDuplicate: () -> Void
@@ -1805,6 +1822,9 @@ private struct FilePaneRowView: View {
                 onCopyItems: onCopyItems,
                 onGetInfo: onGetInfo,
                 onCalculateFolderSize: onCalculateFolderSize,
+                onAddToFavorites: onAddToFavorites,
+                canMoveToOtherPane: canMoveToOtherPane,
+                onMoveToOtherPane: onMoveToOtherPane,
                 onRename: onRename,
                 onTrash: onTrash,
                 onDuplicate: onDuplicate,
@@ -1898,7 +1918,8 @@ extension FilePaneRowView: Equatable {
             lhs.isKeyboardFocused == rhs.isKeyboardFocused &&
             lhs.isPaneActive == rhs.isPaneActive &&
             lhs.paneSide == rhs.paneSide &&
-            lhs.isOperationInProgress == rhs.isOperationInProgress
+            lhs.isOperationInProgress == rhs.isOperationInProgress &&
+            lhs.canMoveToOtherPane == rhs.canMoveToOtherPane
     }
 }
 
@@ -1942,12 +1963,13 @@ private struct FileIconImage: View {
         .frame(width: 17, height: 17)
         .opacity(item.isDirectory ? 1 : 0.92)
         .layoutPriority(1)
-        .task(id: item.id) {
+        .task(id: item) {
             if let cachedIcon = FileIconService.shared.cachedIcon(for: item) {
                 icon = cachedIcon
                 return
             }
 
+            icon = nil
             let loadedIcon = await FileIconService.shared.icon(for: item)
             guard !Task.isCancelled else {
                 return
@@ -1969,6 +1991,9 @@ private struct FileItemContextMenu: View {
     let onCopyItems: () -> Void
     let onGetInfo: () -> Void
     let onCalculateFolderSize: () -> Void
+    let onAddToFavorites: () -> Void
+    let canMoveToOtherPane: Bool
+    let onMoveToOtherPane: () -> Void
     let onRename: () -> Void
     let onTrash: () -> Void
     let onDuplicate: () -> Void
@@ -2019,6 +2044,13 @@ private struct FileItemContextMenu: View {
         if item.isDirectory {
             Button {
                 onPrepare()
+                onAddToFavorites()
+            } label: {
+                Label("Add to Favorites", systemImage: "star")
+            }
+
+            Button {
+                onPrepare()
                 onCalculateFolderSize()
             } label: {
                 Label("Calculate Folder Size", systemImage: "sum")
@@ -2031,6 +2063,14 @@ private struct FileItemContextMenu: View {
         } label: {
             Label("Rename", systemImage: "pencil")
         }
+
+        Button {
+            onPrepare()
+            onMoveToOtherPane()
+        } label: {
+            Label("Move to Other Pane", systemImage: "arrow.right")
+        }
+        .disabled(!canMoveToOtherPane)
 
         Button {
             onPrepare()

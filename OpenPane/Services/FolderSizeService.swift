@@ -34,6 +34,8 @@ nonisolated protocol FolderSizeServicing: Sendable {
     nonisolated func invalidateDescendants(of directoryURL: URL)
 }
 
+typealias FolderSizeCalculation = @Sendable (URL) async throws -> FolderSizeResult
+
 nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Sendable {
     private struct CacheEntry {
         let result: FolderSizeResult
@@ -43,8 +45,10 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
     private let lock = NSLock()
     private let maximumCacheEntryCount: Int
     private let cacheTTL: TimeInterval
+    private let calculation: FolderSizeCalculation
     private var cachedResultsByURL: [URL: CacheEntry] = [:]
     private var cacheURLsInRecencyOrder: [URL] = []
+    private var invalidationGeneration: UInt64 = 0
 
     #if DEBUG
     nonisolated var cachedResultCount: Int {
@@ -57,10 +61,14 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
     /// LRU eviction above 128 entries. Cache reads never touch the filesystem.
     nonisolated init(
         maximumCacheEntryCount: Int = 128,
-        cacheTTL: TimeInterval = 30
+        cacheTTL: TimeInterval = 30,
+        calculation: @escaping FolderSizeCalculation = { folderURL in
+            try await FolderSizeService.calculateSize(of: folderURL)
+        }
     ) {
         self.maximumCacheEntryCount = max(1, maximumCacheEntryCount)
         self.cacheTTL = max(0, cacheTTL)
+        self.calculation = calculation
     }
 
     nonisolated func size(of folderURL: URL) async throws -> FolderSizeResult {
@@ -74,8 +82,19 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
 
         try Task.checkCancellation()
 
-        let result = try await Self.calculateSize(of: folderURL)
-        store(result, for: standardizedURL)
+        let expectedInvalidationGeneration = lock.withLock { invalidationGeneration }
+        let result = try await calculation(folderURL)
+        try Task.checkCancellation()
+        guard store(
+            result,
+            for: standardizedURL,
+            expectedInvalidationGeneration: expectedInvalidationGeneration
+        ) else {
+            // Invalidation means the directory changed while it was being
+            // scanned. Treat that snapshot like cancellation so callers do
+            // not publish a result known to be stale.
+            throw CancellationError()
+        }
 
         return result
     }
@@ -88,6 +107,7 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
         let standardizedURL = folderURL.standardizedFileURL
 
         lock.lock()
+        invalidationGeneration &+= 1
         cachedResultsByURL[standardizedURL] = nil
         cacheURLsInRecencyOrder.removeAll { $0 == standardizedURL }
         lock.unlock()
@@ -97,6 +117,7 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
         let standardizedDirectoryURL = directoryURL.standardizedFileURL
 
         lock.lock()
+        invalidationGeneration &+= 1
         let invalidatedURLs = cachedResultsByURL.keys.filter {
             $0 == standardizedDirectoryURL || $0.isDescendant(of: standardizedDirectoryURL)
         }
@@ -105,7 +126,7 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
         lock.unlock()
     }
 
-    private nonisolated static func calculateSize(of folderURL: URL) async throws -> FolderSizeResult {
+    fileprivate nonisolated static func calculateSize(of folderURL: URL) async throws -> FolderSizeResult {
         let task = Task.detached(priority: .utility) {
             try Task.checkCancellation()
 
@@ -225,8 +246,16 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
         return entry.result
     }
 
-    private nonisolated func store(_ result: FolderSizeResult, for url: URL) {
+    private nonisolated func store(
+        _ result: FolderSizeResult,
+        for url: URL,
+        expectedInvalidationGeneration: UInt64
+    ) -> Bool {
         lock.lock()
+        guard invalidationGeneration == expectedInvalidationGeneration else {
+            lock.unlock()
+            return false
+        }
         cachedResultsByURL[url] = CacheEntry(
             result: result,
             insertionUptime: ProcessInfo.processInfo.systemUptime
@@ -240,6 +269,7 @@ nonisolated final class FolderSizeService: FolderSizeServicing, @unchecked Senda
             cachedResultsByURL[leastRecentlyUsedURL] = nil
         }
         lock.unlock()
+        return true
     }
 }
 

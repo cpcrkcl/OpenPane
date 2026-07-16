@@ -30,6 +30,7 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case moveToTrash
     case searchSubtree
     case goToFolder
+    case togglePreviewPanel
 
     var id: String {
         rawValue
@@ -77,6 +78,8 @@ enum OpenPaneShortcutAction: String, CaseIterable, Identifiable, Sendable {
             "Search subtree"
         case .goToFolder:
             "Go to folder"
+        case .togglePreviewPanel:
+            "Show or hide preview panel"
         }
     }
 }
@@ -324,7 +327,8 @@ final class KeyboardShortcutStore: ObservableObject {
         .newFile: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "n"), usesCommand: true, usesShift: false, usesOption: true, usesControl: false),
         .moveToTrash: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "delete"), usesCommand: true, usesShift: false, usesOption: false, usesControl: false),
         .searchSubtree: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "f"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false),
-        .goToFolder: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "g"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false)
+        .goToFolder: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "g"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false),
+        .togglePreviewPanel: OpenPaneKeyboardShortcut(key: ShortcutKey(rawValue: "p"), usesCommand: true, usesShift: true, usesOption: false, usesControl: false)
     ]
 }
 

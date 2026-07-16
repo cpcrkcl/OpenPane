@@ -12,6 +12,36 @@ import Testing
 
 @MainActor
 struct DualPaneViewModelTests {
+    @Test func activePreviewPublisherTracksFocusedItemAndActivePane() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let leftItem = try temporaryDirectory.createSourceFile(named: "left.txt", contents: "left")
+        let rightItem = try temporaryDirectory.createDestinationFile(named: "right.txt", contents: "right")
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: FileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: FileBrowserService()
+        )
+        await leftPane.loadCurrentDirectory()
+        await rightPane.loadCurrentDirectory()
+        await leftPane.waitForVisibleItemsUpdate()
+        await rightPane.waitForVisibleItemsUpdate()
+        let loadedLeftItem = try #require(leftPane.visibleItems.first(where: { $0.name == leftItem.name }))
+        let loadedRightItem = try #require(rightPane.visibleItems.first(where: { $0.name == rightItem.name }))
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        var previewedItems: [FileItem?] = []
+        let cancellable = viewModel.activePreviewTargetDidChange.sink { previewedItems.append($0?.item) }
+
+        leftPane.selectFileListItem(loadedLeftItem, commandModifier: false, shiftModifier: false)
+        rightPane.selectFileListItem(loadedRightItem, commandModifier: false, shiftModifier: false)
+        viewModel.setActivePane(.right)
+
+        #expect(previewedItems.compactMap { $0 }.last?.id == loadedRightItem.id)
+        _ = cancellable
+    }
+
     @Test func selectionAndFilterChangesDoNotFanOutThroughDualPane() async throws {
         let temporaryDirectory = try DualPaneTestTemporaryDirectory()
         let item = try temporaryDirectory.createSourceFile(named: "item.txt", contents: "item")
@@ -47,6 +77,32 @@ struct DualPaneViewModelTests {
 
         #expect(signalCount == 1)
         _ = cancellable
+    }
+
+    @Test func addingFolderFromContextMenuPublishesSidebarFavorite() throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let folder = try temporaryDirectory.createSourceFolder(named: "Projects")
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        let suiteName = "OpenPaneContextMenuFavorites-\(UUID().uuidString)"
+        let favoriteStore = FavoriteStore(userDefaults: UserDefaults(suiteName: suiteName)!)
+        let sidebarViewModel = SidebarViewModel(favoriteStore: favoriteStore)
+
+        try viewModel.addFolderToFavorites(folder, using: sidebarViewModel)
+
+        #expect(sidebarViewModel.favoriteLocations.map(\.name) == ["Projects"])
+        #expect(
+            sidebarViewModel.favoriteLocations.first?.url.resolvingSymlinksInPath() ==
+                folder.url.resolvingSymlinksInPath()
+        )
+        #expect(sidebarViewModel.containsFavorite(url: folder.url))
     }
 
     @Test func ordinaryDropCopiesImmediatelyWithoutGenericChooser() {
@@ -157,6 +213,34 @@ struct DualPaneViewModelTests {
                 targetPaneSide: .right,
                 hasPotentialConflict: false
             ) == .perform(.copy)
+        )
+    }
+
+    @Test func crossPaneMoveInfersSourceWhenDragMetadataIsStripped() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let sourceItem = try temporaryDirectory.createSourceFile(named: "source.txt", contents: "source")
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let viewModel = DualPaneViewModel(leftPane: leftPane, rightPane: rightPane)
+        leftPane.items = [sourceItem]
+        await leftPane.waitForVisibleItemsUpdate()
+
+        let inferredSide = viewModel.validatedDropSourcePaneSide(nil, fileURLs: [sourceItem.url])
+
+        #expect(inferredSide == .left)
+        #expect(
+            FileDropPreparationDecision.forDrop(
+                defaultAction: .copy,
+                sourcePaneSide: inferredSide,
+                targetPaneSide: .right,
+                hasPotentialConflict: false
+            ) == .perform(.move)
         )
     }
 
@@ -972,6 +1056,39 @@ struct DualPaneViewModelTests {
         #expect(viewModel.operationStatusMessage == "Copied 1 item to Destination.")
     }
 
+    @Test func copyDroppedFileURLsPreservesDistinctSymlinksToTheSameTarget() async throws {
+        let temporaryDirectory = try DualPaneTestTemporaryDirectory()
+        let targetItem = try temporaryDirectory.createSourceFile(named: "target.txt", contents: "shared")
+        let firstLinkURL = temporaryDirectory.sourceURL.appendingPathComponent("first-link.txt")
+        let secondLinkURL = temporaryDirectory.sourceURL.appendingPathComponent("second-link.txt")
+        try FileManager.default.createSymbolicLink(at: firstLinkURL, withDestinationURL: targetItem.url)
+        try FileManager.default.createSymbolicLink(at: secondLinkURL, withDestinationURL: targetItem.url)
+        let leftPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.sourceURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let rightPane = FilePaneViewModel(
+            currentURL: temporaryDirectory.destinationURL,
+            fileBrowserService: EmptyFileBrowserService()
+        )
+        let fileOperationService = MockFileOperationService()
+        let viewModel = DualPaneViewModel(
+            leftPane: leftPane,
+            rightPane: rightPane,
+            fileOperationService: fileOperationService
+        )
+
+        await viewModel.copyDroppedFileURLs(
+            [firstLinkURL, secondLinkURL],
+            sourcePaneSide: .left,
+            to: temporaryDirectory.destinationURL,
+            in: .right
+        )
+
+        #expect(fileOperationService.copiedItems.map(\.url) == [firstLinkURL, secondLinkURL])
+        #expect(viewModel.operationStatusMessage == "Copied 2 items to Destination.")
+    }
+
     @Test func copyDroppedFileURLsCancelsCollisionWithoutOverwriting() async throws {
         let temporaryDirectory = try DualPaneTestTemporaryDirectory()
         let sourceItem = try temporaryDirectory.createSourceFile(named: "collision.txt", contents: "source")
@@ -1524,13 +1641,13 @@ private final class RetainedProgressFileOperationService: FileOperationServicing
         conflictResolution: FileConflictResolution,
         progressHandler: FileOperationProgressHandler?
     ) async throws {
-        lock.lock()
-        moveInvocationCount += 1
-        let invocation = moveInvocationCount
-        if invocation == 1 {
-            firstMoveProgressHandler = progressHandler
+        let invocation = lock.withLock {
+            moveInvocationCount += 1
+            if moveInvocationCount == 1 {
+                firstMoveProgressHandler = progressHandler
+            }
+            return moveInvocationCount
         }
-        lock.unlock()
 
         progressHandler?(FileOperationProgress(completedItemCount: 0, totalItemCount: items.count))
         guard invocation > 1 else {
@@ -1782,6 +1899,12 @@ private struct DualPaneTestTemporaryDirectory {
         let fileURL = sourceURL.appendingPathComponent(name)
         try contents.write(to: fileURL, atomically: true, encoding: .utf8)
         return try FileItem(url: fileURL)
+    }
+
+    func createSourceFolder(named name: String) throws -> FileItem {
+        let folderURL = sourceURL.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: false)
+        return try FileItem(url: folderURL)
     }
 
     func createDestinationFile(named name: String, contents: String) throws -> FileItem {

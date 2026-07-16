@@ -49,6 +49,7 @@ private final class BrowserWindowRegistry {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var commandPaletteMonitor: Any?
 
@@ -72,6 +73,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return !restoreBrowserWindowForReopen()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard PreviewEditSessionRegistry.shared.hasDirtySessions else {
+            return .terminateNow
+        }
+
+        PreviewEditSessionRegistry.shared.resolveApplicationTermination { shouldTerminate in
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -183,6 +195,12 @@ struct OpenPaneApp: App {
         }
         .defaultSize(width: 1240, height: 760)
         .commands {
+            CommandGroup(after: .sidebar) {
+                Button("Show/Hide Preview Panel") {
+                    NotificationCenter.default.post(name: .togglePreviewPanel, object: nil)
+                }
+            }
+
             CommandMenu("Tools") {
                 Button("Command Palette") {
                     NotificationCenter.default.post(name: .openCommandPalette, object: nil)

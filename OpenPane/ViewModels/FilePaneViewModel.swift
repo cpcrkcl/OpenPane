@@ -217,7 +217,11 @@ final class FilePaneViewModel: ObservableObject {
                 return
             }
 
-            if searchMode == .filter,
+            // Recursive results are specific to the search kind that produced
+            // them. Invalidate both completed and in-flight work when moving
+            // between Names and Contents so an old response cannot be shown
+            // under the newly selected mode.
+            if searchMode.fileSearchKind != oldValue.fileSearchKind,
                isShowingRecursiveSearchResults || recursiveSearchTask != nil || pendingSubtreeSearch {
                 clearRecursiveSearch(clearSelection: false)
             }
@@ -1611,9 +1615,16 @@ final class FilePaneViewModel: ObservableObject {
         let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let shouldSortSourceItems = sortedItemsCacheGeneration != sourceGeneration
         let unsortedSourceItems = isShowingRecursiveSearchResults ? recursiveSearchResults : items
+        // A sort-only invalidation can safely reuse the previously sorted
+        // array as input. If the source rows changed before the sort setting,
+        // however, that cache is more than one generation old and using it
+        // would permanently hide the newly loaded rows.
+        let canReuseCachedSortInput = preferCachedSortInput &&
+            !sortedItemsCache.isEmpty &&
+            sortedItemsCacheGeneration == sourceGeneration - 1
         let request = VisibleItemsRequest(
             sourceItems: shouldSortSourceItems
-                ? (preferCachedSortInput && !sortedItemsCache.isEmpty ? sortedItemsCache : unsortedSourceItems)
+                ? (canReuseCachedSortInput ? sortedItemsCache : unsortedSourceItems)
                 : sortedItemsCache,
             filterText: isShowingRecursiveSearchResults || searchMode.isSubtreeSearch || trimmedSearchText.isEmpty
                 ? nil

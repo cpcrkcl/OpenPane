@@ -22,6 +22,209 @@ struct FileOperationServiceTests {
         #expect(copiedContents == "copy me")
     }
 
+    @Test func nativeTransferRefusesToOverwriteAnExistingDestination() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "source.txt", contents: "source")
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("staging.tmp")
+        try "owned by another operation".write(to: destinationURL, atomically: true, encoding: .utf8)
+
+        var didThrow = false
+        do {
+            try CopyfileTransferService().copyItem(
+                at: sourceFile.url,
+                to: destinationURL,
+                progressHandler: { _ in },
+                isCancelled: { false }
+            )
+        } catch {
+            didThrow = true
+        }
+
+        #expect(didThrow)
+        #expect(try String(contentsOf: destinationURL, encoding: .utf8) == "owned by another operation")
+    }
+
+    @Test func nativeRecursiveTransferRefusesExistingDestinationFolder() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFolderURL = try temporaryDirectory.createSourceDirectory(named: "Source Folder")
+        try "source".write(
+            to: sourceFolderURL.appendingPathComponent("source.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent(
+            "staging.tmp",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: false)
+        let competingFileURL = destinationURL.appendingPathComponent("competitor.txt")
+        try "owned by another operation".write(to: competingFileURL, atomically: true, encoding: .utf8)
+
+        var didThrow = false
+        do {
+            try CopyfileTransferService().copyItem(
+                at: sourceFolderURL,
+                to: destinationURL,
+                progressHandler: { _ in },
+                isCancelled: { false }
+            )
+        } catch {
+            didThrow = true
+        }
+
+        #expect(didThrow)
+        #expect(try String(contentsOf: competingFileURL, encoding: .utf8) == "owned by another operation")
+        #expect(FileManager.default.fileExists(atPath: destinationURL.appendingPathComponent("source.txt").path) == false)
+    }
+
+    @Test func stagingCollisionDoesNotDeleteDestinationOwnedByAnotherOperation() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "source.txt", contents: "source")
+        let transferService = StagingCollisionTransferService()
+
+        await #expect(throws: FileOperationError.self) {
+            try await FileOperationService(fileTransferService: transferService).copy(
+                items: [sourceFile],
+                to: temporaryDirectory.destinationURL
+            )
+        }
+
+        let collidedURL = try #require(transferService.destinationURL)
+        #expect(FileManager.default.fileExists(atPath: collidedURL.path))
+        #expect(try String(contentsOf: collidedURL, encoding: .utf8) == "owned by another operation")
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+    }
+
+    @Test func latePublishCollisionRemovesOwnedStagingCopy() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "source.txt", contents: "source")
+        let fileSystem = FailingFileSystem(exclusiveMoveError: POSIXError(.EEXIST))
+
+        await #expect(throws: FileOperationError.self) {
+            try await FileOperationService(
+                fileSystem: fileSystem,
+                fileTransferService: SimulatedTransferService(intermediateByteCount: 1)
+            ).copy(
+                items: [sourceFile],
+                to: temporaryDirectory.destinationURL
+            )
+        }
+
+        #expect(try temporaryDirectory.transferStagingURLs().isEmpty)
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: temporaryDirectory.destinationURL.appendingPathComponent("source.txt").path
+            ) == false
+        )
+    }
+
+    @Test func nativeTransferReportsAggregateBytesForNestedFolder() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFolderURL = try temporaryDirectory.createSourceDirectory(named: "Folder")
+        try Data(repeating: 0x41, count: 12_345).write(
+            to: sourceFolderURL.appendingPathComponent("first.bin")
+        )
+        let nestedFolderURL = sourceFolderURL.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedFolderURL, withIntermediateDirectories: false)
+        try Data(repeating: 0x42, count: 54_321).write(
+            to: nestedFolderURL.appendingPathComponent("second.bin")
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o751],
+            ofItemAtPath: sourceFolderURL.path
+        )
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("Folder", isDirectory: true)
+        let progressRecorder = ByteProgressRecorder()
+
+        try CopyfileTransferService().copyItem(
+            at: sourceFolderURL,
+            to: destinationURL,
+            progressHandler: progressRecorder.append,
+            isCancelled: { false }
+        )
+
+        #expect(progressRecorder.byteCounts.last == 66_666)
+        #expect(zip(progressRecorder.byteCounts, progressRecorder.byteCounts.dropFirst()).allSatisfy(<=))
+        #expect(
+            try Data(contentsOf: destinationURL.appendingPathComponent("first.bin")).count ==
+                12_345
+        )
+        #expect(
+            try Data(
+                contentsOf: destinationURL
+                    .appendingPathComponent("Nested", isDirectory: true)
+                    .appendingPathComponent("second.bin")
+            ).count == 54_321
+        )
+        let destinationAttributes = try FileManager.default.attributesOfItem(atPath: destinationURL.path)
+        #expect(destinationAttributes[.posixPermissions] as? Int == 0o751)
+    }
+
+    @Test func nativeTransferPreservesSymlinkInsteadOfCopyingItsTarget() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let targetURL = temporaryDirectory.sourceURL.appendingPathComponent("target.txt")
+        try "target".write(to: targetURL, atomically: true, encoding: .utf8)
+        let sourceLinkURL = temporaryDirectory.sourceURL.appendingPathComponent("link.txt")
+        try FileManager.default.createSymbolicLink(
+            atPath: sourceLinkURL.path,
+            withDestinationPath: targetURL.lastPathComponent
+        )
+        let destinationLinkURL = temporaryDirectory.destinationURL.appendingPathComponent("link.txt")
+
+        try CopyfileTransferService().copyItem(
+            at: sourceLinkURL,
+            to: destinationLinkURL,
+            progressHandler: { _ in },
+            isCancelled: { false }
+        )
+
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: destinationLinkURL.path) == "target.txt")
+    }
+
+    @Test func copyPreservesDanglingSymbolicLink() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceLinkURL = temporaryDirectory.sourceURL.appendingPathComponent("dangling-link")
+        try FileManager.default.createSymbolicLink(
+            atPath: sourceLinkURL.path,
+            withDestinationPath: "missing-target"
+        )
+        let sourceLink = try FileItem(url: sourceLinkURL)
+
+        try await FileOperationService().copy(
+            items: [sourceLink],
+            to: temporaryDirectory.destinationURL
+        )
+
+        let destinationLinkURL = temporaryDirectory.destinationURL.appendingPathComponent("dangling-link")
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(atPath: destinationLinkURL.path) ==
+                "missing-target"
+        )
+    }
+
+    @Test func danglingDestinationSymlinkIsDetectedAsAConflict() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "link", contents: "source")
+        let destinationLinkURL = temporaryDirectory.destinationURL.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(
+            atPath: destinationLinkURL.path,
+            withDestinationPath: "missing-target"
+        )
+
+        await #expect(throws: FileOperationError.operationCancelled(destinationLinkURL)) {
+            try await FileOperationService().copy(
+                items: [sourceFile],
+                to: temporaryDirectory.destinationURL
+            )
+        }
+
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(atPath: destinationLinkURL.path) ==
+                "missing-target"
+        )
+    }
+
     @Test func copyReportsByteAndItemProgress() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let firstFile = try temporaryDirectory.createFile(named: "first.txt", contents: "one")
@@ -91,6 +294,27 @@ struct FileOperationServiceTests {
 
         #expect(transferService.copyCount == 0)
         #expect(progressRecorder.progresses.allSatisfy { $0.completedByteCount == nil && $0.totalByteCount == nil })
+    }
+
+    @Test func sameVolumeMoveDoesNotReplaceDestinationCreatedAfterPreflight() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "move.txt", contents: "source")
+        let fileSystem = LateMoveCollisionFileSystem()
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("move.txt")
+
+        await #expect(throws: FileOperationError.self) {
+            try await FileOperationService(
+                fileSystem: fileSystem,
+                volumeIdentityProvider: FixedVolumeIdentityProvider(isSameVolume: true)
+            ).move(
+                items: [sourceFile],
+                to: temporaryDirectory.destinationURL
+            )
+        }
+
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+        #expect(try String(contentsOf: sourceFile.url, encoding: .utf8) == "source")
+        #expect(try String(contentsOf: destinationURL, encoding: .utf8) == "owned by another operation")
     }
 
     @Test func cancellationRemovesOnlyCurrentStagingDestination() async throws {
@@ -1074,6 +1298,19 @@ private final class ProgressRecorder: @unchecked Sendable {
     }
 }
 
+private final class ByteProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var protectedByteCounts: [Int64] = []
+
+    var byteCounts: [Int64] {
+        lock.withLock { protectedByteCounts }
+    }
+
+    func append(_ byteCount: Int64) {
+        lock.withLock { protectedByteCounts.append(byteCount) }
+    }
+}
+
 private final class SimulatedTransferService: FileTransferServicing, @unchecked Sendable {
     private let lock = NSLock()
     private let intermediateByteCount: Int64
@@ -1133,6 +1370,26 @@ private final class CancellingTransferService: FileTransferServicing, @unchecked
         try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
         let byteCount = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         progressHandler(Int64(byteCount))
+    }
+}
+
+private final class StagingCollisionTransferService: FileTransferServicing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var protectedDestinationURL: URL?
+
+    var destinationURL: URL? {
+        lock.withLock { protectedDestinationURL }
+    }
+
+    func copyItem(
+        at sourceURL: URL,
+        to destinationURL: URL,
+        progressHandler: @escaping @Sendable (Int64) -> Void,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) throws {
+        lock.withLock { protectedDestinationURL = destinationURL }
+        try "owned by another operation".write(to: destinationURL, atomically: true, encoding: .utf8)
+        throw POSIXError(.EEXIST)
     }
 }
 
@@ -1326,6 +1583,58 @@ private final class FailingFileSystem: FileSystemOperating, @unchecked Sendable 
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: []
+        )
+    }
+
+    func createDirectory(at url: URL) throws {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+    }
+
+    func createFile(at url: URL) -> Bool {
+        FileManager.default.createFile(atPath: url.path, contents: Data())
+    }
+}
+
+private final class LateMoveCollisionFileSystem: FileSystemOperating, @unchecked Sendable {
+    func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    func moveItem(at sourceURL: URL, to destinationURL: URL) throws {
+        try "owned by another operation".write(to: destinationURL, atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: destinationURL)
+        try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+    }
+
+    func moveItemExclusively(at sourceURL: URL, to destinationURL: URL) throws {
+        try "owned by another operation".write(to: destinationURL, atomically: true, encoding: .utf8)
+        try FileManagerFileSystem().moveItemExclusively(at: sourceURL, to: destinationURL)
+    }
+
+    func removeItem(at url: URL) throws {
+        try FileManager.default.removeItem(at: url)
+    }
+
+    func replaceItem(at originalURL: URL, withItemAt replacementURL: URL) throws {
+        _ = try FileManager.default.replaceItemAt(originalURL, withItemAt: replacementURL)
+    }
+
+    func fileExists(at url: URL) -> Bool {
+        FileManagerFileSystem().fileExists(at: url)
+    }
+
+    func fileExists(at url: URL, isDirectory: inout ObjCBool) -> Bool {
+        FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+    }
+
+    func isWritableFile(at url: URL) -> Bool {
+        FileManager.default.isWritableFile(atPath: url.path)
+    }
+
+    func contentsOfDirectory(at url: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey]
         )
     }
 

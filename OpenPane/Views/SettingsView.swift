@@ -338,10 +338,16 @@ private struct ShortcutCaptureView: NSViewRepresentable {
         nsView.onCancel = onCancel
 
         guard isRecording else {
+            if nsView.window?.firstResponder === nsView {
+                nsView.window?.makeFirstResponder(nil)
+            }
             return
         }
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak nsView] in
+            guard let nsView, nsView.isRecording else {
+                return
+            }
             nsView.window?.makeFirstResponder(nsView)
         }
     }

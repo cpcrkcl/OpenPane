@@ -12,12 +12,28 @@ import Testing
 @MainActor
 struct SessionPersistenceServiceTests {
     @Test func encodingAndDecodingSessionStatePreservesPaneAndTabData() throws {
-        let state = sampleSessionState()
+        var state = sampleSessionState()
+        state.isPreviewPanelVisible = false
+        state.previewPanelWidth = 412
         let data = try JSONEncoder().encode(state)
 
         let decoded = try JSONDecoder().decode(SessionState.self, from: data)
 
         #expect(decoded == state)
+    }
+
+    @Test func legacySessionDefaultsToVisiblePreviewPanel() throws {
+        let state = sampleSessionState()
+        let encoded = try JSONEncoder().encode(state)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "isPreviewPanelVisible")
+        object.removeValue(forKey: "previewPanelWidth")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(SessionState.self, from: legacyData)
+
+        #expect(decoded.isPreviewPanelVisible)
+        #expect(decoded.previewPanelWidth == 320)
     }
 
     @Test func restoringMissingFolderFallsBackToHomeDirectory() {
@@ -80,6 +96,8 @@ struct SessionPersistenceServiceTests {
         #expect(viewModel.rightPane.activeTabID == rightActiveTabID)
         #expect(viewModel.rightPane.currentURL == rightURL)
         #expect(viewModel.splitLeftPaneFraction == 0.42)
+        #expect(viewModel.isPreviewPanelVisible)
+        #expect(viewModel.previewPanelWidth == 320)
     }
 
     @Test func corruptSavedDataFallsBackSafely() {

@@ -49,10 +49,8 @@ nonisolated enum NetworkServerAddress {
         let candidate: String
         if trimmedAddress.contains("://") {
             candidate = trimmedAddress
-        } else if trimmedAddress.hasPrefix("//") {
-            candidate = "\(smbScheme):\(trimmedAddress)"
         } else {
-            candidate = "\(smbScheme)://\(trimmedAddress)"
+            candidate = schemelessSMBURLString(trimmedAddress)
         }
 
         guard let url = URL(string: candidate) else {
@@ -86,7 +84,10 @@ nonisolated enum NetworkServerAddress {
 
         var components = URLComponents()
         components.scheme = smbScheme
-        components.host = host.lowercased()
+        let normalizedHost = host.lowercased()
+        components.host = normalizedHost.contains(":")
+            ? "[\(normalizedHost)]"
+            : normalizedHost
         components.port = url.port
 
         var path = url.path
@@ -100,6 +101,31 @@ nonisolated enum NetworkServerAddress {
         }
 
         return normalizedURL
+    }
+
+    /// URL requires IPv6 literals to be bracketed. Accept the same convenient
+    /// bare-address form as hostnames and IPv4 addresses, including a share
+    /// path, and add the brackets before Foundation parses the URL.
+    private static func schemelessSMBURLString(_ address: String) -> String {
+        let remainder = address.hasPrefix("//")
+            ? String(address.dropFirst(2))
+            : address
+        let pathStart = remainder.firstIndex(of: "/") ?? remainder.endIndex
+        let authority = remainder[..<pathStart]
+        let path = remainder[pathStart...]
+        let colonCount = authority.reduce(into: 0) { count, character in
+            if character == ":" {
+                count += 1
+            }
+        }
+        let normalizedAuthority: String
+        if colonCount > 1, !authority.hasPrefix("[") {
+            normalizedAuthority = "[\(authority)]"
+        } else {
+            normalizedAuthority = String(authority)
+        }
+
+        return "\(smbScheme)://\(normalizedAuthority)\(path)"
     }
 
     static func suggestedURL(serviceName: String, domain: String) -> URL? {

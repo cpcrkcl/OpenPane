@@ -29,6 +29,8 @@ The metadata-ready number is not on the presentation critical path anymore. Rows
 
 The focused 10,000-file benchmark was rerun on July 15, 2026 after adding contents search and byte-transfer progress. The directory pipeline remained on its established path: first `items` publication was 126.36 ms, first `visibleItems` publication was 196.15 ms, and a one-match recursive name search was 58.20 ms. Contents search is explicit and does no work during first paint; transfer preflight and callback handling run off the main actor.
 
+The trailing preview also stays off the first-paint path. Quick Look is instantiated only for a previewable selection, lightweight metadata begins only after selection, and text bytes are not read until Edit is pressed. Selection work is delivered through a focused-item publisher instead of forwarding every arrow-key change through the dual-pane view model.
+
 ## Bottlenecks found and changes made
 
 - Filtering and user-configurable sorting previously ran synchronously from `@Published` observers. They now use a 150 ms search debounce, cancellable background computation, generation checks, and main-actor publication of only the latest result.
@@ -40,6 +42,9 @@ The focused 10,000-file benchmark was rerun on July 15, 2026 after adding conten
 - Recursive search built a complete `FileItem` before checking its name. It now reads essential hidden/directory state, checks the filename, and builds extended metadata only for matches. Search runs at utility priority and remains cancellable.
 - Content search streams local UTF-8 candidates in 64 KiB chunks with bounded carry-over rather than loading whole files. It is explicit (not part of the live filter), stops after 500 matches, and uses the same cancellation/generation checks as filename search.
 - Byte-transfer callbacks are coalesced to at most ten UI progress updates per second, with immediate item-change and completion updates. Preflight byte counting runs off the main actor, so it does not affect directory first paint.
+- Preview metadata loads use cancellation generations and a 64-entry revision cache. Format-specific inspection is scheduled only for the selected matching type, while text editing uses bounded 64 KiB reads and stops after 10 MiB plus one byte.
+- Embedded movie previews request only Quick Look's cached/fast static thumbnail representation. Videos larger than 256 MiB skip AVFoundation duration and resolution inspection; playback remains opt-in through full Quick Look.
+- Preview details use a native recycling table instead of a fully materialized nested SwiftUI text stack. Rows are reused while scrolling, and the table reloads only when the selected target or its metadata snapshot changes.
 
 DEBUG diagnostics count visible-item computations/publications, directory enumerations, fingerprint checks/no-ops, icon misses, item-array replacements, and dual-pane fanouts. The benchmark and focused unit tests assert the important work counts in addition to wall-clock timing.
 
@@ -52,6 +57,7 @@ DEBUG diagnostics count visible-item computations/publications, directory enumer
 | Open-With applications | type identifier or normalized extension | 64 entries, LRU | Pane lifetime and LRU eviction | None. A cache miss schedules one retained async Launch Services lookup per key and initially returns an empty result. |
 | Background tab snapshots | tab UUID | Four background tabs; at most 5,000 items per cached tab | LRU eviction, dirty marking, navigation/session replacement | None. Snapshots contain already-published values; evicted or oversized tabs reload asynchronously. |
 | Active directory fingerprint | current tab/directory | One constant-size signature | Every successful navigation or changed monitor snapshot | None during first publication. Signature and directory marker are computed in an awaited utility task after rows publish. |
+| Preview metadata | file URL plus resource identity, size, and modification time | 64 entries, LRU | Revision changes and explicit invalidation after Quick Edit saves | None before selection. Core and lightweight format details load in cancellable detached work. |
 
 ## Correctness and remaining risks
 
@@ -59,6 +65,7 @@ DEBUG diagnostics count visible-item computations/publications, directory enumer
 - Monitor fingerprints deliberately avoid a full incremental filesystem model. The two 64-bit order-independent entry accumulators, count, and directory modification date make accidental equality extremely unlikely, but a full diff engine would be stronger and substantially more invasive.
 - Recursive search still uses `FileManager` enumeration rather than Spotlight, so a no-match search must walk the tree. It now avoids optional metadata work for those nonmatches.
 - Content search intentionally does not use an index or impose a file-size cap; a no-match query can read every eligible file beneath the selected folder. Its chunked decoder keeps memory bounded.
+- Mounted SMB Quick Edit relies on the mounted volume and macOS filesystem semantics. Disconnect or permission failures keep the original file and in-memory draft intact, but network latency still determines save completion time.
 - Optional metadata enrichment is directory-wide rather than limited to visible rows. It is cancellable and off the first-paint path, but very large network directories can still take noticeable background time.
 - Folder-size results can be stale for external nested changes for at most the 30-second TTL. OpenPane operations and manual refresh continue to invalidate affected descendants immediately.
 - Icon and application discovery depend on legacy AppKit/Launch Services APIs. Their results are wrapped as immutable sendable values, all slow calls are kept off row/body evaluation, and the strict-concurrency application build is warning-free.

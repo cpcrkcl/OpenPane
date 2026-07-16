@@ -34,7 +34,11 @@ Screenshots will be added for the initial GitHub release.
 - File icons
 - Filter, recursive filename search, and explicit UTF-8 content search with line snippets and skipped-file counts
 - Go to Folder with `~` expansion, recent paths, and clickable path breadcrumbs
-- Quick Look preview
+- Resizable right-side preview with native Quick Look playback/rendering and an independently scrollable metadata inspector
+- Static, low-cost movie thumbnails in the embedded preview, with playback reserved for explicit Quick Look
+- Safe quick editing for UTF-8 and UTF-16 text files up to 10 MiB, including files on mounted SMB shares
+- Persisted preview visibility and width with automatic clean-panel collapse in narrow windows
+- Standalone Quick Look preview
 - Reveal in Finder and Open with default app
 - Byte-level progress for copy, paste, duplicate, and cross-volume moves; fast same-volume moves retain item progress
 
@@ -102,6 +106,7 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 - No signed or notarized release package yet.
 - Conflict handling is intentionally simple and applies one selected strategy to the operation.
 - Content search is local and ephemeral: it scans regular UTF-8 files beneath the current folder, skips binary/unreadable/malformed files and package contents, and returns at most 500 matches.
+- Quick Edit supports strict UTF-8 and UTF-16 text only, preserves the original encoding and BOM, and leaves the draft open if an SMB share disconnects or saving fails.
 - Tabs are basic and included in the saved session.
 
 ## Project Structure
@@ -126,6 +131,7 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 - `Command-Shift-N`: New folder
 - `Command-Shift-F`: Search filenames in the active pane's subtree
 - `Command-Shift-G`: Go to Folder
+- `Command-Shift-P`: Show or hide the right-side preview panel
 - `Up` / `Down`: Move file-list focus and selection
 - `Shift-Up` / `Shift-Down`: Extend the selection range
 - `Command-A`: Select all visible items
@@ -133,7 +139,8 @@ xcodebuild test -project OpenPane.xcodeproj -scheme OpenPane -destination 'platf
 - Type a filename prefix: Jump to the next matching item
 - `Return`: Open the focused item
 - `Command-Return`: Rename selected item
-- `Space`: Quick Look preview
+- `Space`: Open the standalone Quick Look panel
+- `Command-S`: Save while Quick Edit is active
 - `Command-C`: Copy selected files to the clipboard
 - `Command-V`: Paste files into the active pane
 - `Command-D`: Duplicate selected files

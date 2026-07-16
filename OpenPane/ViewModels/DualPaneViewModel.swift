@@ -212,6 +212,16 @@ final class DualPaneViewModel: ObservableObject {
             sessionStateChangeSubject.send()
         }
     }
+    @Published var isPreviewPanelVisible: Bool {
+        didSet {
+            sessionStateChangeSubject.send()
+        }
+    }
+    @Published var previewPanelWidth: Double? {
+        didSet {
+            sessionStateChangeSubject.send()
+        }
+    }
     @Published var paneLinkMode: PaneLinkMode {
         didSet {
             guard paneLinkMode != oldValue else {
@@ -258,6 +268,39 @@ final class DualPaneViewModel: ObservableObject {
         sessionStateChangeSubject.eraseToAnyPublisher()
     }
 
+    /// Publishes only the focused selection that drives the trailing preview.
+    /// Keeping this separate avoids fanning every arrow-key selection through
+    /// the entire dual-pane view hierarchy.
+    var activePreviewTargetDidChange: AnyPublisher<FilePreviewTarget?, Never> {
+        let leftFocusedItem = Publishers.CombineLatest(
+            leftPane.$fileListSelection,
+            leftPane.$selectedItems
+        )
+        .map { selection, selectedItems in
+            selection.focusedID.flatMap { focusedID in
+                selectedItems.first(where: { $0.id == focusedID })
+            }
+        }
+
+        let rightFocusedItem = Publishers.CombineLatest(
+            rightPane.$fileListSelection,
+            rightPane.$selectedItems
+        )
+        .map { selection, selectedItems in
+            selection.focusedID.flatMap { focusedID in
+                selectedItems.first(where: { $0.id == focusedID })
+            }
+        }
+
+        return Publishers.CombineLatest3($activePaneSide, leftFocusedItem, rightFocusedItem)
+            .map { side, leftItem, rightItem in
+                let item = side == .left ? leftItem : rightItem
+                return item.map { FilePreviewTarget(paneSide: side, item: $0) }
+            }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+    }
+
     convenience init() {
         let defaultPaneURLs = Self.defaultPaneURLs()
         self.init(
@@ -271,6 +314,8 @@ final class DualPaneViewModel: ObservableObject {
         rightPane: FilePaneViewModel,
         activePaneSide: PaneSide = .left,
         paneLinkMode: PaneLinkMode = .off,
+        isPreviewPanelVisible: Bool = true,
+        previewPanelWidth: Double? = 320,
         fileOperationService: any FileOperationServicing = FileOperationService()
     ) {
         self.leftPane = leftPane
@@ -280,6 +325,8 @@ final class DualPaneViewModel: ObservableObject {
         self.isPerformingOperation = false
         self.operationStatusMessage = nil
         self.splitLeftPaneFraction = nil
+        self.isPreviewPanelVisible = isPreviewPanelVisible
+        self.previewPanelWidth = previewPanelWidth
         self.paneLinkMode = paneLinkMode
         self.lastEnabledPaneLinkMode = paneLinkMode == .off ? .mirror : paneLinkMode
         self.operationState = .idle
@@ -297,6 +344,10 @@ final class DualPaneViewModel: ObservableObject {
 
     func togglePaneLink() {
         paneLinkMode = paneLinkMode == .off ? lastEnabledPaneLinkMode : .off
+    }
+
+    func togglePreviewPanel() {
+        isPreviewPanelVisible.toggle()
     }
 
     func showStatusMessage(_ message: String) {
@@ -328,6 +379,20 @@ final class DualPaneViewModel: ObservableObject {
         try sidebarViewModel.addFavorite(name: name, url: url)
     }
 
+    func addFolderToFavorites(
+        _ folder: FileItem,
+        using sidebarViewModel: SidebarViewModel
+    ) throws {
+        guard folder.isDirectory else {
+            throw FavoriteStoreError.invalidFolder
+        }
+
+        try sidebarViewModel.addFavorite(
+            name: folder.displayName,
+            url: folder.url
+        )
+    }
+
     func cancelCurrentOperation() {
         guard operationState.isRunning,
               operationState.isCancellable else {
@@ -345,6 +410,10 @@ final class DualPaneViewModel: ObservableObject {
     func refreshBoth() async {
         await leftPane.refresh()
         await rightPane.refresh()
+    }
+
+    func fileContentsDidChange(at fileURL: URL) async {
+        await refreshPanes(showingAnyOf: [fileURL.deletingLastPathComponent()])
     }
 
     func goBackInActivePane() async {
@@ -376,7 +445,9 @@ final class DualPaneViewModel: ObservableObject {
             leftPane: leftPane.sessionState(),
             rightPane: rightPane.sessionState(),
             activePaneSide: activePaneSide,
-            splitLeftPaneFraction: splitLeftPaneFraction
+            splitLeftPaneFraction: splitLeftPaneFraction,
+            isPreviewPanelVisible: isPreviewPanelVisible,
+            previewPanelWidth: previewPanelWidth
         )
     }
 
@@ -414,6 +485,8 @@ final class DualPaneViewModel: ObservableObject {
             leftPane: leftPane,
             rightPane: rightPane,
             activePaneSide: sessionState.activePaneSide,
+            isPreviewPanelVisible: sessionState.isPreviewPanelVisible,
+            previewPanelWidth: sessionState.previewPanelWidth,
             fileOperationService: fileOperationService
         )
         viewModel.splitLeftPaneFraction = sessionState.splitLeftPaneFraction
@@ -548,23 +621,28 @@ final class DualPaneViewModel: ObservableObject {
     }
 
     /// Treats the pane side embedded in a drag payload as a hint, not as proof
-    /// that the drag originated inside OpenPane. Only visible rows in the
-    /// claimed pane are eligible for the cross-pane default-to-move behavior.
+    /// that the drag originated inside OpenPane. If macOS strips the custom
+    /// payload, infer an unambiguous source from the rows currently displayed
+    /// by one pane so an internal cross-pane drag still moves the item.
     func validatedDropSourcePaneSide(_ claimedSide: PaneSide?, fileURLs: [URL]) -> PaneSide? {
-        guard let claimedSide,
-              !fileURLs.isEmpty else {
+        guard !fileURLs.isEmpty else {
             return nil
         }
 
-        let visibleURLs = Set(
-            pane(for: claimedSide).visibleItems.map { $0.url.standardizedFileURL }
-        )
-        guard !visibleURLs.isEmpty,
-              fileURLs.allSatisfy({ visibleURLs.contains($0.standardizedFileURL) }) else {
-            return nil
+        func paneContainsAllDraggedURLs(_ side: PaneSide) -> Bool {
+            let visibleURLs = Set(
+                pane(for: side).visibleItems.map { $0.url.standardizedFileURL }
+            )
+            return !visibleURLs.isEmpty &&
+                fileURLs.allSatisfy { visibleURLs.contains($0.standardizedFileURL) }
         }
 
-        return claimedSide
+        if let claimedSide {
+            return paneContainsAllDraggedURLs(claimedSide) ? claimedSide : nil
+        }
+
+        let matchingSides = [PaneSide.left, .right].filter(paneContainsAllDraggedURLs)
+        return matchingSides.count == 1 ? matchingSides[0] : nil
     }
 
     private func performDroppedFileOperation(
@@ -1114,9 +1192,10 @@ final class DualPaneViewModel: ObservableObject {
         var seenURLs: Set<URL> = []
 
         return urls.filter { url in
-            let standardizedURL = url
-                .resolvingSymlinksInPath()
-                .standardizedFileURL
+            // Distinct symlink entries are distinct items and must all survive
+            // a drag/drop transfer. Standardization still collapses alternate
+            // spellings of the same path without resolving the link target.
+            let standardizedURL = url.standardizedFileURL
 
             guard !seenURLs.contains(standardizedURL) else {
                 return false

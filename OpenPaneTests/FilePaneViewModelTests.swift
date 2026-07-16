@@ -599,6 +599,26 @@ struct FilePaneViewModelTests {
         #expect(viewModel.visibleItems == [betaItem, alphaItem])
     }
 
+    @Test func sortChangeAfterItemReplacementDoesNotReuseStaleRows() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let staleItem = try temporaryDirectory.createFileItem(named: "Stale.txt")
+        let replacementItem = try temporaryDirectory.createFileItem(named: "Replacement.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService()
+        )
+        viewModel.items = [staleItem]
+        await viewModel.waitForVisibleItemsUpdate()
+
+        // Both mutations happen on the main actor without yielding. The
+        // replacement computation is therefore cancelled by the sort change.
+        viewModel.items = [replacementItem]
+        viewModel.sortOption = .size
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.visibleItems == [replacementItem])
+    }
+
     @Test func visibleItemsUpdatesWhenRecursiveSearchResultsBecomeActive() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let localItem = try temporaryDirectory.createFileItem(named: "Local.txt")
@@ -898,6 +918,40 @@ struct FilePaneViewModelTests {
 
         #expect(viewModel.isSearchingSubtree == false)
         #expect(viewModel.isShowingRecursiveSearchResults == false)
+        #expect(viewModel.visibleItems == [localItem])
+    }
+
+    @Test func switchingSearchKindsCancelsResultsFromThePreviousKind() async throws {
+        let temporaryDirectory = try PaneTestTemporaryDirectory()
+        let localItem = try temporaryDirectory.createFileItem(named: "Local.txt")
+        let staleNameResult = try temporaryDirectory.createFileItem(named: "Nested/Needle.txt")
+        let viewModel = FilePaneViewModel(
+            currentURL: temporaryDirectory.url,
+            fileBrowserService: MockFileBrowserService(itemsByURL: [
+                temporaryDirectory.url: [localItem]
+            ]),
+            fileSearchService: DelayedMockFileSearchService(
+                results: [staleNameResult],
+                delayNanoseconds: 100_000_000
+            )
+        )
+        await viewModel.loadCurrentDirectory()
+        viewModel.searchMode = .names
+        viewModel.searchText = "needle"
+        let searchTask = Task {
+            await viewModel.performRecursiveSearch()
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        viewModel.searchMode = .contents
+        await searchTask.value
+        await viewModel.waitForVisibleItemsUpdate()
+
+        #expect(viewModel.searchMode == .contents)
+        #expect(viewModel.isSearchingSubtree == false)
+        #expect(viewModel.isShowingRecursiveSearchResults == false)
+        #expect(viewModel.recursiveSearchResults.isEmpty)
+        #expect(viewModel.recursiveSearchContentMatches.isEmpty)
         #expect(viewModel.visibleItems == [localItem])
     }
 

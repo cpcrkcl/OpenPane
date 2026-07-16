@@ -244,7 +244,14 @@ nonisolated struct FileManagerFileSystem: FileSystemOperating {
     }
 
     nonisolated func fileExists(at url: URL) -> Bool {
-        FileManager.default.fileExists(atPath: url.path)
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else {
+                return false
+            }
+
+            var fileStatus = stat()
+            return lstat(path, &fileStatus) == 0
+        }
     }
 
     nonisolated func fileExists(at url: URL, isDirectory: inout ObjCBool) -> Bool {
@@ -330,22 +337,36 @@ nonisolated struct CopyfileTransferService: FileTransferServicing {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
 
-        let result = sourceURL.withUnsafeFileSystemRepresentation { sourcePath in
+        try Task.checkCancellation()
+        let sourceIsDirectory = Self.isDirectoryEntry(at: sourceURL)
+        var flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_NOFOLLOW_SRC)
+        if sourceIsDirectory {
+            try Self.createDirectoryReservation(at: destinationURL)
+            flags |= copyfile_flags_t(COPYFILE_RECURSIVE)
+        } else {
+            flags |= copyfile_flags_t(COPYFILE_EXCL)
+        }
+        let copySourceURL = sourceIsDirectory
+            ? sourceURL.appendingPathComponent(".", isDirectory: true)
+            : sourceURL
+
+        let result = copySourceURL.withUnsafeFileSystemRepresentation { sourcePath in
             destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
                 copyfile(
                     sourcePath,
                     destinationPath,
                     state,
-                    copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_NOFOLLOW_SRC)
+                    flags
                 )
             }
         }
+        let copyError = errno
 
         guard result == 0 else {
             if isCancelled() {
                 throw CancellationError()
             }
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            throw POSIXError(POSIXErrorCode(rawValue: copyError) ?? .EIO)
         }
 
         if isCancelled() {
@@ -353,6 +374,36 @@ nonisolated struct CopyfileTransferService: FileTransferServicing {
         }
 
         context.finish()
+    }
+
+    private nonisolated static func isDirectoryEntry(at url: URL) -> Bool {
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else {
+                return false
+            }
+
+            var fileStatus = stat()
+            guard lstat(path, &fileStatus) == 0 else {
+                return false
+            }
+
+            return (fileStatus.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+        }
+    }
+
+    private nonisolated static func createDirectoryReservation(at url: URL) throws {
+        let result: Int32 = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else {
+                errno = EINVAL
+                return Int32(-1)
+            }
+
+            return mkdir(path, mode_t(S_IRWXU))
+        }
+        let creationError = errno
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: creationError) ?? .EIO)
+        }
     }
 }
 
@@ -790,6 +841,16 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 progressHandler: progressHandler,
                 isCancelled: { Task.isCancelled }
             )
+        } catch {
+            // An exclusive-create collision means another operation owns this
+            // path. Never delete it while cleaning up our failed transfer.
+            if !Self.isDestinationExistsError(error) {
+                try? fileSystem.removeItem(at: stagingURL)
+            }
+            throw error
+        }
+
+        do {
             try Task.checkCancellation()
 
             if plan.shouldReplaceExistingItem {
@@ -798,6 +859,8 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 try fileSystem.moveItemExclusively(at: stagingURL, to: plan.destinationURL)
             }
         } catch {
+            // The byte copy completed, so this staging object is ours even if
+            // the final destination was claimed before publication.
             try? fileSystem.removeItem(at: stagingURL)
             throw error
         }
@@ -949,7 +1012,13 @@ nonisolated struct FileOperationService: FileOperationServicing {
                 )
             }
             let byteCounts = (fileTransferService != nil && requiresByteTransfer.contains(true))
-                ? try Self.transferableByteCounts(for: plans)
+                ? try zip(plans, requiresByteTransfer).map { plan, isByteTransfer in
+                    guard isByteTransfer else {
+                        return Int64(0)
+                    }
+                    try Task.checkCancellation()
+                    return try Self.transferableByteCount(at: plan.item.url)
+                }
                 : nil
             let totalByteCount = zip(byteCounts ?? [], requiresByteTransfer)
                 .reduce(Int64(0)) { partial, entry in
@@ -1005,7 +1074,10 @@ nonisolated struct FileOperationService: FileOperationServicing {
                     } else if plan.shouldReplaceExistingItem {
                         try Self.moveReplacingDestination(plan: plan, fileSystem: fileSystem)
                     } else {
-                        try fileSystem.moveItem(at: plan.item.url, to: plan.destinationURL)
+                        try fileSystem.moveItemExclusively(
+                            at: plan.item.url,
+                            to: plan.destinationURL
+                        )
                     }
                     Self.reportProgress(
                         completedItemCount: index + 1,

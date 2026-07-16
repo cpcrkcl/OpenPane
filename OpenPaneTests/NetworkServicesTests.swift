@@ -40,6 +40,16 @@ struct NetworkServicesTests {
         #expect(tailscaleAddress == URL(string: "smb://100.64.0.8")!)
     }
 
+    @Test func normalizesBareAndBracketedIPv6Addresses() throws {
+        let bareAddress = try NetworkServerAddress.normalize("FE80::1/share/")
+        let bracketedAddress = try NetworkServerAddress.normalize(
+            URL(string: "smb://[FE80::1]/share/")!
+        )
+
+        #expect(bareAddress == URL(string: "smb://[fe80::1]/share")!)
+        #expect(bracketedAddress == bareAddress)
+    }
+
     @Test func rejectsUnsupportedSchemesCredentialsAndAmbiguousAddresses() throws {
         #expect(throws: NetworkServerAddressError.unsupportedScheme("http")) {
             try NetworkServerAddress.normalize("http://server.example/share")

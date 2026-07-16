@@ -46,6 +46,25 @@ struct FileBrowserServiceTests {
         #expect(Set(items.map(\.name)) == Set(["Alpha.txt", "Bravo.txt", "Charlie.txt"]))
     }
 
+    @Test func skipsEntryWhoseMetadataDisappearsWithoutFailingDirectory() async throws {
+        let temporaryDirectory = try ServiceTestTemporaryDirectory()
+        try temporaryDirectory.createFile(named: "stable.txt")
+        try temporaryDirectory.createFile(named: "vanished.txt")
+        let service = FileBrowserService { url in
+            if url.lastPathComponent == "vanished.txt" {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            return try FileItem(essentialURL: url)
+        }
+
+        let items = try await service.contentsOfDirectory(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false
+        )
+
+        #expect(items.map(\.name) == ["stable.txt"])
+    }
+
     @Test func directorySnapshotFingerprintChangesWhenEntriesChange() async throws {
         let temporaryDirectory = try ServiceTestTemporaryDirectory()
         try temporaryDirectory.createFile(named: "stable.txt")
@@ -105,6 +124,39 @@ struct FileBrowserServiceTests {
         )
 
         #expect(initialSnapshot.fingerprint != modifiedSnapshot.fingerprint)
+    }
+
+    @Test func directorySnapshotFingerprintChangesWhenSizeChangesButDateIsPreserved() async throws {
+        let temporaryDirectory = try ServiceTestTemporaryDirectory()
+        try temporaryDirectory.createFile(named: "stable.txt")
+        let fileURL = temporaryDirectory.url.appendingPathComponent("stable.txt")
+        let fixedModificationDate = Date(timeIntervalSince1970: 1_000)
+        let service = FileBrowserService()
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixedModificationDate],
+            ofItemAtPath: fileURL.path
+        )
+        let initialSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+
+        try Data(repeating: 1, count: 4_096).write(to: fileURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixedModificationDate],
+            ofItemAtPath: fileURL.path
+        )
+        let resizedSnapshot = try await service.directorySnapshot(
+            at: temporaryDirectory.url,
+            includeHiddenFiles: false,
+            includeFingerprint: true,
+            priority: .utility
+        )
+
+        #expect(initialSnapshot.fingerprint != resizedSnapshot.fingerprint)
     }
 
     @Test func excludesHiddenFilesByDefault() async throws {

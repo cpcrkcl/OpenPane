@@ -11,6 +11,8 @@ import SwiftUI
 
 struct DualPaneView: View {
     @ObservedObject var viewModel: DualPaneViewModel
+    @State private var previewPanelViewModel: PreviewPanelViewModel
+    @StateObject private var previewEditSessionCoordinator: PreviewEditSessionCoordinator
     var sidebarViewModel: SidebarViewModel?
     var recentLocationStore: RecentLocationStore
     var onMountNetworkURLs: (PaneSide, [URL]) -> Void = { _, _ in }
@@ -45,6 +47,15 @@ struct DualPaneView: View {
         self.sidebarViewModel = sidebarViewModel
         self.recentLocationStore = recentLocationStore ?? RecentLocationStore()
         self.onMountNetworkURLs = onMountNetworkURLs
+        let previewPanelViewModel = PreviewPanelViewModel()
+        previewPanelViewModel.bindFocusedTargets(
+            to: viewModel.activePreviewTargetDidChange,
+            isPanelVisible: viewModel.isPreviewPanelVisible
+        )
+        _previewPanelViewModel = State(initialValue: previewPanelViewModel)
+        _previewEditSessionCoordinator = StateObject(
+            wrappedValue: PreviewEditSessionCoordinator(viewModel: previewPanelViewModel)
+        )
     }
 
     private enum ActiveSheet: Identifiable {
@@ -121,12 +132,22 @@ struct DualPaneView: View {
             }
         }
         .background(CatppuccinMochaTheme.windowBackground)
+        .background {
+            PreviewWindowCloseGuard(sessionCoordinator: previewEditSessionCoordinator)
+                .frame(width: 0, height: 0)
+        }
         .animation(.easeOut(duration: 0.12), value: isCommandPalettePresented)
         .onReceive(NotificationCenter.default.publisher(for: .openCommandPalette)) { _ in
             isCommandPalettePresented = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .switchActivePane)) { _ in
             switchActivePane()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .togglePreviewPanel)) { _ in
+            togglePreviewPanelVisibility()
+        }
+        .onChange(of: viewModel.isPreviewPanelVisible) { _, isVisible in
+            previewPanelViewModel.setPanelVisible(isVisible)
         }
         .alert(
             "OpenPane Couldn’t Complete the Operation",
@@ -248,52 +269,117 @@ struct DualPaneView: View {
 
     private var paneSplit: some View {
         GeometryReader { geometry in
-            let layout = PaneSplitLayout.resolved(
+            let workspaceLayout = WorkspaceSplitLayout.resolved(
                 totalWidth: geometry.size.width,
-                proposedLeftWidth: leftPaneWidth
+                wantsPreview: viewModel.isPreviewPanelVisible,
+                proposedPreviewWidth: viewModel.previewPanelWidth.map { CGFloat($0) },
+                keepsDirtyEditorVisible: previewPanelViewModel.isDirty
             )
 
-            PaneSplitView(
-                totalWidth: geometry.size.width,
-                desiredLeftWidth: layout.leftWidth,
-                dividerWidth: layout.dividerWidth
-            ) {
-                filePane(for: .left)
-            } rightPane: {
-                filePane(for: .right)
-            } onCommit: { committedLeftWidth in
-                let clampedLeftWidth = PaneSplitLayout.clampedLeftWidth(
-                    committedLeftWidth,
-                    totalWidth: geometry.size.width
-                )
-                leftPaneWidth = clampedLeftWidth
-                updateSplitFraction(
-                    totalWidth: geometry.size.width,
-                    leftPaneWidth: clampedLeftWidth
-                )
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
-            .onAppear {
-                if let fraction = viewModel.splitLeftPaneFraction,
-                   leftPaneWidth == nil {
-                    leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
-                        geometry.size.width * CGFloat(fraction),
-                        totalWidth: geometry.size.width
-                    )
+            Group {
+                if workspaceLayout.showsPreview {
+                    TrailingPaneSplitView(
+                        totalWidth: geometry.size.width,
+                        desiredTrailingWidth: workspaceLayout.previewWidth,
+                        dividerWidth: workspaceLayout.dividerWidth,
+                        minimumBrowserWidth: previewPanelViewModel.isDirty
+                            ? 0
+                            : WorkspaceSplitLayout.minimumBrowserWidth,
+                        minimumTrailingWidth: WorkspaceSplitLayout.minimumPreviewWidth,
+                        maximumTrailingWidth: WorkspaceSplitLayout.maximumPreviewWidth
+                    ) {
+                        filePaneSplit(totalWidth: workspaceLayout.browserWidth)
+                    } trailing: {
+                        PreviewPanelView(
+                            viewModel: previewPanelViewModel,
+                            onClose: closePreviewPanel,
+                            onOpen: { url in
+                                NSWorkspace.shared.open(url)
+                            },
+                            onFullQuickLook: { url in
+                                QuickLookPreviewService.shared.preview(url: url)
+                            },
+                            onSaved: { url in
+                                Task {
+                                    await viewModel.fileContentsDidChange(at: url)
+                                    viewModel.showStatusMessage("Saved \(url.openPaneDisplayName).")
+                                }
+                            },
+                            onCancelClose: previewEditSessionCoordinator.cancelDeferredClose
+                        )
+                        .accessibilityIdentifier("preview-panel")
+                    } onCommit: { previewWidth in
+                        viewModel.previewPanelWidth = Double(previewWidth)
+                    }
                 } else {
-                    leftPaneWidth = layout.leftWidth
+                    filePaneSplit(totalWidth: geometry.size.width)
                 }
             }
-            .onChange(of: geometry.size.width) { _, newWidth in
-                leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
-                    leftPaneWidth ?? layout.leftWidth,
-                    totalWidth: newWidth
-                )
-            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dual-pane-split")
+    }
+
+    private func filePaneSplit(totalWidth: CGFloat) -> some View {
+        let layout = PaneSplitLayout.resolved(
+            totalWidth: totalWidth,
+            proposedLeftWidth: leftPaneWidth
+        )
+
+        return PaneSplitView(
+            totalWidth: totalWidth,
+            desiredLeftWidth: layout.leftWidth,
+            dividerWidth: layout.dividerWidth
+        ) {
+            filePane(for: .left)
+        } rightPane: {
+            filePane(for: .right)
+        } onCommit: { committedLeftWidth in
+            let clampedLeftWidth = PaneSplitLayout.clampedLeftWidth(
+                committedLeftWidth,
+                totalWidth: totalWidth
+            )
+            leftPaneWidth = clampedLeftWidth
+            updateSplitFraction(
+                totalWidth: totalWidth,
+                leftPaneWidth: clampedLeftWidth
+            )
+        }
+        .frame(width: totalWidth, alignment: .leading)
+        .frame(maxHeight: .infinity)
+        .onAppear {
+            restoreLeftPaneWidth(totalWidth: totalWidth, fallbackWidth: layout.leftWidth)
+        }
+        .onChange(of: totalWidth) { _, newWidth in
+            restoreLeftPaneWidth(
+                totalWidth: newWidth,
+                fallbackWidth: PaneSplitLayout.resolved(
+                    totalWidth: newWidth,
+                    proposedLeftWidth: nil
+                ).leftWidth
+            )
+        }
+    }
+
+    private func restoreLeftPaneWidth(totalWidth: CGFloat, fallbackWidth: CGFloat) {
+        if let fraction = viewModel.splitLeftPaneFraction {
+            leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
+                totalWidth * CGFloat(fraction),
+                totalWidth: totalWidth
+            )
+        } else {
+            leftPaneWidth = PaneSplitLayout.clampedLeftWidth(
+                leftPaneWidth ?? fallbackWidth,
+                totalWidth: totalWidth
+            )
+        }
+    }
+
+    private func closePreviewPanel() {
+        previewPanelViewModel.setPanelVisible(false)
+        viewModel.isPreviewPanelVisible = false
     }
 
     @ViewBuilder
@@ -304,7 +390,9 @@ struct DualPaneView: View {
             viewModel: pane,
             isActive: viewModel.activePaneSide == side,
             paneSide: side,
-            isPerformingOperation: viewModel.isPerformingOperation
+            isPerformingOperation: viewModel.isPerformingOperation,
+            canMoveToOtherPane: !viewModel.isPerformingOperation &&
+                viewModel.pane(for: side == .left ? .right : .left).isFileBackedLocation
         ) {
             viewModel.setActivePane(side)
         } onMoveTab: { tabID, sourceSide, destinationSide, destinationIndex in
@@ -327,6 +415,12 @@ struct DualPaneView: View {
             Task {
                 await viewModel.compressForContextMenu(clickedItem: item, in: pane)
             }
+        } onAddToFavorites: { item in
+            viewModel.setActivePane(side)
+            addFolderToFavorites(item)
+        } onMoveToOtherPane: { _ in
+            viewModel.setActivePane(side)
+            prepareMoveToOtherPane()
         } onCreateFolder: {
             viewModel.setActivePane(side)
             prepareNewFolderSheet()
@@ -487,6 +581,18 @@ struct DualPaneView: View {
             .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .toggleHiddenFiles))
             .disabled(!isFileBacked)
+
+            Button {
+                togglePreviewPanelVisibility()
+            } label: {
+                Label(
+                    viewModel.isPreviewPanelVisible ? "Hide Preview Panel" : "Show Preview Panel",
+                    systemImage: "sidebar.right"
+                )
+            }
+            .buttonStyle(ToolbarIconButtonStyle())
+            .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .togglePreviewPanel))
+            .accessibilityIdentifier("toolbar-preview-panel-button")
 
             Button {
                 prepareCopyToOtherPane()
@@ -849,6 +955,19 @@ struct DualPaneView: View {
         viewModel.setActivePane(viewModel.activePaneSide == .left ? .right : .left)
     }
 
+    private func togglePreviewPanelVisibility() {
+        if viewModel.isPreviewPanelVisible {
+            guard previewPanelViewModel.requestClose() else {
+                return
+            }
+            previewPanelViewModel.setPanelVisible(false)
+            viewModel.isPreviewPanelVisible = false
+        } else {
+            viewModel.isPreviewPanelVisible = true
+            previewPanelViewModel.setPanelVisible(true)
+        }
+    }
+
     private var trashConfirmationMessage: String {
         let itemText = trashConfirmationItemCount == 1 ? "item" : "items"
         return "Move \(trashConfirmationItemCount) selected \(itemText) to Trash?"
@@ -992,6 +1111,20 @@ struct DualPaneView: View {
         do {
             try viewModel.addCurrentFolderToFavorites(using: sidebarViewModel)
             viewModel.showStatusMessage("Added to Favorites.")
+        } catch {
+            viewModel.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func addFolderToFavorites(_ folder: FileItem) {
+        guard let sidebarViewModel else {
+            viewModel.errorMessage = "Favorites are unavailable."
+            return
+        }
+
+        do {
+            try viewModel.addFolderToFavorites(folder, using: sidebarViewModel)
+            viewModel.showStatusMessage("Added \"\(folder.displayName)\" to Favorites.")
         } catch {
             viewModel.errorMessage = error.localizedDescription
         }

@@ -346,7 +346,7 @@ nonisolated struct FileSearchService: FileSearchServicing {
             ) {
                 let lineNumber = carryStartLine + searchableText[..<range.lowerBound]
                     .reduce(into: 0) { count, character in
-                        if character == "\n" {
+                        if isLineBreak(character) {
                             count += 1
                         }
                     }
@@ -367,7 +367,7 @@ nonisolated struct FileSearchService: FileSearchServicing {
             )
             carryStartLine += searchableText[..<carryStartIndex]
                 .reduce(into: 0) { count, character in
-                    if character == "\n" {
+                    if isLineBreak(character) {
                         count += 1
                     }
                 }
@@ -402,9 +402,9 @@ nonisolated struct FileSearchService: FileSearchServicing {
         around range: Range<String.Index>,
         maximumCharacterCount: Int = 180
     ) -> String {
-        let lineStart = text[..<range.lowerBound].lastIndex(of: "\n")
+        let lineStart = text[..<range.lowerBound].lastIndex(where: isLineBreak)
             .map { text.index(after: $0) } ?? text.startIndex
-        let lineEnd = text[range.upperBound...].firstIndex(of: "\n") ?? text.endIndex
+        let lineEnd = text[range.upperBound...].firstIndex(where: isLineBreak) ?? text.endIndex
         let line = text[lineStart..<lineEnd]
         let leadingCharacterCount = max(0, maximumCharacterCount / 2)
         let excerptStart = line.index(
@@ -426,6 +426,18 @@ nonisolated struct FileSearchService: FileSearchServicing {
         return (isTruncatedAtStart ? "…" : "") +
             normalized +
             (isTruncatedAtEnd ? "…" : "")
+    }
+
+    /// Swift treats CRLF as one extended grapheme cluster, so checking only
+    /// for `"\n"` misses every Windows-style line ending. Keep line counting
+    /// and excerpt boundaries aligned for the common Unicode line separators.
+    private nonisolated static func isLineBreak(_ character: Character) -> Bool {
+        character == "\n" ||
+            character == "\r" ||
+            character == "\r\n" ||
+            character == "\u{0085}" ||
+            character == "\u{2028}" ||
+            character == "\u{2029}"
     }
 
     private nonisolated static func validateDirectory(_ url: URL) throws {

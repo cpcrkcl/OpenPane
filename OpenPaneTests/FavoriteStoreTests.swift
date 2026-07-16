@@ -24,6 +24,8 @@ struct FavoriteStoreTests {
             "Downloads",
             "Applications"
         ])
+        #expect(store.bookmarks.allSatisfy { $0.urlBookmarkData.isEmpty })
+        #expect(store.bookmarks.allSatisfy { $0.fallbackPath != nil })
 
         let restoredStore = FavoriteStore(userDefaults: userDefaults)
         #expect(restoredStore.favoriteLocations.map(\.name) == store.favoriteLocations.map(\.name))

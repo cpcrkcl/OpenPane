@@ -30,6 +30,7 @@ struct KeyboardShortcutStoreTests {
         #expect(store.shortcut(for: .selectAllFiles).displayText == "⌘A")
         #expect(store.shortcut(for: .duplicateFiles).displayText == "⌘D")
         #expect(store.shortcut(for: .newFile).displayText == "⌥⌘N")
+        #expect(store.shortcut(for: .togglePreviewPanel).displayText == "⇧⌘P")
     }
 
     @Test func savedCustomShortcutsArePreservedWhileNewDefaultsAreMerged() throws {

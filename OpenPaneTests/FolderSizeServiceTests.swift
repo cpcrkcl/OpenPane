@@ -111,6 +111,57 @@ struct FolderSizeServiceTests {
 
         #expect(service.cachedSize(of: cachedDirectoryURL)?.byteCount == 5)
     }
+
+    @Test func invalidationDuringCalculationDoesNotPublishStaleCacheEntry() async throws {
+        let temporaryDirectory = try FolderSizeTestTemporaryDirectory()
+        let calculation = SuspendedFolderSizeCalculation()
+        let service = FolderSizeService(calculation: calculation.calculate)
+
+        let request = Task {
+            try await service.size(of: temporaryDirectory.url)
+        }
+        await calculation.waitUntilStarted()
+        service.invalidate(temporaryDirectory.url)
+        await calculation.finish(
+            with: FolderSizeResult(byteCount: 123, skippedItemCount: 0)
+        )
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await request.value
+        }
+        #expect(service.cachedSize(of: temporaryDirectory.url) == nil)
+    }
+}
+
+private actor SuspendedFolderSizeCalculation {
+    private var hasStarted = false
+    private var startContinuations: [CheckedContinuation<Void, Never>] = []
+    private var resultContinuation: CheckedContinuation<FolderSizeResult, Never>?
+
+    func calculate(_ url: URL) async -> FolderSizeResult {
+        hasStarted = true
+        startContinuations.forEach { $0.resume() }
+        startContinuations.removeAll()
+
+        return await withCheckedContinuation { continuation in
+            resultContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !hasStarted else {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            startContinuations.append(continuation)
+        }
+    }
+
+    func finish(with result: FolderSizeResult) {
+        resultContinuation?.resume(returning: result)
+        resultContinuation = nil
+    }
 }
 
 private struct FolderSizeTestTemporaryDirectory {

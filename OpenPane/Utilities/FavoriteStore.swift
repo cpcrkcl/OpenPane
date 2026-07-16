@@ -46,6 +46,10 @@ final class FavoriteStore: ObservableObject {
     }
 
     var favoriteLocations: [FavoriteLocation] {
+        resolvedFavoriteLocations(from: bookmarks)
+    }
+
+    func resolvedFavoriteLocations(from bookmarks: [FavoriteBookmark]) -> [FavoriteLocation] {
         bookmarks.compactMap { bookmark in
             guard let url = resolvedURL(for: bookmark) else {
                 return nil
@@ -56,8 +60,10 @@ final class FavoriteStore: ObservableObject {
     }
 
     func contains(url: URL) -> Bool {
-        let standardized = url.standardizedFileURL
-        return favoriteLocations.contains { $0.url.standardizedFileURL == standardized }
+        let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
+        return favoriteLocations.contains {
+            $0.url.standardizedFileURL.resolvingSymlinksInPath() == canonicalURL
+        }
     }
 
     @discardableResult
@@ -257,11 +263,13 @@ final class FavoriteStore: ObservableObject {
     }
 
     private static func defaultBookmarks(fileManager: FileManager) -> [FavoriteBookmark] {
-        defaultFavoriteLocations(fileManager: fileManager).compactMap { location in
-            try? FavoriteBookmark(
+        defaultFavoriteLocations(fileManager: fileManager).map { location in
+            let url = location.url.standardizedFileURL
+            return FavoriteBookmark(
                 id: "builtin:\(location.url.standardizedFileURL.path)",
                 name: location.name,
-                url: location.url,
+                urlBookmarkData: Data(),
+                fallbackPath: url.path,
                 systemImage: location.systemImage
             )
         }

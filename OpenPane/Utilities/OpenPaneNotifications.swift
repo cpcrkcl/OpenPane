@@ -10,4 +10,5 @@ import Foundation
 extension Notification.Name {
     static let openCommandPalette = Notification.Name("OpenPaneOpenCommandPalette")
     static let switchActivePane = Notification.Name("OpenPaneSwitchActivePane")
+    static let togglePreviewPanel = Notification.Name("OpenPaneTogglePreviewPanel")
 }

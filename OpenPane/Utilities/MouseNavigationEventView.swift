@@ -35,7 +35,9 @@ final class MouseNavigationMonitorView: NSView {
     var onBack: () -> Void
     var onForward: () -> Void
 
-    private var eventMonitor: Any?
+    // AppKit owns the opaque monitor token after registration. Cleanup can run
+    // from `deinit`, which Swift treats as nonisolated even for an NSView.
+    nonisolated(unsafe) private var eventMonitor: Any?
 
     init(onBack: @escaping () -> Void, onForward: @escaping () -> Void) {
         self.onBack = onBack
@@ -49,7 +51,9 @@ final class MouseNavigationMonitorView: NSView {
     }
 
     deinit {
-        stopMonitoring()
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+        }
     }
 
     override func viewDidMoveToWindow() {

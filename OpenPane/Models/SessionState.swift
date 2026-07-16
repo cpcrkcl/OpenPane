@@ -12,6 +12,43 @@ struct SessionState: Codable, Equatable, Sendable {
     var rightPane: SessionPaneState
     var activePaneSide: PaneSide
     var splitLeftPaneFraction: Double?
+    var isPreviewPanelVisible: Bool = true
+    var previewPanelWidth: Double? = 320
+
+    private enum CodingKeys: String, CodingKey {
+        case leftPane
+        case rightPane
+        case activePaneSide
+        case splitLeftPaneFraction
+        case isPreviewPanelVisible
+        case previewPanelWidth
+    }
+
+    init(
+        leftPane: SessionPaneState,
+        rightPane: SessionPaneState,
+        activePaneSide: PaneSide,
+        splitLeftPaneFraction: Double?,
+        isPreviewPanelVisible: Bool = true,
+        previewPanelWidth: Double? = 320
+    ) {
+        self.leftPane = leftPane
+        self.rightPane = rightPane
+        self.activePaneSide = activePaneSide
+        self.splitLeftPaneFraction = splitLeftPaneFraction
+        self.isPreviewPanelVisible = isPreviewPanelVisible
+        self.previewPanelWidth = previewPanelWidth
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        leftPane = try container.decode(SessionPaneState.self, forKey: .leftPane)
+        rightPane = try container.decode(SessionPaneState.self, forKey: .rightPane)
+        activePaneSide = try container.decode(PaneSide.self, forKey: .activePaneSide)
+        splitLeftPaneFraction = try container.decodeIfPresent(Double.self, forKey: .splitLeftPaneFraction)
+        isPreviewPanelVisible = try container.decodeIfPresent(Bool.self, forKey: .isPreviewPanelVisible) ?? true
+        previewPanelWidth = try container.decodeIfPresent(Double.self, forKey: .previewPanelWidth) ?? 320
+    }
 }
 
 struct SessionPaneState: Codable, Equatable, Sendable {
