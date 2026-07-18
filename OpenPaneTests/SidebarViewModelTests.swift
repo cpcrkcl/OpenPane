@@ -32,7 +32,10 @@ struct SidebarViewModelTests {
             systemImage: "folder"
         )
 
-        let viewModel = SidebarViewModel(favoriteLocations: [favoriteLocation])
+        let viewModel = SidebarViewModel(
+            favoriteLocations: [favoriteLocation],
+            favoriteStore: FavoriteStore(userDefaults: makeUserDefaults())
+        )
 
         #expect(viewModel.favoriteLocations == [favoriteLocation])
     }

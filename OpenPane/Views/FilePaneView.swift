@@ -686,18 +686,28 @@ struct FilePaneView: View {
 
     private var toolbar: some View {
         ViewThatFits(in: .horizontal) {
-            toolbarControlRow
+            HStack(spacing: 8) {
+                fileActionControls
+                searchControls
+                    .layoutPriority(1)
+            }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                toolbarControlRow
-                    .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 8) {
+                ViewThatFits(in: .horizontal) {
+                    fileActionControls
+
+                    fileActionControls
+                        .environment(\.openPaneCompactToolbarControls, true)
+                }
+
+                searchControls
             }
         }
         .controlSize(.small)
         .foregroundStyle(CatppuccinMochaTheme.primaryText)
     }
 
-    private var toolbarControlRow: some View {
+    private var fileActionControls: some View {
         HStack(spacing: 8) {
             Button {
                 Task {
@@ -742,25 +752,52 @@ struct FilePaneView: View {
             }
             .buttonStyle(SecondaryActionButtonStyle())
             .disabled(viewModel.selectedItems.isEmpty)
-
-            searchControls
-                .layoutPriority(1)
         }
     }
 
     private var searchControls: some View {
-        HStack(spacing: 8) {
-            Picker("Search mode", selection: $viewModel.searchMode) {
-                ForEach(FilePaneSearchMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode)
-                }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                searchModePicker(expands: false)
+                searchField(expands: false)
+                searchSupplementalControls
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 220)
 
-            searchField
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    searchModePicker(expands: false)
+                    searchField(expands: true)
+                }
 
+                searchSupplementalControls
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                searchModePicker(expands: true)
+                searchField(expands: true)
+                searchSupplementalControls
+                    .environment(\.openPaneCompactToolbarControls, true)
+            }
+        }
+    }
+
+    private func searchModePicker(expands: Bool) -> some View {
+        Picker("Search mode", selection: $viewModel.searchMode) {
+            ForEach(FilePaneSearchMode.allCases) { mode in
+                Text(mode.displayName).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(
+            minWidth: expands ? 0 : 150,
+            idealWidth: expands ? nil : 180,
+            maxWidth: expands ? .infinity : 220
+        )
+    }
+
+    private var searchSupplementalControls: some View {
+        HStack(spacing: 8) {
             if viewModel.isSearchingSubtree {
                 HStack(spacing: 4) {
                     ProgressView()
@@ -811,7 +848,7 @@ struct FilePaneView: View {
         }
     }
 
-    private var searchField: some View {
+    private func searchField(expands: Bool) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 11, weight: .medium))
@@ -832,7 +869,13 @@ struct FilePaneView: View {
                 }
         }
         .padding(.horizontal, 9)
-        .frame(minWidth: 120, idealWidth: 180, maxWidth: 220, minHeight: 28, maxHeight: 28)
+        .frame(
+            minWidth: expands ? 0 : 120,
+            idealWidth: expands ? nil : 180,
+            maxWidth: expands ? .infinity : 220,
+            minHeight: 28,
+            maxHeight: 28
+        )
         .background(
             CatppuccinMochaTheme.surface0.opacity(0.78),
             in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)

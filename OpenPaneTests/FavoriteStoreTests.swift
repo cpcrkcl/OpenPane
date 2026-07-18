@@ -31,6 +31,28 @@ struct FavoriteStoreTests {
         #expect(restoredStore.favoriteLocations.map(\.name) == store.favoriteLocations.map(\.name))
     }
 
+    @Test func favoritePersistsThroughAFreshDefaultsConnection() throws {
+        let suiteName = "OpenPaneFavoriteRelaunchTests-\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+        }
+        let projectsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenPaneRelaunchFavorite-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectsURL, withIntermediateDirectories: true)
+
+        do {
+            let firstConnection = try #require(UserDefaults(suiteName: suiteName))
+            let store = FavoriteStore(userDefaults: firstConnection)
+            _ = try store.add(name: "Relaunch Project", url: projectsURL)
+        }
+
+        let reopenedConnection = try #require(UserDefaults(suiteName: suiteName))
+        let reopenedStore = FavoriteStore(userDefaults: reopenedConnection)
+
+        #expect(reopenedStore.bookmarks.map(\.name) == ["Relaunch Project"])
+        #expect(reopenedStore.favoriteLocations.first?.url.standardizedFileURL == projectsURL.standardizedFileURL)
+    }
+
     @Test func addRemoveAndRenameFavorites() throws {
         let store = FavoriteStore(userDefaults: makeUserDefaults())
         let projectsURL = URL(filePath: "/tmp/OpenPaneProjects-\(UUID().uuidString)", directoryHint: .isDirectory)

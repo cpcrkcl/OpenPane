@@ -7,16 +7,51 @@
 
 import SwiftUI
 
+private struct OpenPaneCompactToolbarControlsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var openPaneCompactToolbarControls: Bool {
+        get { self[OpenPaneCompactToolbarControlsKey.self] }
+        set { self[OpenPaneCompactToolbarControlsKey.self] = newValue }
+    }
+}
+
+private struct OpenPaneAdaptiveToolbarLabelStyle: LabelStyle {
+    let usesCompactControls: Bool
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        if usesCompactControls {
+            configuration.icon
+                .accessibilityRepresentation {
+                    configuration.title
+                }
+        } else {
+            HStack(spacing: 6) {
+                configuration.icon
+                configuration.title
+            }
+        }
+    }
+}
+
 struct PrimaryActionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.openPaneCompactToolbarControls) private var usesCompactControls
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .medium))
-            .labelStyle(.titleAndIcon)
+            .labelStyle(OpenPaneAdaptiveToolbarLabelStyle(usesCompactControls: usesCompactControls))
             .foregroundStyle(isEnabled ? CatppuccinMochaTheme.crust : CatppuccinMochaTheme.mutedText)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .frame(
+                width: usesCompactControls ? 28 : nil,
+                height: usesCompactControls ? 28 : nil
+            )
+            .padding(.horizontal, usesCompactControls ? 0 : 10)
+            .padding(.vertical, usesCompactControls ? 0 : 6)
             .background(
                 primaryBackground(isPressed: configuration.isPressed),
                 in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
@@ -42,14 +77,19 @@ struct PrimaryActionButtonStyle: ButtonStyle {
 
 struct SecondaryActionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.openPaneCompactToolbarControls) private var usesCompactControls
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .medium))
-            .labelStyle(.titleAndIcon)
+            .labelStyle(OpenPaneAdaptiveToolbarLabelStyle(usesCompactControls: usesCompactControls))
             .foregroundStyle(isEnabled ? CatppuccinMochaTheme.primaryText : CatppuccinMochaTheme.mutedText)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
+            .frame(
+                width: usesCompactControls ? 28 : nil,
+                height: usesCompactControls ? 28 : nil
+            )
+            .padding(.horizontal, usesCompactControls ? 0 : 9)
+            .padding(.vertical, usesCompactControls ? 0 : 6)
             .background(
                 secondaryBackground(isPressed: configuration.isPressed),
                 in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
@@ -75,14 +115,19 @@ struct SecondaryActionButtonStyle: ButtonStyle {
 
 struct DestructiveActionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.openPaneCompactToolbarControls) private var usesCompactControls
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .medium))
-            .labelStyle(.titleAndIcon)
+            .labelStyle(OpenPaneAdaptiveToolbarLabelStyle(usesCompactControls: usesCompactControls))
             .foregroundStyle(isEnabled ? CatppuccinMochaTheme.red : CatppuccinMochaTheme.mutedText)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
+            .frame(
+                width: usesCompactControls ? 28 : nil,
+                height: usesCompactControls ? 28 : nil
+            )
+            .padding(.horizontal, usesCompactControls ? 0 : 9)
+            .padding(.vertical, usesCompactControls ? 0 : 6)
             .background(
                 destructiveBackground(isPressed: configuration.isPressed),
                 in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)

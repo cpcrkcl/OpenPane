@@ -34,6 +34,7 @@ final class FavoriteStore: ObservableObject {
             self.bookmarks = sanitized
             if sanitized != decoded, let sanitizedData = try? encoder.encode(sanitized) {
                 userDefaults.set(sanitizedData, forKey: key)
+                userDefaults.synchronize()
             }
         } else {
             self.bookmarks = []
@@ -41,6 +42,7 @@ final class FavoriteStore: ObservableObject {
             // recover by seeding defaults instead of remaining permanently empty.
             if userDefaults.object(forKey: key) != nil {
                 userDefaults.removeObject(forKey: key)
+                userDefaults.synchronize()
             }
         }
     }
@@ -204,6 +206,9 @@ final class FavoriteStore: ObservableObject {
         }
 
         userDefaults.set(data, forKey: key)
+        // Favorite edits are infrequent and should survive an immediate quit. Force
+        // the pending preferences update out of the process cache before returning.
+        userDefaults.synchronize()
     }
 
     private static func sanitized(_ candidates: [FavoriteBookmark]) -> [FavoriteBookmark] {

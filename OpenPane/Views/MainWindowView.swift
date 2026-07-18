@@ -8,6 +8,34 @@
 import Combine
 import SwiftUI
 
+nonisolated enum MainWindowLayout {
+    static let minimumWindowWidth: CGFloat = 640
+    static let minimumWindowHeight: CGFloat = 500
+    static let inlineSidebarMinimumWidth: CGFloat = 1_160
+    static let inlineSidebarWithPreviewMinimumWidth: CGFloat = 1_460
+    static let compactSpacingMaximumWidth: CGFloat = 800
+
+    nonisolated struct Resolved: Equatable {
+        let showsInlineSidebar: Bool
+        let outerPadding: CGFloat
+        let surfaceSpacing: CGFloat
+    }
+
+    nonisolated static func resolved(totalWidth: CGFloat, wantsPreview: Bool) -> Resolved {
+        let safeWidth = max(0, totalWidth)
+        let sidebarMinimumWidth = wantsPreview
+            ? inlineSidebarWithPreviewMinimumWidth
+            : inlineSidebarMinimumWidth
+        let usesCompactSpacing = safeWidth < compactSpacingMaximumWidth
+
+        return Resolved(
+            showsInlineSidebar: safeWidth >= sidebarMinimumWidth,
+            outerPadding: usesCompactSpacing ? 8 : 14,
+            surfaceSpacing: usesCompactSpacing ? 8 : 12
+        )
+    }
+}
+
 struct MainWindowView: View {
     @StateObject private var sidebarViewModel: SidebarViewModel
     @ObservedObject private var volumeVisibilityStore: VolumeVisibilityStore
@@ -15,6 +43,7 @@ struct MainWindowView: View {
     @StateObject private var sessionAutosaveController: SessionAutosaveController
     @StateObject private var recentLocationStore = RecentLocationStore()
     @State private var isShowingVolumeVisibilityPicker = false
+    @State private var isShowingCompactSidebar = false
     @AppStorage(PaneLinkMode.userDefaultsKey) private var paneLinkModeRawValue = PaneLinkMode.off.rawValue
     private let isSessionPersistenceEnabled: Bool
 
@@ -49,19 +78,37 @@ struct MainWindowView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            header
+        GeometryReader { geometry in
+            let layout = MainWindowLayout.resolved(
+                totalWidth: geometry.size.width,
+                wantsPreview: dualPaneViewModel.isPreviewPanelVisible
+            )
 
-            HStack(spacing: 12) {
-                sidebarSurface
+            VStack(spacing: layout.surfaceSpacing) {
+                header(
+                    showsInlineSidebar: layout.showsInlineSidebar,
+                    compactSidebarHeight: max(320, min(520, geometry.size.height - 120))
+                )
 
-                sidebarDivider
+                HStack(spacing: layout.surfaceSpacing) {
+                    if layout.showsInlineSidebar {
+                        sidebarSurface()
 
-                mainContentSurface
-                    .layoutPriority(1)
+                        sidebarDivider
+                    }
+
+                    mainContentSurface
+                        .layoutPriority(1)
+                }
+            }
+            .padding(layout.outerPadding)
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .onChange(of: layout.showsInlineSidebar) { _, showsInlineSidebar in
+                if showsInlineSidebar {
+                    isShowingCompactSidebar = false
+                }
             }
         }
-        .padding(14)
         .background(CatppuccinMochaTheme.appBackground)
         .background {
             MouseNavigationEventView {
@@ -76,7 +123,10 @@ struct MainWindowView: View {
             .frame(width: 0, height: 0)
         }
         .preferredColorScheme(.dark)
-        .frame(minWidth: 1000, minHeight: 650)
+        .frame(
+            minWidth: MainWindowLayout.minimumWindowWidth,
+            minHeight: MainWindowLayout.minimumWindowHeight
+        )
         .onReceive(dualPaneViewModel.sessionStateDidChange) { _ in
             guard isSessionPersistenceEnabled else {
                 return
@@ -134,8 +184,22 @@ struct MainWindowView: View {
         }
     }
 
-    private var header: some View {
+    private func header(
+        showsInlineSidebar: Bool,
+        compactSidebarHeight: CGFloat
+    ) -> some View {
         HStack(spacing: 12) {
+            if !showsInlineSidebar {
+                Button {
+                    isShowingCompactSidebar.toggle()
+                } label: {
+                    Label("Locations", systemImage: "sidebar.left")
+                }
+                .buttonStyle(ToolbarIconButtonStyle())
+                .help("Show Locations")
+                .accessibilityIdentifier("sidebar-toggle-button")
+            }
+
             Text("OpenPane")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(CatppuccinMochaTheme.primaryText)
@@ -153,6 +217,13 @@ struct MainWindowView: View {
         .overlay {
             RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusMedium)
                 .stroke(CatppuccinMochaTheme.surface0, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
+        }
+        .popover(isPresented: $isShowingCompactSidebar, arrowEdge: .top) {
+            sidebarSurface(closesAfterSelection: true)
+                .frame(width: 220, height: compactSidebarHeight)
+                .padding(8)
+                .background(CatppuccinMochaTheme.appBackground)
+                .preferredColorScheme(.dark)
         }
     }
 
@@ -178,19 +249,28 @@ struct MainWindowView: View {
         }
     }
 
-    private var sidebarSurface: some View {
+    private func sidebarSurface(closesAfterSelection: Bool = false) -> some View {
         SidebarView(
             viewModel: sidebarViewModel,
             activeLocation: dualPaneViewModel.activePane.currentLocation
         ) { location in
+            if closesAfterSelection {
+                isShowingCompactSidebar = false
+            }
             Task {
                 await dualPaneViewModel.navigateActivePane(to: location.url)
             }
         } onSelectVolume: { volume in
+            if closesAfterSelection {
+                isShowingCompactSidebar = false
+            }
             Task {
                 await dualPaneViewModel.navigateActivePane(to: volume.url)
             }
         } onSelectNetwork: {
+            if closesAfterSelection {
+                isShowingCompactSidebar = false
+            }
             Task {
                 await dualPaneViewModel.navigateActivePane(to: .network)
             }
@@ -232,6 +312,7 @@ struct MainWindowView: View {
                 RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusLarge)
                     .stroke(CatppuccinMochaTheme.surface1, lineWidth: CatppuccinMochaTheme.hairlineBorderWidth)
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("main-content-surface")
     }
 }

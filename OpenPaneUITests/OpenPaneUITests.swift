@@ -46,6 +46,7 @@ final class OpenPaneUITests: XCTestCase {
     @MainActor
     func testNetworkSidebarRowShowsNetworkPage() throws {
         assertDualPaneShellVisible()
+        revealSidebarIfNeeded()
 
         let networkRow = element("sidebar-network")
         XCTAssertTrue(networkRow.waitForExistence(timeout: 3))
@@ -59,6 +60,7 @@ final class OpenPaneUITests: XCTestCase {
     @MainActor
     func testConnectToServerSheetShowsValidatedEntryControls() throws {
         assertDualPaneShellVisible()
+        revealSidebarIfNeeded()
 
         element("sidebar-network").click()
         XCTAssertTrue(element("network-page").waitForExistence(timeout: 3))
@@ -73,6 +75,7 @@ final class OpenPaneUITests: XCTestCase {
     @MainActor
     func testVolumeManagementPickerCanHideAndShowAVolume() throws {
         assertDualPaneShellVisible()
+        revealSidebarIfNeeded()
 
         let manageVolumes = element("manage-volumes-button")
         try XCTSkipUnless(manageVolumes.waitForExistence(timeout: 3), "No mounted volumes were exposed by the test environment")
@@ -193,6 +196,20 @@ final class OpenPaneUITests: XCTestCase {
         line: UInt = #line
     ) {
         driver.assertDualPaneShellVisible(in: app, file: file, line: line)
+    }
+
+    private func revealSidebarIfNeeded(
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard !element("sidebar-network").exists else {
+            return
+        }
+
+        let sidebarToggle = element("sidebar-toggle-button")
+        XCTAssertTrue(sidebarToggle.waitForExistence(timeout: 2), file: file, line: line)
+        sidebarToggle.click()
+        XCTAssertTrue(element("sidebar-network").waitForExistence(timeout: 2), file: file, line: line)
     }
 
     private func element(_ identifier: String) -> XCUIElement {

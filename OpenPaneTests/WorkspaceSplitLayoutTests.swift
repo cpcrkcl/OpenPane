@@ -58,4 +58,31 @@ struct WorkspaceSplitLayoutTests {
         #expect(layout.previewWidth == 520)
         #expect(layout.browserWidth == 970)
     }
+
+    @Test func regularWindowKeepsSidebarInline() {
+        let layout = MainWindowLayout.resolved(totalWidth: 1_240, wantsPreview: false)
+
+        #expect(layout.showsInlineSidebar)
+        #expect(layout.outerPadding == 14)
+        #expect(layout.surfaceSpacing == 12)
+    }
+
+    @Test func narrowWindowMovesSidebarOutOfTheWorkspace() {
+        let layout = MainWindowLayout.resolved(totalWidth: 900, wantsPreview: false)
+
+        #expect(!layout.showsInlineSidebar)
+    }
+
+    @Test func previewGetsPriorityOverInlineSidebarSpace() {
+        let layout = MainWindowLayout.resolved(totalWidth: 1_240, wantsPreview: true)
+
+        #expect(!layout.showsInlineSidebar)
+    }
+
+    @Test func compactWindowReducesOuterSpacing() {
+        let layout = MainWindowLayout.resolved(totalWidth: 700, wantsPreview: false)
+
+        #expect(layout.outerPadding == 8)
+        #expect(layout.surfaceSpacing == 8)
+    }
 }

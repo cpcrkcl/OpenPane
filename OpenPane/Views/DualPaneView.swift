@@ -457,20 +457,25 @@ struct DualPaneView: View {
     private var toolbar: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
-                toolbarActions
+                toolbarActions(includesSecondaryActions: true)
 
                 Spacer(minLength: 8)
 
                 activePaneLabel
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    toolbarActions
-                    activePaneLabel
-                }
-                .fixedSize(horizontal: true, vertical: false)
+            HStack(spacing: 8) {
+                toolbarActions(includesSecondaryActions: false)
+
+                Spacer(minLength: 0)
             }
+
+            HStack(spacing: 6) {
+                toolbarActions(includesSecondaryActions: true)
+
+                Spacer(minLength: 0)
+            }
+            .environment(\.openPaneCompactToolbarControls, true)
         }
         .foregroundStyle(CatppuccinMochaTheme.primaryText)
         .controlSize(.small)
@@ -479,10 +484,10 @@ struct DualPaneView: View {
     }
 
     @ViewBuilder
-    private var toolbarActions: some View {
+    private func toolbarActions(includesSecondaryActions: Bool) -> some View {
         let isFileBacked = viewModel.activePane.isFileBackedLocation
 
-        HStack(spacing: 8) {
+        HStack(spacing: includesSecondaryActions ? 8 : 6) {
             Button {
                 prepareNewFolderSheet()
             } label: {
@@ -614,12 +619,59 @@ struct DualPaneView: View {
             .disabled(viewModel.isPerformingOperation || !isFileBacked || !viewModel.inactivePane.isFileBackedLocation)
             .accessibilityIdentifier("toolbar-move-to-other-pane-button")
 
+            if includesSecondaryActions {
+                Button {
+                    prepareTrashConfirmation()
+                } label: {
+                    Label("Move to Trash", systemImage: "trash")
+                }
+                .buttonStyle(DestructiveActionButtonStyle())
+                .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .moveToTrash))
+                .disabled(viewModel.isPerformingOperation || !isFileBacked)
+
+                Button {
+                    Task {
+                        await viewModel.refreshBoth()
+                    }
+                } label: {
+                    Label("Refresh Both", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .refreshBoth))
+
+                Button {
+                    Task {
+                        await viewModel.swapPaneLocations()
+                    }
+                } label: {
+                    Label("Swap Panes", systemImage: "arrow.left.arrow.right")
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+
+                Button {
+                    viewModel.togglePaneLink()
+                } label: {
+                    Label(
+                        "Link Panes",
+                        systemImage: viewModel.isPanesLinked ? "link" : "link.badge.plus"
+                    )
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .help(viewModel.isPanesLinked ? "Unlink Panes" : "Link Panes")
+                .accessibilityIdentifier("toolbar-link-panes-button")
+            } else {
+                secondaryToolbarMenu(isFileBacked: isFileBacked)
+            }
+        }
+    }
+
+    private func secondaryToolbarMenu(isFileBacked: Bool) -> some View {
+        Menu {
             Button {
                 prepareTrashConfirmation()
             } label: {
                 Label("Move to Trash", systemImage: "trash")
             }
-            .buttonStyle(DestructiveActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .moveToTrash))
             .disabled(viewModel.isPerformingOperation || !isFileBacked)
 
@@ -630,7 +682,6 @@ struct DualPaneView: View {
             } label: {
                 Label("Refresh Both", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(SecondaryActionButtonStyle())
             .openPaneKeyboardShortcut(keyboardShortcutStore.shortcut(for: .refreshBoth))
 
             Button {
@@ -640,20 +691,38 @@ struct DualPaneView: View {
             } label: {
                 Label("Swap Panes", systemImage: "arrow.left.arrow.right")
             }
-            .buttonStyle(SecondaryActionButtonStyle())
 
             Button {
                 viewModel.togglePaneLink()
             } label: {
                 Label(
-                    "Link Panes",
+                    viewModel.isPanesLinked ? "Unlink Panes" : "Link Panes",
                     systemImage: viewModel.isPanesLinked ? "link" : "link.badge.plus"
                 )
             }
-            .buttonStyle(SecondaryActionButtonStyle())
-            .help(viewModel.isPanesLinked ? "Unlink Panes" : "Link Panes")
-            .accessibilityIdentifier("toolbar-link-panes-button")
+        } label: {
+            Label("More Actions", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(CatppuccinMochaTheme.secondaryText)
+                .frame(width: 28, height: 28)
+                .background(
+                    CatppuccinMochaTheme.surface0.opacity(0.72),
+                    in: RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: CatppuccinMochaTheme.cornerRadiusSmall)
+                        .stroke(
+                            CatppuccinMochaTheme.surface1.opacity(0.75),
+                            lineWidth: CatppuccinMochaTheme.hairlineBorderWidth
+                        )
+                }
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More Actions")
+        .accessibilityIdentifier("toolbar-more-actions-menu")
     }
 
     private var activePaneLabel: some View {
