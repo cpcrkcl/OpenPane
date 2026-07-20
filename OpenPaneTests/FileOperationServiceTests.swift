@@ -5,6 +5,7 @@
 //  Created by Christopher Rego on 6/4/26.
 //
 
+import Darwin
 import Foundation
 import Testing
 @testable import OpenPane
@@ -44,6 +45,33 @@ struct FileOperationServiceTests {
         #expect(try String(contentsOf: destinationURL, encoding: .utf8) == "owned by another operation")
     }
 
+    @Test func nativeTransferFallsBackWhenDestinationRejectsMetadata() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceURL = temporaryDirectory.sourceURL.appendingPathComponent("movie.mp4")
+        let sourceData = Data(repeating: 0x5A, count: 2_500_000)
+        try sourceData.write(to: sourceURL)
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("movie.mp4")
+        let progressRecorder = ByteProgressRecorder()
+        let transferService = CopyfileTransferService(copyfileInvoker: { _, destinationURL, _, _ in
+            _ = FileManager.default.createFile(
+                atPath: destinationURL.path,
+                contents: Data("partial metadata copy".utf8)
+            )
+            return (-1, Int32(ENOTSUP))
+        })
+
+        try transferService.copyItem(
+            at: sourceURL,
+            to: destinationURL,
+            progressHandler: progressRecorder.append,
+            isCancelled: { false }
+        )
+
+        #expect(try Data(contentsOf: destinationURL) == sourceData)
+        #expect(progressRecorder.byteCounts.last == Int64(sourceData.count))
+        #expect(zip(progressRecorder.byteCounts, progressRecorder.byteCounts.dropFirst()).allSatisfy(<=))
+    }
+
     @Test func nativeRecursiveTransferRefusesExistingDestinationFolder() throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
         let sourceFolderURL = try temporaryDirectory.createSourceDirectory(named: "Source Folder")
@@ -75,6 +103,34 @@ struct FileOperationServiceTests {
         #expect(didThrow)
         #expect(try String(contentsOf: competingFileURL, encoding: .utf8) == "owned by another operation")
         #expect(FileManager.default.fileExists(atPath: destinationURL.appendingPathComponent("source.txt").path) == false)
+    }
+
+    @Test func exclusiveMoveFallsBackOnVolumeWithoutExclusiveRenaming() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "source.txt", contents: "move me")
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("destination.txt")
+        let fileSystem = FileManagerFileSystem(volumeSupportsExclusiveRenaming: { _ in false })
+
+        try fileSystem.moveItemExclusively(at: sourceFile.url, to: destinationURL)
+
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path) == false)
+        #expect(try String(contentsOf: destinationURL, encoding: .utf8) == "move me")
+    }
+
+    @Test func exclusiveMoveFallbackDoesNotOverwriteExistingDestination() throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceFile = try temporaryDirectory.createFile(named: "source.txt", contents: "source")
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("destination.txt")
+        try "existing".write(to: destinationURL, atomically: true, encoding: .utf8)
+        let fileSystem = FileManagerFileSystem(volumeSupportsExclusiveRenaming: { _ in false })
+
+        #expect(throws: (any Error).self) {
+            try fileSystem.moveItemExclusively(at: sourceFile.url, to: destinationURL)
+        }
+
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path))
+        #expect(try String(contentsOf: sourceFile.url, encoding: .utf8) == "source")
+        #expect(try String(contentsOf: destinationURL, encoding: .utf8) == "existing")
     }
 
     @Test func stagingCollisionDoesNotDeleteDestinationOwnedByAnotherOperation() async throws {
@@ -274,6 +330,32 @@ struct FileOperationServiceTests {
         #expect(FileManager.default.fileExists(atPath: sourceFile.url.path) == false)
         #expect(progressRecorder.progresses.contains { $0.completedByteCount == 2 && $0.totalByteCount == 6 })
         #expect(progressRecorder.progresses.last?.completedByteCount == 6)
+    }
+
+    @Test func crossVolumeMoveFallsBackWhenDestinationRejectsMetadata() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let sourceContents = String(repeating: "video-data", count: 200_000)
+        let sourceFile = try temporaryDirectory.createFile(
+            named: "movie.mp4",
+            contents: sourceContents
+        )
+        let transferService = CopyfileTransferService(copyfileInvoker: { _, destinationURL, _, _ in
+            _ = FileManager.default.createFile(
+                atPath: destinationURL.path,
+                contents: Data("partial metadata copy".utf8)
+            )
+            return (-1, Int32(ENOTSUP))
+        })
+
+        try await FileOperationService(
+            fileTransferService: transferService,
+            volumeIdentityProvider: FixedVolumeIdentityProvider(isSameVolume: false)
+        ).move(items: [sourceFile], to: temporaryDirectory.destinationURL)
+
+        let destinationURL = temporaryDirectory.destinationURL.appendingPathComponent("movie.mp4")
+        #expect(FileManager.default.fileExists(atPath: sourceFile.url.path) == false)
+        #expect(try String(contentsOf: destinationURL, encoding: .utf8) == sourceContents)
+        #expect(try temporaryDirectory.transferStagingURLs().isEmpty)
     }
 
     @Test func sameVolumeMoveKeepsItemProgressAndSkipsByteTransfer() async throws {

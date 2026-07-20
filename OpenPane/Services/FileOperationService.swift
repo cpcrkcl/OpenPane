@@ -210,6 +210,14 @@ nonisolated protocol FileSystemOperating: Sendable {
 }
 
 nonisolated struct FileManagerFileSystem: FileSystemOperating {
+    private let volumeSupportsExclusiveRenamingOverride: (@Sendable (URL) -> Bool?)?
+
+    nonisolated init(
+        volumeSupportsExclusiveRenaming: (@Sendable (URL) -> Bool?)? = nil
+    ) {
+        self.volumeSupportsExclusiveRenamingOverride = volumeSupportsExclusiveRenaming
+    }
+
     nonisolated func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
         try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
     }
@@ -219,15 +227,38 @@ nonisolated struct FileManagerFileSystem: FileSystemOperating {
     }
 
     nonisolated func moveItemExclusively(at sourceURL: URL, to destinationURL: URL) throws {
-        let result = sourceURL.withUnsafeFileSystemRepresentation { sourcePath -> Int32 in
+        let supportsExclusiveRenaming = volumeSupportsExclusiveRenamingOverride?(destinationURL)
+            ?? Self.volumeSupportsExclusiveRenaming(at: destinationURL)
+        guard supportsExclusiveRenaming != false else {
+            // RENAME_EXCL is optional at the volume level. FileManager keeps
+            // the no-overwrite behavior on filesystems that do not implement
+            // that rename flag (for example, some removable and network
+            // volumes).
+            try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+            return
+        }
+
+        // Capture errno inside the closure: the URL path-buffer teardown that
+        // runs when these closures unwind may clobber it.
+        let (result, moveError) = sourceURL.withUnsafeFileSystemRepresentation { sourcePath -> (Int32, Int32) in
             destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
-                renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL))
+                let renameResult = renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL))
+                return (renameResult, errno)
             }
         }
 
-        guard result == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        guard result != 0 else {
+            return
         }
+        if moveError == ENOTSUP || moveError == EOPNOTSUPP {
+            // Some mounted filesystems do not report the capability key. If
+            // the kernel still rejects RENAME_EXCL, use FileManager's
+            // documented non-overwriting move as the compatibility path.
+            try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+            return
+        }
+
+        throw POSIXError(POSIXErrorCode(rawValue: moveError) ?? .EIO)
     }
 
     nonisolated func removeItem(at url: URL) throws {
@@ -277,6 +308,12 @@ nonisolated struct FileManagerFileSystem: FileSystemOperating {
     nonisolated func createFile(at url: URL) -> Bool {
         FileManager.default.createFile(atPath: url.path, contents: Data())
     }
+
+    private nonisolated static func volumeSupportsExclusiveRenaming(at destinationURL: URL) -> Bool? {
+        try? destinationURL.deletingLastPathComponent()
+            .resourceValues(forKeys: [.volumeSupportsExclusiveRenamingKey])
+            .volumeSupportsExclusiveRenaming
+    }
 }
 
 /// The native, metadata-preserving path used for byte-copy operations. It is
@@ -309,6 +346,19 @@ nonisolated struct ResourceVolumeIdentityProvider: VolumeIdentityProviding {
 }
 
 nonisolated struct CopyfileTransferService: FileTransferServicing {
+    typealias CopyfileInvoker = @Sendable (
+        URL,
+        URL,
+        copyfile_state_t?,
+        copyfile_flags_t
+    ) -> (result: Int32, error: Int32)
+
+    private let copyfileInvoker: CopyfileInvoker
+
+    nonisolated init(copyfileInvoker: CopyfileInvoker? = nil) {
+        self.copyfileInvoker = copyfileInvoker ?? Self.invokeCopyfile
+    }
+
     nonisolated func copyItem(
         at sourceURL: URL,
         to destinationURL: URL,
@@ -350,23 +400,31 @@ nonisolated struct CopyfileTransferService: FileTransferServicing {
             ? sourceURL.appendingPathComponent(".", isDirectory: true)
             : sourceURL
 
-        let result = copySourceURL.withUnsafeFileSystemRepresentation { sourcePath in
-            destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
-                copyfile(
-                    sourcePath,
-                    destinationPath,
-                    state,
-                    flags
-                )
-            }
-        }
-        let copyError = errno
-
-        guard result == 0 else {
+        let outcome = copyfileInvoker(copySourceURL, destinationURL, state, flags)
+        if outcome.result != 0 {
             if isCancelled() {
                 throw CancellationError()
             }
-            throw POSIXError(POSIXErrorCode(rawValue: copyError) ?? .EIO)
+
+            guard Self.isUnsupportedOperationError(outcome.error),
+                  Self.isRegularFileEntry(at: sourceURL) else {
+                throw POSIXError(POSIXErrorCode(rawValue: outcome.error) ?? .EIO)
+            }
+
+            // COPYFILE_ALL can fail after writing the file data when a
+            // removable or network filesystem rejects macOS-only metadata.
+            // Clear that owned partial staging file and retry the regular file
+            // as an exclusive byte stream. Basic metadata is applied on a
+            // best-effort basis after the contents are safely written.
+            if Self.entryExists(at: destinationURL) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            try Self.copyRegularFileContents(
+                at: sourceURL,
+                to: destinationURL,
+                context: context,
+                isCancelled: isCancelled
+            )
         }
 
         if isCancelled() {
@@ -376,18 +434,162 @@ nonisolated struct CopyfileTransferService: FileTransferServicing {
         context.finish()
     }
 
+    private nonisolated static func invokeCopyfile(
+        sourceURL: URL,
+        destinationURL: URL,
+        state: copyfile_state_t?,
+        flags: copyfile_flags_t
+    ) -> (result: Int32, error: Int32) {
+        // Capture errno inside the closure: the URL path-buffer teardown that
+        // runs when these closures unwind may clobber it.
+        return sourceURL.withUnsafeFileSystemRepresentation { sourcePath -> (result: Int32, error: Int32) in
+            destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
+                let copyResult = copyfile(sourcePath, destinationPath, state, flags)
+                return (copyResult, errno)
+            }
+        }
+    }
+
+    private nonisolated static func copyRegularFileContents(
+        at sourceURL: URL,
+        to destinationURL: URL,
+        context: CopyfileTransferCallbackContext,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) throws {
+        guard let sourceStatus = fileStatus(at: sourceURL),
+              (sourceStatus.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+            throw POSIXError(.ENOTSUP)
+        }
+
+        let sourceDescriptor = sourceURL.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else {
+                errno = EINVAL
+                return -1
+            }
+            return open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        }
+        guard sourceDescriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(sourceDescriptor) }
+
+        let permissions = sourceStatus.st_mode & mode_t(0o777)
+        let destinationDescriptor = destinationURL.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else {
+                errno = EINVAL
+                return -1
+            }
+            return open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, permissions)
+        }
+        guard destinationDescriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var completedSuccessfully = false
+        defer {
+            close(destinationDescriptor)
+            if !completedSuccessfully {
+                try? FileManager.default.removeItem(at: destinationURL)
+            }
+        }
+
+        var buffer = [UInt8](repeating: 0, count: 1_048_576)
+        var copiedByteCount: Int64 = 0
+
+        while true {
+            if isCancelled() {
+                throw CancellationError()
+            }
+
+            let bytesRead: Int = buffer.withUnsafeMutableBytes { bytes in
+                read(sourceDescriptor, bytes.baseAddress, bytes.count)
+            }
+            if bytesRead < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard bytesRead > 0 else {
+                break
+            }
+
+            var writtenByteCount = 0
+            while writtenByteCount < bytesRead {
+                if isCancelled() {
+                    throw CancellationError()
+                }
+
+                let bytesWritten: Int = buffer.withUnsafeBytes { bytes in
+                    guard let baseAddress = bytes.baseAddress else {
+                        errno = EIO
+                        return -1
+                    }
+                    return write(
+                        destinationDescriptor,
+                        baseAddress.advanced(by: writtenByteCount),
+                        bytesRead - writtenByteCount
+                    )
+                }
+                if bytesWritten < 0 {
+                    if errno == EINTR {
+                        continue
+                    }
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                guard bytesWritten > 0 else {
+                    throw POSIXError(.EIO)
+                }
+                writtenByteCount += bytesWritten
+            }
+
+            copiedByteCount += Int64(bytesRead)
+            context.report(copiedByteCount: copiedByteCount)
+        }
+
+        if isCancelled() {
+            throw CancellationError()
+        }
+
+        _ = fchmod(destinationDescriptor, permissions)
+        var timestamps = [sourceStatus.st_atimespec, sourceStatus.st_mtimespec]
+        _ = futimens(destinationDescriptor, &timestamps)
+        completedSuccessfully = true
+    }
+
+    private nonisolated static func isUnsupportedOperationError(_ error: Int32) -> Bool {
+        error == ENOTSUP || error == EOPNOTSUPP
+    }
+
     private nonisolated static func isDirectoryEntry(at url: URL) -> Bool {
+        guard let fileStatus = fileStatus(at: url) else {
+            return false
+        }
+        return (fileStatus.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+    }
+
+    private nonisolated static func isRegularFileEntry(at url: URL) -> Bool {
+        guard let fileStatus = fileStatus(at: url) else {
+            return false
+        }
+        return (fileStatus.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+    }
+
+    private nonisolated static func entryExists(at url: URL) -> Bool {
+        fileStatus(at: url) != nil
+    }
+
+    private nonisolated static func fileStatus(at url: URL) -> stat? {
         url.withUnsafeFileSystemRepresentation { path in
             guard let path else {
-                return false
+                return nil
             }
 
             var fileStatus = stat()
             guard lstat(path, &fileStatus) == 0 else {
-                return false
+                return nil
             }
-
-            return (fileStatus.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+            return fileStatus
         }
     }
 
