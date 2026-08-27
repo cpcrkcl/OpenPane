@@ -306,19 +306,20 @@ nonisolated struct FileManagerFileSystem: FileSystemOperating {
     }
 
     nonisolated func createFileExclusively(at url: URL) throws {
-        let descriptor = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+        // Capture errno inside the closure: withUnsafeFileSystemRepresentation may
+        // free its temporary buffer after the closure returns, clobbering errno.
+        let result = url.withUnsafeFileSystemRepresentation { path -> (descriptor: Int32, creationError: Int32) in
             guard let path else {
-                errno = EINVAL
-                return -1
+                return (-1, EINVAL)
             }
 
-            return open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode_t(0o666))
+            let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode_t(0o666))
+            return (descriptor, descriptor >= 0 ? 0 : errno)
         }
-        let creationError = errno
-        guard descriptor >= 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: creationError) ?? .EIO)
+        guard result.descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: result.creationError) ?? .EIO)
         }
-        close(descriptor)
+        close(result.descriptor)
     }
 
     private nonisolated static func volumeSupportsExclusiveRenaming(at destinationURL: URL) -> Bool? {
