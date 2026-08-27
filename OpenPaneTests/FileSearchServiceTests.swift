@@ -189,6 +189,28 @@ struct FileSearchServiceTests {
         #expect(response.skippedFileCount == 2)
     }
 
+    @Test func contentsSearchSkipsBinaryMarkerAfterFirstReadChunk() async throws {
+        let temporaryDirectory = try SearchTestTemporaryDirectory()
+        var binaryData = Data("needle".utf8)
+        binaryData.append(Data(repeating: UInt8(ascii: "a"), count: 64 * 1_024))
+        binaryData.append(0)
+        _ = try temporaryDirectory.createDataFile(
+            named: "large-binary.dat",
+            contents: binaryData
+        )
+
+        let response = try await FileSearchService().search(
+            root: temporaryDirectory.url,
+            query: "needle",
+            kind: .contents,
+            includeHiddenFiles: false,
+            limit: 500
+        )
+
+        #expect(response.results.isEmpty)
+        #expect(response.skippedFileCount == 1)
+    }
+
     @Test func contentsSearchDoesNotFollowSymlinksOrEnterPackages() async throws {
         let temporaryDirectory = try SearchTestTemporaryDirectory()
         let target = try temporaryDirectory.createFile(named: "target.txt", contents: "needle")

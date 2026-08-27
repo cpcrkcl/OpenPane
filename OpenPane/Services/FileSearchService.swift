@@ -320,17 +320,13 @@ nonisolated struct FileSearchService: FileSearchServicing {
         var pendingBytes = Data()
         var carry = ""
         var carryStartLine = 1
-        var isFirstChunk = true
         var firstMatch: FileContentMatch?
 
         while let chunk = try fileHandle.read(upToCount: chunkSize), !chunk.isEmpty {
             try Task.checkCancellation()
 
-            if isFirstChunk {
-                isFirstChunk = false
-                guard !chunk.contains(0) else {
-                    return .skipped
-                }
+            guard !chunk.contains(0) else {
+                return .skipped
             }
 
             pendingBytes.append(chunk)
