@@ -326,8 +326,8 @@ private struct ReplaceFailingTextFileSystem: FileSystemOperating {
         try base.createDirectory(at: url)
     }
 
-    func createFile(at url: URL) -> Bool {
-        base.createFile(at: url)
+    func createFileExclusively(at url: URL) throws {
+        try base.createFileExclusively(at: url)
     }
 }
 

@@ -206,7 +206,7 @@ nonisolated protocol FileSystemOperating: Sendable {
     nonisolated func isWritableFile(at url: URL) -> Bool
     nonisolated func contentsOfDirectory(at url: URL) throws -> [URL]
     nonisolated func createDirectory(at url: URL) throws
-    nonisolated func createFile(at url: URL) -> Bool
+    nonisolated func createFileExclusively(at url: URL) throws
 }
 
 nonisolated struct FileManagerFileSystem: FileSystemOperating {
@@ -305,8 +305,21 @@ nonisolated struct FileManagerFileSystem: FileSystemOperating {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
     }
 
-    nonisolated func createFile(at url: URL) -> Bool {
-        FileManager.default.createFile(atPath: url.path, contents: Data())
+    nonisolated func createFileExclusively(at url: URL) throws {
+        // Capture errno inside the closure: withUnsafeFileSystemRepresentation may
+        // free its temporary buffer after the closure returns, clobbering errno.
+        let result = url.withUnsafeFileSystemRepresentation { path -> (descriptor: Int32, creationError: Int32) in
+            guard let path else {
+                return (-1, EINVAL)
+            }
+
+            let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode_t(0o666))
+            return (descriptor, descriptor >= 0 ? 0 : errno)
+        }
+        guard result.descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: result.creationError) ?? .EIO)
+        }
+        close(result.descriptor)
     }
 
     private nonisolated static func volumeSupportsExclusiveRenaming(at destinationURL: URL) -> Bool? {
@@ -1661,8 +1674,18 @@ nonisolated struct FileOperationService: FileOperationServicing {
             let fileURL = directory.appendingPathComponent(trimmedName, isDirectory: false)
             try Self.validateDestinationDoesNotExist(fileURL, fileSystem: fileSystem)
 
-            guard fileSystem.createFile(at: fileURL) else {
-                throw FileOperationError.operationFailed("create file", fileURL, "The operation could not be completed.")
+            do {
+                try fileSystem.createFileExclusively(at: fileURL)
+            } catch {
+                if Self.isDestinationExistsError(error) {
+                    throw FileOperationError.destinationExists(fileURL)
+                }
+
+                throw FileOperationError.operationFailed(
+                    "create file",
+                    fileURL,
+                    Self.userReadableReason(for: error)
+                )
             }
 
             return fileURL

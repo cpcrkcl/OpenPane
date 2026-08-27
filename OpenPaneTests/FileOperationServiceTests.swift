@@ -908,6 +908,24 @@ struct FileOperationServiceTests {
         }
     }
 
+    @Test func createFileDoesNotTruncateDestinationClaimedAfterValidation() async throws {
+        let temporaryDirectory = try OperationTestTemporaryDirectory()
+        let fileURL = temporaryDirectory.sourceURL.appendingPathComponent("Untitled.txt")
+        let fileSystem = LateFileCreationCollisionFileSystem(
+            collisionURL: fileURL,
+            collisionContents: "created by another process"
+        )
+
+        await #expect(throws: FileOperationError.destinationExists(fileURL)) {
+            try await FileOperationService(fileSystem: fileSystem).createFile(
+                named: "Untitled.txt",
+                in: temporaryDirectory.sourceURL
+            )
+        }
+
+        #expect(try String(contentsOf: fileURL, encoding: .utf8) == "created by another process")
+    }
+
     @Test func createFileNameWithSlashThrowsReadableError() async throws {
         let temporaryDirectory = try OperationTestTemporaryDirectory()
 
@@ -1672,8 +1690,8 @@ private final class FailingFileSystem: FileSystemOperating, @unchecked Sendable 
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
     }
 
-    func createFile(at url: URL) -> Bool {
-        FileManager.default.createFile(atPath: url.path, contents: Data())
+    func createFileExclusively(at url: URL) throws {
+        try FileManagerFileSystem().createFileExclusively(at: url)
     }
 }
 
@@ -1724,8 +1742,66 @@ private final class LateMoveCollisionFileSystem: FileSystemOperating, @unchecked
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
     }
 
-    func createFile(at url: URL) -> Bool {
-        FileManager.default.createFile(atPath: url.path, contents: Data())
+    func createFileExclusively(at url: URL) throws {
+        try FileManagerFileSystem().createFileExclusively(at: url)
+    }
+}
+
+private final class LateFileCreationCollisionFileSystem: FileSystemOperating, @unchecked Sendable {
+    private let base = FileManagerFileSystem()
+    private let collisionURL: URL
+    private let collisionContents: String
+
+    init(collisionURL: URL, collisionContents: String) {
+        self.collisionURL = collisionURL
+        self.collisionContents = collisionContents
+    }
+
+    func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
+        try base.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    func moveItem(at sourceURL: URL, to destinationURL: URL) throws {
+        try base.moveItem(at: sourceURL, to: destinationURL)
+    }
+
+    func moveItemExclusively(at sourceURL: URL, to destinationURL: URL) throws {
+        try base.moveItemExclusively(at: sourceURL, to: destinationURL)
+    }
+
+    func removeItem(at url: URL) throws {
+        try base.removeItem(at: url)
+    }
+
+    func replaceItem(at originalURL: URL, withItemAt replacementURL: URL) throws {
+        try base.replaceItem(at: originalURL, withItemAt: replacementURL)
+    }
+
+    func fileExists(at url: URL) -> Bool {
+        base.fileExists(at: url)
+    }
+
+    func fileExists(at url: URL, isDirectory: inout ObjCBool) -> Bool {
+        base.fileExists(at: url, isDirectory: &isDirectory)
+    }
+
+    func isWritableFile(at url: URL) -> Bool {
+        base.isWritableFile(at: url)
+    }
+
+    func contentsOfDirectory(at url: URL) throws -> [URL] {
+        try base.contentsOfDirectory(at: url)
+    }
+
+    func createDirectory(at url: URL) throws {
+        try base.createDirectory(at: url)
+    }
+
+    func createFileExclusively(at url: URL) throws {
+        if url == collisionURL {
+            try collisionContents.write(to: collisionURL, atomically: true, encoding: .utf8)
+        }
+        try base.createFileExclusively(at: url)
     }
 }
 
