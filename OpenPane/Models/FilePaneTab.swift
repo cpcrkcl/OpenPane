@@ -13,19 +13,25 @@ struct FilePaneTab: Identifiable, Equatable, Sendable {
     var items: [FileItem]
     var selectedItems: Set<FileItem>
     var isDirty: Bool
+    var backStack: [PaneLocation]
+    var forwardStack: [PaneLocation]
 
     init(
         id: UUID = UUID(),
         location: PaneLocation,
         items: [FileItem] = [],
         selectedItems: Set<FileItem> = [],
-        isDirty: Bool = false
+        isDirty: Bool = false,
+        backStack: [PaneLocation] = [],
+        forwardStack: [PaneLocation] = []
     ) {
         self.id = id
         self.location = location
         self.items = items
         self.selectedItems = selectedItems
         self.isDirty = isDirty
+        self.backStack = backStack
+        self.forwardStack = forwardStack
     }
 
     var currentURL: URL {
@@ -42,14 +48,18 @@ struct FilePaneTab: Identifiable, Equatable, Sendable {
         currentURL: URL,
         items: [FileItem] = [],
         selectedItems: Set<FileItem> = [],
-        isDirty: Bool = false
+        isDirty: Bool = false,
+        backStack: [PaneLocation] = [],
+        forwardStack: [PaneLocation] = []
     ) {
         self.init(
             id: id,
             location: .file(currentURL),
             items: items,
             selectedItems: selectedItems,
-            isDirty: isDirty
+            isDirty: isDirty,
+            backStack: backStack,
+            forwardStack: forwardStack
         )
     }
 
