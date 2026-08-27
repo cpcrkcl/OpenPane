@@ -145,6 +145,43 @@ struct FilePaneViewModelTests {
         #expect(viewModel.selectedItems == [childItem])
     }
 
+    @Test func switchToTabPreservesIndependentNavigationHistoryPerTab() async {
+        let rootURL = URL(filePath: "/root", directoryHint: .isDirectory)
+        let firstURL = URL(filePath: "/root/first", directoryHint: .isDirectory)
+        let secondURL = URL(filePath: "/root/first/second", directoryHint: .isDirectory)
+        let viewModel = FilePaneViewModel(
+            currentURL: rootURL,
+            fileBrowserService: MockFileBrowserService()
+        )
+
+        await viewModel.setDirectory(firstURL)
+        let firstTabID = viewModel.activeTabID
+
+        await viewModel.newTab()
+        let secondTabID = viewModel.activeTabID
+        await viewModel.setDirectory(secondURL)
+
+        await viewModel.switchToTab(firstTabID)
+        #expect(viewModel.backStack == [rootURL])
+        await viewModel.goBack()
+        #expect(viewModel.currentURL == rootURL)
+
+        await viewModel.switchToTab(secondTabID)
+        #expect(viewModel.backStack == [firstURL])
+        await viewModel.goBack()
+        #expect(viewModel.currentURL == firstURL)
+
+        await viewModel.switchToTab(firstTabID)
+        #expect(viewModel.forwardStack == [firstURL])
+        await viewModel.goForward()
+        #expect(viewModel.currentURL == firstURL)
+
+        await viewModel.switchToTab(secondTabID)
+        #expect(viewModel.forwardStack == [secondURL])
+        await viewModel.goForward()
+        #expect(viewModel.currentURL == secondURL)
+    }
+
     @Test func dirtyBackgroundTabReloadsWhenActivatedAndClearsDirtyFlag() async throws {
         let temporaryDirectory = try PaneTestTemporaryDirectory()
         let rootItem = try temporaryDirectory.createFileItem(named: "root.txt")

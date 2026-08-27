@@ -1953,6 +1953,9 @@ final class FilePaneViewModel: ObservableObject {
         isShowingRecursiveSearchResults = false
         errorMessage = nil
         currentLocation = tab.location
+        locationBackStack = tab.backStack
+        locationForwardStack = tab.forwardStack
+        publishLegacyHistory()
         if !replaceItemsIfChanged(tab.items) {
             scheduleVisibleItemsRecompute()
         }
@@ -2087,6 +2090,8 @@ final class FilePaneViewModel: ObservableObject {
 
         var updatedTabs = tabs
         updatedTabs[index].location = currentLocation
+        updatedTabs[index].backStack = locationBackStack
+        updatedTabs[index].forwardStack = locationForwardStack
         if items.count <= Self.maximumCachedItemsPerTab {
             updatedTabs[index].items = items
             updatedTabs[index].selectedItems = selectedItems
